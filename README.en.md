@@ -8,11 +8,15 @@ PaperLine is a lightweight, local app for reading research papers. **Reading pat
 
 Requires Python 3.10 or newer. No packages need to be installed.
 
+**On macOS, double-click `PaperLine.app` in the project folder.** The launcher starts the local server in the background and opens your browser. If PaperLine is already running, it simply opens the page. Double-click `stop.command` to stop a server started by the app. Keep `PaperLine.app` beside `app.py` in the project folder.
+
+Alternatively, double-click `start.command` to run the server in a Terminal window; closing that window stops it. On other systems, run this from the project folder:
+
 ```bash
 python3 app.py
 ```
 
-The app opens at `http://127.0.0.1:8765`. On macOS, you can also double-click `start.command`. Close the terminal running the app to stop it.
+The app opens at `http://127.0.0.1:8765`.
 
 ## Get started
 
