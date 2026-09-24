@@ -73,6 +73,43 @@ class ReadingGraphTests(unittest.TestCase):
         self.assertEqual(len(self.state["ideas"]), 1)
         self.assertEqual(len(self.state["edges"]), 1)
 
+    def test_branch_creates_a_connected_card_and_reuse_keeps_one_shared_idea(self):
+        line_id, parent_id = self.make_line_and_idea()
+        child_id = app.apply_action(self.state, "idea.create", {
+            "title": "组内奖励方差", "kind": "question", "lineId": line_id,
+            "fromIdeaId": parent_id, "aliases": "reward variance, Reward Variance，奖励方差",
+        })["ideaId"]
+        child = app.find(self.state, "ideas", child_id)
+        self.assertEqual(child["aliases"], ["reward variance", "奖励方差"])
+        self.assertEqual(self.state["lines"][0]["ideaIds"], [parent_id, child_id])
+        self.assertEqual((self.state["edges"][0]["fromId"], self.state["edges"][0]["toId"], self.state["edges"][0]["relation"]), (parent_id, child_id, "extends"))
+        for title in ("Paper A", "Paper B"):
+            paper_id = app.apply_action(self.state, "paper.create", {"title": title})["paperId"]
+            payload = {"id": parent_id, "lineId": line_id, "paperId": paper_id, "relation": "uses"}
+            app.apply_action(self.state, "idea.reuse", payload)
+            app.apply_action(self.state, "idea.reuse", payload)
+        self.assertEqual(len(self.state["ideas"]), 2)
+        self.assertEqual(len(self.state["edges"]), 3)
+        self.assertEqual(self.state["lines"][0]["ideaIds"], [parent_id, child_id])
+
+    def test_next_question_is_saved_and_exported_with_reading_notes(self):
+        line_id, idea_id = self.make_line_and_idea()
+        app.apply_action(self.state, "session.create", {
+            "lineId": line_id, "ideaId": idea_id, "durationSeconds": 900,
+            "note": "理解了组内归一化。", "nextQuestion": "方差为零时怎么处理？",
+        })
+        self.assertEqual(self.state["sessions"][0]["nextQuestion"], "方差为零时怎么处理？")
+        self.state["settings"]["language"] = "en"
+        note = app.render_note(self.state, "idea", app.find(self.state, "ideas", idea_id))
+        self.assertIn("理解了组内归一化。", note)
+        self.assertIn("Explore next: 方差为零时怎么处理？", note)
+
+    def test_alias_normalization_and_invalid_branch_parent(self):
+        self.assertEqual(app.idea_aliases({"aliases": "GRPO, ＧＲＰＯ，group relative policy optimization"}), ["GRPO", "group relative policy optimization"])
+        with self.assertRaises(ValueError):
+            app.apply_action(self.state, "idea.create", {"title": "A branch", "fromIdeaId": "missing"})
+        self.assertEqual(self.state["ideas"], [])
+
     def test_unmanaged_existing_note_is_not_overwritten(self):
         self.make_line_and_idea()
         with tempfile.TemporaryDirectory() as folder:

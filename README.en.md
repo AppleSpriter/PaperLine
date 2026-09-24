@@ -17,13 +17,15 @@ The app opens at `http://127.0.0.1:8765`. On macOS, you can also double-click `s
 ## Get started
 
 1. Create a reading path around a research question.
-2. Add an idea card, such as GRPO. A card can belong to several paths.
+2. Search the **Idea library** before creating a card. The creation form also suggests similar cards. Cards can have aliases and belong to several paths.
 3. Search your local Zotero library under **Papers** and import a paper, or add one manually. You can load text annotations and create cards from them.
-4. Connect several papers to the same card. Record how each paper uses the idea and link to the relevant passage.
-5. Start a reading session. Before finishing, write two sentences in your own words. Continue from the same card next time.
+4. Connect several papers to the same card. Record how each paper uses the idea and link to the relevant passage. Use **New branch** when a new question comes up; the card is connected to its source idea automatically.
+5. Start a reading session. Before finishing, write two sentences in your own words and leave a question for next time. The previous note appears when you reopen the card.
 6. Set your Obsidian vault path under **Settings**, then choose **Export to Obsidian**.
 
 You can switch the interface between Simplified Chinese and English in **Settings**. You can also set a daily reminder. In-app reminders work while the page is open; browser notifications require separate permission.
+
+Card edits are kept as drafts when you switch cards or reload the page. **Continue later** keeps your reading time and notes; open the same card again to resume without counting the break. Drafts are stored in the current browser. Choose **Save card** or **Save reading session** to include them in app data, backups, and exports.
 
 Keep Zotero running and enable **Allow other applications on this computer to communicate with Zotero** under Zotero's advanced settings. PaperLine only reads Zotero's local API and does not modify your Zotero library.
 
@@ -43,4 +45,5 @@ PaperLine binds only to `127.0.0.1`. It needs no account or cloud service. The g
 python3 -m unittest discover -s tests -v
 node --check static/app.js
 node --check static/i18n.js
+node --test tests/frontend.test.js
 ```

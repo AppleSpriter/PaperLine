@@ -4,9 +4,34 @@
     "读线 · PaperLine": "PaperLine · Reading Paths",
     "读线 PaperLine": "PaperLine",
     "读线": "PaperLine",
+    "阅读线与思想": "READING PATHS & IDEAS",
     "读": "P",
     "主视图": "Main views",
     "思想图": "Idea graph",
+    "思想库": "Idea library",
+    "搜索思想": "Search ideas",
+    "搜索已有思想，把不同论文连到同一张卡。": "Find an existing idea and connect papers to the same card.",
+    "搜索名称、别名或笔记内容": "Search names, aliases, or notes",
+    "别名": "Aliases",
+    "缩写、全称或其他写法，用逗号分隔": "Abbreviations or other names, separated by commas",
+    "没有找到思想卡": "No idea cards found",
+    "换个关键词，或创建一张新卡。": "Try another keyword or create an idea card.",
+    "已有相近思想": "Similar ideas already exist",
+    "使用已有卡片，可以汇集多篇论文的关系。": "Reuse a card to collect connections from different papers.",
+    "使用此卡": "Use this card",
+    "已使用已有思想卡。": "Existing idea card reused.",
+    "引申自": "Branching from",
+    "创建后会自动连线，也可以选择下方已有的思想卡。": "The new card will be connected automatically. You can also choose an existing card below.",
+    "＋ 引申新卡": "+ Branch into new idea",
+    "引申新卡": "New branch",
+    "关联已有思想": "Link existing idea",
+    "↖ 返回来源": "↖ Back to source",
+    "上次读到这里": "Where you left off",
+    "下次要弄清": "Explore next",
+    "下次要弄清的问题": "Question for next time",
+    "留下一个下次打开就能开始的小问题": "Leave a small question to start with next time",
+    "最近阅读": "Recent reading sessions",
+    "最多填写 12 个别名，每个不超过 120 字。": "Enter up to 12 aliases, each no longer than 120 characters.",
     "阅读线": "Reading paths",
     "论文库": "Papers",
     "设置": "Settings",
@@ -78,6 +103,8 @@
     "我现在理解了什么？下一步要弄清什么？": "What do I understand now? What should I explore next?",
     "稍后继续": "Continue later",
     "保存本次阅读": "Save reading session",
+    "稍后继续会保留本次计时和感想。重新打开这张卡即可接着读。": "Continue later keeps your reading time and notes. Open this card again to pick up where you left off.",
+    "草稿已保留，点击保存卡片可写入笔记。": "Draft kept. Choose Save card to save it to your notes.",
     "Obsidian 导出": "Obsidian export",
     "填写 Obsidian 库的完整路径。应用会在库中创建 PaperLine 文件夹；再次导出时仅更新标记区域，保留你的手写补充。": "Enter the full path to your Obsidian vault. The app creates a PaperLine folder and updates only marked sections on later exports, preserving your own notes.",
     "Obsidian 库路径": "Obsidian vault path",
@@ -117,6 +144,7 @@
     "＋ 关联论文": "+ Link paper",
     "＋ 引申思想": "+ Link idea",
     "论文来源": "Paper sources",
+    "来源论文": "Paper source",
     "下一张": "Up next",
     "设为下一张": "Set as next",
     "关联已有卡片": "Link existing card",
@@ -242,10 +270,13 @@
   };
 
   const patterns = [
-    [/^(\d+) 张卡(?: · 下一张：(.+))?$/, (_, count, next) => `${count} cards${next ? ` · Next: ${next}` : ""}`],
-    [/^(\d+) 篇论文$/, (_, count) => `${count} papers`],
-    [/^(\d+) 条思想关联$/, (_, count) => `${count} idea connections`],
-    [/^(\d+) 个思想$/, (_, count) => `${count} ideas`],
+    [/^(基础概念|创新思想|引申问题) · (待学|正在学|已理解)$/, (_, kind, status) => `${en[kind]} · ${en[status]}`],
+    [/^([→←]) (引申|依赖|对比|改进)$/, (_, arrow, relation) => `${arrow} ${en[relation]}`],
+    [/^(\d+) 张卡(?: · 下一张：(.+))?$/, (_, count, next) => `${count} card${count === "1" ? "" : "s"}${next ? ` · Next: ${next}` : ""}`],
+    [/^(\d+) 张思想卡$/, (_, count) => `${count} idea card${count === "1" ? "" : "s"}`],
+    [/^(\d+) 篇论文$/, (_, count) => `${count} paper${count === "1" ? "" : "s"}`],
+    [/^(\d+) 条思想关联$/, (_, count) => `${count} idea connection${count === "1" ? "" : "s"}`],
+    [/^(\d+) 个思想$/, (_, count) => `${count} idea${count === "1" ? "" : "s"}`],
     [/^展开全部关联（(\d+)）$/, (_, count) => `Show all connections (${count})`],
     [/^找到 (\d+) 条文字批注。$/, (_, count) => `Found ${count} text annotations.`],
     [/^已导出 (\d+) 篇笔记到 Obsidian。$/, (_, count) => `Exported ${count} notes to Obsidian.`],
@@ -254,8 +285,7 @@
     [/^请填写 (.+)。$/, (_, field) => `Please enter ${field}.`],
     [/^(.+) 过长。$/, (_, field) => `${field} is too long.`],
     [/^第 (.+) 页$/, (_, page) => `Page ${page}`],
-    [/^(.+) · 出现在 (\d+) 条阅读线$/, (_, kind, count) => `${en[kind] || kind} · On ${count} reading paths`],
-    [/^(.+) · (\d+) 篇论文$/, (_, summary, count) => `${summary} · ${count} papers`],
+    [/^(.+) · 出现在 (\d+) 条阅读线$/, (_, kind, count) => `${en[kind] || kind} · On ${count} reading path${count === "1" ? "" : "s"}`],
     [/^来源：(.+?)(?: · 第 (.+?) 页)?(?: · (.+))?$/, (_, title, page, excerpt) => `Source: ${title}${page ? ` · Page ${page}` : ""}${excerpt ? ` · ${excerpt}` : ""}`],
     [/^阅读线：(.+)$/, (_, title) => `Reading path: ${title}`],
     [/^今天从「(.+)」开始，读 15 分钟。$/, (_, title) => `Start with “${title}” today. Read for 15 minutes.`],
@@ -265,7 +295,7 @@
     [/^查看论文 (.+)$/, (_, title) => `View paper ${title}`],
     [/^查看思想 (.+)$/, (_, title) => `View idea ${title}`],
     [/^从阅读线移出 (.+)$/, (_, title) => `Remove ${title} from this reading path`],
-    [/^(.+) 与 (\d+) 篇论文及 (\d+) 条思想关系的图谱$/, (_, title, papers, ideas) => `Graph of ${title} with ${papers} papers and ${ideas} idea connections`],
+    [/^(.+) 与 (\d+) 篇论文及 (\d+) 条思想关系的图谱$/, (_, title, papers, ideas) => `Graph of ${title} with ${papers} paper${papers === "1" ? "" : "s"} and ${ideas} idea connection${ideas === "1" ? "" : "s"}`],
     [/^(摘录：|批注：)([\s\S]*)$/, (_, prefix, text) => `${en[prefix]}${text}`],
   ];
 
@@ -289,13 +319,14 @@
     const nodes = [];
     while (walker.nextNode()) nodes.push(walker.currentNode);
     for (const node of nodes) {
-      if (node.parentElement?.closest("script, style, textarea")) continue;
+      if (node.parentElement?.closest("script, style, textarea, [data-user-content]")) continue;
       if (!originalTexts.has(node)) originalTexts.set(node, node.nodeValue);
       const original = originalTexts.get(node);
       node.nodeValue = lang === "en" ? translate(original) : original;
     }
     const elements = [root, ...root.querySelectorAll("[placeholder], [aria-label], [title]")].filter((node) => node?.getAttribute);
     for (const element of elements) {
+      if (element.closest("[data-user-content]")) continue;
       let saved = originalAttributes.get(element);
       if (!saved) { saved = {}; originalAttributes.set(element, saved); }
       for (const attr of ["placeholder", "aria-label", "title"]) {

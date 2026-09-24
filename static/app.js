@@ -18,14 +18,79 @@ const ui = {
   view: "graph", selectedLineId: "", selectedIdeaId: "", selectedPaperId: "",
   graphExpanded: false, annotations: null, annotationPaperId: "", pendingSource: null,
   zoteroResults: [], relationFocus: null, editingEdgeId: "", session: null, timer: null,
+  ideaQuery: "", pendingParentId: "",
 };
+const draftCache = new Map();
+function readDraft(key) {
+  if (!draftCache.has(key)) {
+    try { draftCache.set(key, JSON.parse(localStorage.getItem(`paperline-draft:${key}`))); }
+    catch { draftCache.set(key, null); }
+  }
+  return draftCache.get(key);
+}
+function writeDraft(key, draft) {
+  draftCache.set(key, draft);
+  try { localStorage.setItem(`paperline-draft:${key}`, JSON.stringify(draft)); } catch { /* Keep the draft in memory if storage is unavailable. */ }
+}
+function forgetDraft(key) {
+  draftCache.delete(key);
+  try { localStorage.removeItem(`paperline-draft:${key}`); } catch { /* Storage may be unavailable. */ }
+}
+function captureIdeaDraft(form) {
+  const values = Object.fromEntries(new FormData(form).entries());
+  writeDraft(`idea:${form.dataset.id}`, values);
+  const status = $("#idea-draft-status");
+  if (status) { status.hidden = false; status.textContent = "草稿已保留，点击保存卡片可写入笔记。"; localize(status); }
+}
 
 function line(id) { return state.lines.find((item) => item.id === id); }
 function idea(id) { return state.ideas.find((item) => item.id === id); }
 function paper(id) { return state.papers.find((item) => item.id === id); }
 function edge(id) { return state.edges.find((item) => item.id === id); }
-function safeHref(url) { return /^(https?:\/\/|zotero:\/\/)/i.test(url || "") ? esc(url) : "#"; }
+function safeUrl(url) { return /^(https?:\/\/|zotero:\/\/)/i.test(url || "") ? url : "#"; }
+function safeHref(url) { return esc(safeUrl(url)); }
 function truncate(value, count = 38) { const text = String(value || ""); return text.length > count ? text.slice(0, count - 1) + "…" : text; }
+function countUnit(count, chinese, singular, plural) { return language() === "en" ? (count === 1 ? singular : plural) : chinese; }
+function normalized(value) { return String(value || "").normalize("NFKC").toLocaleLowerCase().trim(); }
+function searchIdeas(query, excludeId = "") {
+  const needle = normalized(query);
+  const terms = needle.split(/\s+/).filter(Boolean);
+  const rank = (item) => normalized(item.title) === needle ? 0 : (item.aliases || []).some((alias) => normalized(alias) === needle) ? 1 : normalized(item.title).startsWith(needle) ? 2 : 3;
+  return state.ideas.filter((item) => item.id !== excludeId && terms.every((term) => normalized([item.title, ...(item.aliases || []), item.summary, item.mechanism, item.thoughts].join(" ")).includes(term)))
+    .sort((a, b) => needle ? rank(a) - rank(b) : 0);
+}
+function latestSession(ideaId) {
+  return state.sessions.filter((session) => session.ideaId === ideaId).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+}
+function readingRecap(ideaId, compact = false) {
+  const previous = latestSession(ideaId);
+  if (!previous) return "";
+  return `<span class="recap-label">上次读到这里</span><p data-user-content>${esc(compact ? truncate(previous.note, 95) : previous.note)}</p>${previous.nextQuestion ? `<span class="recap-label">下次要弄清</span><p data-user-content>${esc(compact ? truncate(previous.nextQuestion, 95) : previous.nextQuestion)}</p>` : ""}`;
+}
+function sessionHistory(ideaId) {
+  const sessions = state.sessions.filter((session) => session.ideaId === ideaId).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 3);
+  if (!sessions.length) return "";
+  return `<div class="inspector-section"><h3>最近阅读</h3>${sessions.map((session) => `<div class="reading-history"><time>${esc(new Date(session.createdAt).toLocaleDateString(language() === "en" ? "en-US" : "zh-CN"))}</time><p data-user-content>${esc(session.note)}</p>${session.nextQuestion ? `<span class="recap-label">下次要弄清</span><p data-user-content>${esc(session.nextQuestion)}</p>` : ""}</div>`).join("")}</div>`;
+}
+function ideaSourcePayload() {
+  const payload = {};
+  if (ui.pendingParentId) payload.fromIdeaId = ui.pendingParentId;
+  const source = ui.pendingSource;
+  if (source) {
+    const sourceNote = [source.text ? `${tr("摘录：")}${source.text}` : "", source.comment ? `${tr("批注：")}${source.comment}` : ""].filter(Boolean).join("\n").slice(0, 3000);
+    Object.assign(payload, { paperId: source.paperId, relation: $("#idea-source-relation").value, sourceNote, sourceUrl: source.sourceUrl || "" });
+  }
+  return payload;
+}
+function selectIdea(id) {
+  const current = line(ui.selectedLineId);
+  if (!current?.ideaIds.includes(id)) ui.selectedLineId = state.lines.find((entry) => entry.ideaIds.includes(id))?.id || "";
+  ui.selectedIdeaId = id;
+  ui.selectedPaperId = "";
+  ui.view = "graph";
+  ui.graphExpanded = false;
+  render();
+}
 function toast(message, bad = false) {
   const node = $("#toast");
   node.textContent = tr(message);
@@ -46,6 +111,10 @@ async function act(action, payload) {
     body: JSON.stringify({ action, payload }),
   });
   state = data.state;
+  if (action === "idea.update") {
+    const draft = readDraft(`idea:${payload.id}`);
+    if (draft && Object.entries(draft).every(([key, value]) => payload[key] === value)) forgetDraft(`idea:${payload.id}`);
+  }
   if (data.result.lineId) ui.selectedLineId = data.result.lineId;
   if (data.result.ideaId) { ui.selectedIdeaId = data.result.ideaId; ui.selectedPaperId = ""; }
   if (data.result.paperId) { ui.selectedPaperId = data.result.paperId; ui.selectedIdeaId = ""; }
@@ -53,17 +122,18 @@ async function act(action, payload) {
   return data.result;
 }
 function closeDialog(dialog = document.querySelector("dialog[open]")) {
+  if (dialog?.id === "session-dialog" && ui.session?.saving) return;
   if (dialog) dialog.close();
   if (dialog?.id === "session-dialog") stopTimer();
 }
 function openDialog(id) { const dialog = $(id); localize(dialog); if (!dialog.open) dialog.showModal(); }
 function options(items, selected = "", blank = "") {
   let html = blank ? `<option value="">${esc(blank)}</option>` : "";
-  return html + items.map((item) => `<option value="${esc(item.id)}" ${item.id === selected ? "selected" : ""}>${esc(truncate(item.title, 58))}</option>`).join("");
+  return html + items.map((item) => `<option data-user-content value="${esc(item.id)}" ${item.id === selected ? "selected" : ""}>${esc(truncate(item.title, 58))}</option>`).join("");
 }
 function syncSelection() {
   if (ui.selectedLineId && !line(ui.selectedLineId)) ui.selectedLineId = "";
-  if (!ui.selectedLineId && state.lines.length) ui.selectedLineId = state.lines[0].id;
+  if (!ui.selectedLineId && !ui.selectedIdeaId && !ui.selectedPaperId && state.lines.length) ui.selectedLineId = state.lines[0].id;
   const current = line(ui.selectedLineId);
   if (ui.view === "papers" && !ui.selectedPaperId && state.papers.length) {
     ui.selectedPaperId = state.papers[0].id;
@@ -94,24 +164,26 @@ function renderSidebar() {
     const selected = item.id === ui.selectedLineId;
     const active = idea(item.activeIdeaId);
     return `<button type="button" class="line-item ${selected ? "selected" : ""}" data-action="select-line" data-id="${esc(item.id)}" aria-current="${selected ? "page" : "false"}">
-      <span class="line-item-title">${esc(item.title)}</span>
+      <span class="line-item-title" data-user-content>${esc(item.title)}</span>
       <span class="line-item-meta">${item.ideaIds.length} 张卡${active ? ` · 下一张：${esc(truncate(active.title, 13))}` : ""}</span>
     </button>`;
   }).join("") : `<div class="side-empty">先创建一条想追的问题线。</div>`;
   const current = line(ui.selectedLineId);
   const active = idea(current?.activeIdeaId) || idea(current?.ideaIds[0]);
   $("#today-panel").innerHTML = current && active ? `<div class="today-kicker"><span class="pulse-dot"></span> 下一步</div>
-    <h3>${esc(active.title)}</h3><p>${esc(current.title)}</p>
+    <h3 data-user-content>${esc(active.title)}</h3><p data-user-content>${esc(current.title)}</p>
+    ${latestSession(active.id) ? `<div class="today-recap">${readingRecap(active.id, true)}</div>` : ""}
     <button type="button" class="button light-fill full" data-action="start-session" data-id="${esc(active.id)}">开始读 15 分钟 <span>↗</span></button>`
     : `<div class="today-kicker"><span class="pulse-dot"></span> 下一步</div><h3>从一张卡开始</h3><p>为阅读线添加思想卡，就能开始第一次阅读。</p><button type="button" class="button light-fill full" data-action="new-idea">新建思想卡 <span>＋</span></button>`;
 }
 
-function pageHeader(kicker, title, description, actions = "") {
-  return `<div class="page-head"><div><span class="eyebrow">${kicker}</span><h1>${esc(title)}</h1><p>${esc(description || "")}</p></div><div class="page-actions">${actions}</div></div>`;
+function pageHeader(kicker, title, description, actions = "", userTitle = true, userDescription = false) {
+  return `<div class="page-head"><div><span class="eyebrow">${kicker}</span><h1 ${userTitle ? "data-user-content" : ""}>${esc(title)}</h1><p ${userDescription ? "data-user-content" : ""}>${esc(description || "")}</p></div><div class="page-actions">${actions}</div></div>`;
 }
 function renderMain() {
   const current = line(ui.selectedLineId);
   if (ui.view === "papers") return renderPapers();
+  if (ui.view === "ideas") return renderIdeas();
   if (!current) {
     const selected = idea(ui.selectedIdeaId);
     if (selected && ui.view === "graph") {
@@ -132,9 +204,9 @@ function renderGraphView(current) {
   const tabs = current.ideaIds.map((id) => {
     const item = idea(id);
     if (!item) return "";
-    return `<button type="button" class="card-tab ${selected?.id === id ? "active" : ""}" data-action="select-idea" data-id="${esc(id)}">${esc(item.title)}</button>`;
+    return `<button type="button" class="card-tab ${selected?.id === id ? "active" : ""}" data-user-content data-action="select-idea" data-id="${esc(id)}">${esc(item.title)}</button>`;
   }).join("");
-  $("#main-view").innerHTML = pageHeader("IDEA GRAPH / 思想图", current.title, current.question || "沿着思想卡追踪论文、方法与引申。", actions)
+  $("#main-view").innerHTML = pageHeader("IDEA GRAPH / 思想图", current.title, current.question || "沿着思想卡追踪论文、方法与引申。", actions, true, Boolean(current.question))
     + `<div class="graph-intro"><strong>从思想出发</strong><span>点击节点查看论文如何使用它，或切换到关联的思想。</span></div>`
     + (current.ideaIds.length ? `<div class="card-tabs" aria-label="阅读线中的思想卡">${tabs}</div>` : "")
     + (selected ? graphMarkup(selected) : `<div class="empty-main"><div class="empty-orbit">◎</div><h2>这里会长出第一张思想图</h2><p>新建一张思想卡，再把论文与它关联起来。</p><button type="button" class="button primary" data-action="new-idea">添加思想卡</button></div>`);
@@ -161,17 +233,18 @@ function graphMarkup(focus) {
     paths += `<path class="graph-link idea-link" d="M 650 ${centerY} C 705 ${centerY}, 705 ${y}, 760 ${y}"/><text class="graph-edge-label" x="705" y="${(y + centerY) / 2 - 9}" text-anchor="middle">${connection.fromId === focus.id ? "→" : "←"} ${labels.idea[connection.relation]}</text>`;
     nodes += graphNode("idea", node, 760, y - 31, 205, connection.relation);
   });
-  const center = `<g class="graph-focus" role="group" aria-label="当前思想 ${esc(focus.title)}"><rect x="410" y="${centerY - 48}" width="240" height="96" rx="16"/><text x="430" y="${centerY - 10}" class="focus-title">${esc(truncate(focus.title, 22))}</text><text x="430" y="${centerY + 19}" class="focus-sub">${labels.kind[focus.kind]} · ${labels.status[focus.status]}</text></g>`;
+  const center = `<g class="graph-focus" role="group" aria-label="当前思想 ${esc(focus.title)}"><rect x="410" y="${centerY - 48}" width="240" height="96" rx="16"/><text x="430" y="${centerY - 10}" class="focus-title" data-user-content>${esc(truncate(focus.title, 22))}</text><text x="430" y="${centerY + 19}" class="focus-sub">${labels.kind[focus.kind]} · ${labels.status[focus.status]}</text></g>`;
   const more = paperEdges.length > 7 || ideaEdges.length > 7;
   const paperCount = new Set(paperEdges.map((item) => item.fromId)).size;
-  return `<section class="graph-panel"><div class="graph-toolbar"><div class="graph-stats"><span><b>${paperCount}</b> 篇论文</span><span><b>${ideaEdges.length}</b> 条思想关联</span></div><div class="graph-legend"><span><i class="legend-paper"></i>论文</span><span><i class="legend-idea"></i>思想</span></div></div>
+  const parent = ideaEdges.find((connection) => connection.toId === focus.id && connection.relation === "extends");
+  return `${parent ? `<button type="button" class="button quiet parent-return" data-action="select-idea" data-id="${esc(parent.fromId)}"><span>↖ 返回来源</span> <span data-user-content>${esc(idea(parent.fromId)?.title)}</span></button>` : ""}<section class="graph-panel"><div class="graph-toolbar"><div class="graph-stats"><span><b>${paperCount}</b> ${countUnit(paperCount, "篇论文", "paper", "papers")}</span><span><b>${ideaEdges.length}</b> ${countUnit(ideaEdges.length, "条思想关联", "idea connection", "idea connections")}</span></div><div class="graph-legend"><span><i class="legend-paper"></i>论文</span><span><i class="legend-idea"></i>思想</span></div></div>
     <div class="graph-scroll"><svg class="idea-graph" viewBox="0 0 1000 ${height}" role="group" aria-label="${esc(focus.title)} 与 ${paperCount} 篇论文及 ${ideaEdges.length} 条思想关系的图谱"><defs><pattern id="dot-grid" width="24" height="24" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="1" fill="var(--graph-dot)"/></pattern></defs><rect width="1000" height="${height}" fill="url(#dot-grid)"/>${paths}${nodes}${center}</svg></div>
     ${more ? `<button type="button" class="graph-more" data-action="expand-graph">${ui.graphExpanded ? "收起部分节点" : `展开全部关联（${paperEdges.length + ideaEdges.length}）`}</button>` : ""}
-    <div class="graph-bottom"><p>${paperCount ? "同一个思想卡可以汇集多篇论文；每条连线记录具体用法。" : "从论文库导入来源，再建立“论文 → 思想”的关联。"}</p><div><button type="button" class="button quiet" data-action="link-paper">＋ 关联论文</button><button type="button" class="button quiet" data-action="link-idea">＋ 引申思想</button></div></div></section>`;
+    <div class="graph-bottom"><p>${paperCount ? "同一个思想卡可以汇集多篇论文；每条连线记录具体用法。" : "从论文库导入来源，再建立“论文 → 思想”的关联。"}</p><div><button type="button" class="button quiet" data-action="link-paper">＋ 关联论文</button><button type="button" class="button quiet" data-action="derive-idea">＋ 引申新卡</button><button type="button" class="button quiet" data-action="link-idea">关联已有思想</button></div></div></section>`;
 }
 function graphNode(kind, item, x, y, width) {
-  const secondary = kind === "paper" ? [item.authors, item.year].filter(Boolean).join(" · ") || "论文来源" : `${labels.kind[item.kind]} · ${labels.status[item.status]}`;
-  return `<g class="graph-node ${kind}-node" data-action="select-${kind}" data-id="${esc(item.id)}" role="button" tabindex="0" aria-label="查看${kind === "paper" ? "论文" : "思想"} ${esc(item.title)}"><rect x="${x}" y="${y}" width="${width}" height="62" rx="12"/><text x="${x + 16}" y="${y + 26}" class="node-title">${esc(truncate(item.title, kind === "paper" ? 25 : 20))}</text><text x="${x + 16}" y="${y + 47}" class="node-sub">${esc(truncate(secondary, 30))}</text></g>`;
+  const secondary = kind === "paper" ? [item.authors, item.year].filter(Boolean).join(" · ") || "来源论文" : `${labels.kind[item.kind]} · ${labels.status[item.status]}`;
+  return `<g class="graph-node ${kind}-node" data-action="select-${kind}" data-id="${esc(item.id)}" role="button" tabindex="0" aria-label="查看${kind === "paper" ? "论文" : "思想"} ${esc(item.title)}"><rect x="${x}" y="${y}" width="${width}" height="62" rx="12"/><text x="${x + 16}" y="${y + 26}" class="node-title" data-user-content>${esc(truncate(item.title, kind === "paper" ? 25 : 20))}</text><text x="${x + 16}" y="${y + 47}" class="node-sub" ${kind === "paper" && (item.authors || item.year) ? "data-user-content" : ""}>${esc(truncate(secondary, 30))}</text></g>`;
 }
 
 function renderOutline(current) {
@@ -180,19 +253,47 @@ function renderOutline(current) {
     const item = idea(id);
     if (!item) return "";
     const paperCount = state.edges.filter((connection) => connection.fromType === "paper" && connection.toId === id).length;
-    return `<div class="outline-row ${current.activeIdeaId === id ? "is-next" : ""}"><span class="step-num">${String(index + 1).padStart(2, "0")}</span><button type="button" class="outline-body" data-action="select-idea" data-id="${esc(id)}"><strong>${esc(item.title)}</strong><small>${esc(item.summary || "等待写下一句话理解")} · ${paperCount} 篇论文</small></button><span class="status-pill ${item.status}">${labels.status[item.status]}</span><button type="button" class="mini-action" data-action="set-next" data-id="${esc(id)}">${current.activeIdeaId === id ? "下一张" : "设为下一张"}</button><button type="button" class="mini-action remove-action" data-action="detach-idea" data-id="${esc(id)}" aria-label="从阅读线移出 ${esc(item.title)}">×</button></div>`;
+    return `<div class="outline-row ${current.activeIdeaId === id ? "is-next" : ""}"><span class="step-num">${String(index + 1).padStart(2, "0")}</span><button type="button" class="outline-body" data-action="select-idea" data-id="${esc(id)}"><strong data-user-content>${esc(item.title)}</strong><small><span ${item.summary ? "data-user-content" : ""}>${esc(item.summary || "等待写下一句话理解")}</span> · <span>${paperCount} 篇论文</span></small></button><span class="status-pill ${item.status}">${labels.status[item.status]}</span><button type="button" class="mini-action" data-action="set-next" data-id="${esc(id)}">${current.activeIdeaId === id ? "下一张" : "设为下一张"}</button><button type="button" class="mini-action remove-action" data-action="detach-idea" data-id="${esc(id)}" aria-label="从阅读线移出 ${esc(item.title)}">×</button></div>`;
   }).join("");
-  $("#main-view").innerHTML = pageHeader("READING PATH / 阅读线", current.title, current.question || "这条线要回答的问题可以在“编辑”中补充。", actions)
+  $("#main-view").innerHTML = pageHeader("READING PATH / 阅读线", current.title, current.question || "这条线要回答的问题可以在“编辑”中补充。", actions, true, Boolean(current.question))
     + `<div class="section-title"><div><span class="eyebrow">YOUR ROUTE</span><h2>按顺序学习</h2></div><span>${current.ideaIds.length} 张卡</span></div>`
     + (rows ? `<div class="outline-list">${rows}</div>` : `<div class="empty-main compact"><h2>还没有思想卡</h2><p>记录阅读时遇到的第一个概念、创新或问题。</p><button type="button" class="button primary" data-action="new-idea">添加第一张卡</button></div>`)
     + `<div class="outline-tip"><strong>阅读线是学习顺序。</strong><span>同一张思想卡可以加入多条阅读线，论文关系会共用。</span></div>`;
 }
 
+function renderIdeas() {
+  $("#main-view").innerHTML = pageHeader("IDEA LIBRARY", "思想库", "搜索已有思想，把不同论文连到同一张卡。", `<button type="button" class="button secondary" data-action="new-idea">＋ 思想卡</button>`, false)
+    + `<label class="idea-search-label">搜索思想<input id="idea-search" type="search" placeholder="搜索名称、别名或笔记内容" value="${esc(ui.ideaQuery)}"></label><div id="idea-search-results" aria-live="polite"></div>`;
+  renderIdeaResults();
+}
+function renderIdeaResults() {
+  const results = searchIdeas(ui.ideaQuery);
+  $("#idea-search-results").innerHTML = `<p class="field-help result-count">${results.length} 张思想卡</p>` + (results.length ? `<div class="idea-library">${results.map((item) => {
+    const count = new Set(state.edges.filter((connection) => connection.fromType === "paper" && connection.toId === item.id).map((connection) => connection.fromId)).size;
+    return `<button type="button" class="idea-result" data-action="select-idea" data-id="${esc(item.id)}"><div class="idea-result-top"><strong data-user-content>${esc(item.title)}</strong><span class="status-pill ${item.status}">${labels.status[item.status]}</span></div>${item.aliases?.length ? `<small data-user-content>${esc(item.aliases.join(" · "))}</small>` : ""}<p ${item.summary ? "data-user-content" : ""}>${esc(truncate(item.summary || "等待写下一句话理解", 150))}</p><span>${count} 篇论文</span></button>`;
+  }).join("")}</div>` : `<div class="empty-main compact"><h2>没有找到思想卡</h2><p>换个关键词，或创建一张新卡。</p><button type="button" class="button primary" data-action="new-idea">新建思想卡</button></div>`);
+  localize($("#idea-search-results"));
+}
+function renderIdeaMatches() {
+  const queries = [$("#idea-title").value, ...$("#idea-aliases").value.split(/[,，;；\n]/)].map((value) => value.trim()).filter(Boolean);
+  const results = [...new Map(queries.flatMap((query) => searchIdeas(query, ui.pendingParentId)).map((item) => [item.id, item])).values()].slice(0, 5);
+  const target = $("#idea-matches");
+  target.hidden = !results.length;
+  target.innerHTML = results.length ? `<strong>已有相近思想</strong><p class="field-help">使用已有卡片，可以汇集多篇论文的关系。</p>${results.map((item) => `<div class="idea-match"><span data-user-content>${esc(item.title)}</span><button type="button" class="button quiet" data-action="reuse-idea" data-id="${esc(item.id)}">使用此卡</button></div>`).join("")}` : "";
+  localize(target);
+}
+async function reuseIdea(id) {
+  await act("idea.reuse", { id, lineId: $("#idea-line").value, ...ideaSourcePayload() });
+  closeDialog($("#idea-dialog"));
+  selectIdea(id);
+  toast("已使用已有思想卡。");
+}
+
 function renderPapers() {
-  $("#main-view").innerHTML = pageHeader("SOURCE LIBRARY / 论文库", "让论文回到思想上", "从 Zotero 导入论文，记录它提出、使用或改进了哪些思想。", `<button type="button" class="button secondary" data-action="new-paper">＋ 添加论文</button>`)
+  $("#main-view").innerHTML = pageHeader("SOURCE LIBRARY / 论文库", "让论文回到思想上", "从 Zotero 导入论文，记录它提出、使用或改进了哪些思想。", `<button type="button" class="button secondary" data-action="new-paper">＋ 添加论文</button>`, false)
     + (state.papers.length ? `<div class="paper-list">${state.papers.map((item) => {
       const count = new Set(state.edges.filter((connection) => connection.fromType === "paper" && connection.fromId === item.id).map((connection) => connection.toId)).size;
-      return `<button type="button" class="paper-list-item ${ui.selectedPaperId === item.id ? "selected" : ""}" data-action="select-paper" data-id="${esc(item.id)}"><span class="paper-icon">▤</span><span><strong>${esc(item.title)}</strong><small>${esc([item.authors, item.year].filter(Boolean).join(" · ") || "手动添加")}</small></span><em>${count} 个思想</em></button>`;
+      return `<button type="button" class="paper-list-item ${ui.selectedPaperId === item.id ? "selected" : ""}" data-action="select-paper" data-id="${esc(item.id)}"><span class="paper-icon">▤</span><span><strong data-user-content>${esc(item.title)}</strong><small ${item.authors || item.year ? "data-user-content" : ""}>${esc([item.authors, item.year].filter(Boolean).join(" · ") || "手动添加")}</small></span><em>${count} 个思想</em></button>`;
     }).join("")}</div>` : `<div class="empty-main"><div class="empty-orbit">▤</div><h2>先接入第一篇论文</h2><p>可以搜索本机 Zotero，也可以手动添加来源。</p><button type="button" class="button primary" data-action="new-paper">添加论文</button></div>`);
 }
 
@@ -203,30 +304,36 @@ function renderInspector() {
 }
 function renderIdeaInspector(item) {
   if (!item) return;
+  const draft = readDraft(`idea:${item.id}`);
+  const edit = { ...item, aliases: (item.aliases || []).join(", ") };
+  for (const key of ["title", "aliases", "kind", "status", "summary", "mechanism", "thoughts"]) {
+    if (typeof draft?.[key] === "string") edit[key] = draft[key];
+  }
   const papers = state.edges.filter((connection) => connection.fromType === "paper" && connection.toId === item.id);
   const related = state.edges.filter((connection) => connection.fromType === "idea" && (connection.fromId === item.id || connection.toId === item.id));
   const lineNames = state.lines.filter((entry) => entry.ideaIds.includes(item.id)).map((entry) => entry.title);
-  $("#inspector").innerHTML = `<div class="inspector-top"><span class="eyebrow">IDEA CARD</span><span class="status-pill ${item.status}">${labels.status[item.status]}</span></div><h2 class="inspector-title">${esc(item.title)}</h2><p class="inspector-sub">${labels.kind[item.kind]} · 出现在 ${lineNames.length} 条阅读线</p>
-    <form id="idea-edit-form" class="detail-form"><label>名称<input name="title" maxlength="120" value="${esc(item.title)}" required></label><div class="form-grid"><label>类型<select name="kind">${Object.entries(labels.kind).map(([key, value]) => `<option value="${key}" ${item.kind === key ? "selected" : ""}>${value}</option>`).join("")}</select></label><label>状态<select name="status">${Object.entries(labels.status).map(([key, value]) => `<option value="${key}" ${item.status === key ? "selected" : ""}>${value}</option>`).join("")}</select></label></div>
-    <label>一句话理解<textarea name="summary" rows="3" maxlength="4000" placeholder="用自己的话说清这张卡。">${esc(item.summary)}</textarea></label><label>核心机制<textarea name="mechanism" rows="4" maxlength="6000" placeholder="关键步骤、公式或假设。">${esc(item.mechanism)}</textarea></label><label>我的思考<textarea name="thoughts" rows="4" maxlength="6000" placeholder="质疑、联系、引申。">${esc(item.thoughts)}</textarea></label><button type="submit" class="button primary full">保存卡片</button></form>
+  $("#inspector").innerHTML = `<div class="inspector-top"><span class="eyebrow">IDEA CARD</span><span class="status-pill ${item.status}">${labels.status[item.status]}</span></div><h2 class="inspector-title" data-user-content>${esc(item.title)}</h2><p class="inspector-sub">${labels.kind[item.kind]} · 出现在 ${lineNames.length} 条阅读线</p>
+    <form id="idea-edit-form" class="detail-form" data-id="${esc(item.id)}"><label>名称<input name="title" maxlength="120" value="${esc(edit.title)}" required></label><label>别名<input name="aliases" maxlength="1500" value="${esc(edit.aliases)}" placeholder="缩写、全称或其他写法，用逗号分隔"></label><div class="form-grid"><label>类型<select name="kind">${Object.entries(labels.kind).map(([key, value]) => `<option value="${key}" ${edit.kind === key ? "selected" : ""}>${value}</option>`).join("")}</select></label><label>状态<select name="status">${Object.entries(labels.status).map(([key, value]) => `<option value="${key}" ${edit.status === key ? "selected" : ""}>${value}</option>`).join("")}</select></label></div>
+    <label>一句话理解<textarea name="summary" rows="3" maxlength="4000" placeholder="用自己的话说清这张卡。">${esc(edit.summary)}</textarea></label><label>核心机制<textarea name="mechanism" rows="4" maxlength="6000" placeholder="关键步骤、公式或假设。">${esc(edit.mechanism)}</textarea></label><label>我的思考<textarea name="thoughts" rows="4" maxlength="6000" placeholder="质疑、联系、引申。">${esc(edit.thoughts)}</textarea></label><p id="idea-draft-status" class="field-help" ${draft ? "" : "hidden"}>草稿已保留，点击保存卡片可写入笔记。</p><button type="submit" class="button primary full">保存卡片</button></form>
     <div class="inspector-section"><div class="inspector-section-head"><h3>论文来源 <span>${papers.length}</span></h3><button type="button" data-action="link-paper">＋</button></div>${papers.length ? papers.map((connection) => relationRow(connection, "paper", paper(connection.fromId))).join("") : `<p class="empty-small">关联论文后，这里会显示每篇论文如何使用这个思想。</p>`}</div>
-    <div class="inspector-section"><div class="inspector-section-head"><h3>思想关联 <span>${related.length}</span></h3><button type="button" data-action="link-idea">＋</button></div>${related.length ? related.map((connection) => relationRow(connection, "idea", idea(connection.fromId === item.id ? connection.toId : connection.fromId))).join("") : `<p class="empty-small">继续追问时，可以把新的思想连进来。</p>`}</div>
-    <div class="inspector-section last"><h3>所在阅读线</h3><p class="tiny-list">${esc(lineNames.join(" · ") || "尚未加入阅读线")}</p></div>`;
+    <div class="inspector-section"><div class="inspector-section-head"><h3>思想关联 <span>${related.length}</span></h3><div><button type="button" class="text-action" data-action="derive-idea">引申新卡</button><button type="button" data-action="link-idea" aria-label="关联已有思想">＋</button></div></div>${related.length ? related.map((connection) => relationRow(connection, "idea", idea(connection.fromId === item.id ? connection.toId : connection.fromId))).join("") : `<p class="empty-small">继续追问时，可以把新的思想连进来。</p>`}</div>
+    ${sessionHistory(item.id)}
+    <div class="inspector-section last"><h3>所在阅读线</h3><p class="tiny-list" ${lineNames.length ? "data-user-content" : ""}>${esc(lineNames.join(" · ") || "尚未加入阅读线")}</p></div>`;
 }
 function relationRow(connection, kind, node) {
   if (!node) return "";
   const label = labels[connection.fromType][connection.relation] || connection.relation;
-  return `<div class="relation-row"><button type="button" class="relation-main" data-action="select-${kind}" data-id="${esc(node.id)}"><span class="relation-type">${label}</span><strong>${esc(truncate(node.title, 46))}</strong>${connection.note ? `<small>${esc(truncate(connection.note, 90))}</small>` : ""}</button>${connection.sourceUrl ? `<a class="relation-source" href="${safeHref(connection.sourceUrl)}" aria-label="打开原文位置">↗</a>` : ""}<button type="button" class="relation-edit" data-action="edit-edge" data-id="${esc(connection.id)}" aria-label="编辑关系">···</button></div>`;
+  return `<div class="relation-row"><button type="button" class="relation-main" data-action="select-${kind}" data-id="${esc(node.id)}"><span class="relation-type">${label}</span><strong data-user-content>${esc(truncate(node.title, 46))}</strong>${connection.note ? `<small data-user-content>${esc(truncate(connection.note, 90))}</small>` : ""}</button>${connection.sourceUrl ? `<a class="relation-source" href="${safeHref(connection.sourceUrl)}" aria-label="打开原文位置">↗</a>` : ""}<button type="button" class="relation-edit" data-action="edit-edge" data-id="${esc(connection.id)}" aria-label="编辑关系">···</button></div>`;
 }
 function renderPaperInspector(item) {
   if (!item) return;
   const related = state.edges.filter((connection) => connection.fromType === "paper" && connection.fromId === item.id);
   const annotations = ui.annotationPaperId === item.id ? ui.annotations : null;
-  $("#inspector").innerHTML = `<div class="inspector-top"><span class="eyebrow">PAPER SOURCE</span><span class="paper-tag">论文</span></div><h2 class="inspector-title">${esc(item.title)}</h2><p class="inspector-sub">${esc([item.authors, item.year].filter(Boolean).join(" · ") || "手动添加")}</p>
-    <div class="paper-meta">${item.doi ? `<div><span>DOI</span><strong>${esc(item.doi)}</strong></div>` : ""}${item.zoteroKey ? `<div><span>ZOTERO KEY</span><strong>${esc(item.zoteroKey)}</strong></div>` : ""}</div>
+  $("#inspector").innerHTML = `<div class="inspector-top"><span class="eyebrow">PAPER SOURCE</span><span class="paper-tag">论文</span></div><h2 class="inspector-title" data-user-content>${esc(item.title)}</h2><p class="inspector-sub" ${item.authors || item.year ? "data-user-content" : ""}>${esc([item.authors, item.year].filter(Boolean).join(" · ") || "手动添加")}</p>
+    <div class="paper-meta">${item.doi ? `<div><span>DOI</span><strong data-user-content>${esc(item.doi)}</strong></div>` : ""}${item.zoteroKey ? `<div><span>ZOTERO KEY</span><strong data-user-content>${esc(item.zoteroKey)}</strong></div>` : ""}</div>
     ${item.zoteroUrl ? `<a class="button primary full" href="${safeHref(item.zoteroUrl)}">在 Zotero 打开 ↗</a>` : ""}
     <div class="inspector-section"><div class="inspector-section-head"><h3>蕴含的思想 <span>${related.length}</span></h3><div><button type="button" data-action="new-idea-from-paper" aria-label="从论文创建思想卡">新建</button><button type="button" data-action="link-paper-to-idea" aria-label="关联已有思想卡">＋</button></div></div>${related.length ? related.map((connection) => relationRow(connection, "idea", idea(connection.toId))).join("") : `<p class="empty-small">把这篇论文连到已有思想，或从批注建一张新卡。</p>`}</div>
-    ${item.zoteroKey ? `<div class="inspector-section last"><div class="inspector-section-head"><h3>Zotero 批注</h3><button type="button" data-action="load-annotations">读取</button></div>${annotations === null ? `<p class="empty-small">读取划线与批注，再从原文建卡。</p>` : annotations.length ? annotations.map((annotation, index) => `<div class="annotation"><span>第 ${esc(annotation.page || "?")} 页</span><p>${esc(truncate(annotation.text || annotation.comment, 200))}</p>${annotation.comment && annotation.text ? `<small>${esc(truncate(annotation.comment, 120))}</small>` : ""}<div class="annotation-actions"><button type="button" data-action="annotation-link" data-index="${index}">关联已有卡</button><button type="button" data-action="annotation-create" data-index="${index}">建新卡 ↗</button></div></div>`).join("") : `<p class="empty-small">没有找到文字批注。</p>`}</div>` : ""}`;
+    ${item.zoteroKey ? `<div class="inspector-section last"><div class="inspector-section-head"><h3>Zotero 批注</h3><button type="button" data-action="load-annotations">读取</button></div>${annotations === null ? `<p class="empty-small">读取划线与批注，再从原文建卡。</p>` : annotations.length ? annotations.map((annotation, index) => `<div class="annotation"><span>第 ${esc(annotation.page || "?")} 页</span><p data-user-content>${esc(truncate(annotation.text || annotation.comment, 200))}</p>${annotation.comment && annotation.text ? `<small data-user-content>${esc(truncate(annotation.comment, 120))}</small>` : ""}<div class="annotation-actions"><button type="button" data-action="annotation-link" data-index="${index}">关联已有卡</button><button type="button" data-action="annotation-create" data-index="${index}">建新卡 ↗</button></div></div>`).join("") : `<p class="empty-small">没有找到文字批注。</p>`}</div>` : ""}`;
 }
 
 function openLineDialog(edit = false) {
@@ -238,19 +345,24 @@ function openLineDialog(edit = false) {
   openDialog("#line-dialog");
   $("#line-title").focus();
 }
-function openIdeaDialog(source = null) {
+function openIdeaDialog(source = null, parentId = "") {
   ui.pendingSource = source;
+  ui.pendingParentId = parentId;
   $("#idea-title").value = "";
+  $("#idea-aliases").value = "";
   $("#idea-kind").value = "concept";
   $("#idea-summary").value = "";
   $("#idea-line").innerHTML = options(state.lines, ui.selectedLineId, "暂不加入阅读线");
   $("#idea-source-context").hidden = !source;
   $("#idea-source-relation-wrap").hidden = !source;
+  $("#idea-parent-context").hidden = !parentId;
+  if (parentId) $("#idea-parent-context").innerHTML = `<span>引申自</span> <strong data-user-content>${esc(idea(parentId)?.title)}</strong><p>创建后会自动连线，也可以选择下方已有的思想卡。</p>`;
   if (source) {
     const target = paper(source.paperId);
     $("#idea-source-context").textContent = `来源：${target?.title || "论文"}${source.page ? ` · 第 ${source.page} 页` : ""}${source.text ? ` · ${truncate(source.text, 110)}` : ""}`;
     $("#idea-source-relation").value = "uses";
   }
+  renderIdeaMatches();
   openDialog("#idea-dialog");
   $("#idea-title").focus();
 }
@@ -284,7 +396,7 @@ function relationTargets() {
 }
 function openRelation(mode, focusKind = "idea", focusId = "") {
   if (mode === "paper" && !state.papers.length && focusKind === "idea") { openPaperDialog(); toast("先添加一篇论文，再建立关联。"); return; }
-  if (mode === "idea" && state.ideas.length < 2) { openIdeaDialog(); toast("先创建另一张思想卡，再建立引申关系。"); return; }
+  if (mode === "idea" && state.ideas.length < 2) { openIdeaDialog(null, focusId || ui.selectedIdeaId); return; }
   if (focusKind === "paper" && !state.ideas.length) { openIdeaDialog({ paperId: focusId || ui.selectedPaperId }); return; }
   ui.editingEdgeId = "";
   ui.relationFocus = { kind: focusKind, id: focusId || (focusKind === "idea" ? ui.selectedIdeaId : ui.selectedPaperId) };
@@ -337,32 +449,55 @@ function checkReminder() {
     try { new Notification(tr("读线 · 阅读时间到了"), { body: tr(message) }); } catch { /* 站内提醒仍然可用 */ }
   }
 }
-function stopTimer() {
+function sessionSeconds(session = ui.session) {
+  if (!session) return 0;
+  return Math.min(86400, session.elapsed + (session.running ? Math.max(0, Math.floor((Date.now() - session.startedAt) / 1000)) : 0));
+}
+function checkpointSession() {
+  if (!ui.session) return;
+  writeDraft(`session:${ui.session.lineId}:${ui.session.ideaId}`, {
+    elapsed: sessionSeconds(), note: $("#session-note").value, nextQuestion: $("#session-next-question").value,
+  });
+}
+function stopTimer(discard = false) {
+  if (ui.session) {
+    if (discard) forgetDraft(`session:${ui.session.lineId}:${ui.session.ideaId}`);
+    else checkpointSession();
+  }
   if (ui.timer) clearInterval(ui.timer);
   ui.timer = null;
   ui.session = null;
 }
 function updateClock() {
   if (!ui.session) return;
-  const elapsed = ui.session.elapsed + (ui.session.running ? Math.floor((Date.now() - ui.session.startedAt) / 1000) : 0);
+  const elapsed = sessionSeconds();
   $("#session-time").textContent = `${String(Math.floor(elapsed / 60)).padStart(2, "0")}:${String(elapsed % 60).padStart(2, "0")}`;
   $("#pause-button").textContent = ui.session.running ? "暂停计时" : "继续计时";
   localize($("#pause-button"));
+  if (elapsed % 5 === 0) checkpointSession();
 }
 function openSession(ideaId) {
+  if (ui.session?.saving) return;
   const currentLine = line(ui.selectedLineId);
   const target = idea(ideaId || currentLine?.activeIdeaId || currentLine?.ideaIds[0]);
   if (!currentLine || !target || !currentLine.ideaIds.includes(target.id)) { toast("先为阅读线添加一张思想卡。", true); return; }
+  stopTimer();
+  const draft = readDraft(`session:${currentLine.id}:${target.id}`);
+  const elapsed = Number.isFinite(draft?.elapsed) ? Math.max(0, Math.min(86400, Math.floor(draft.elapsed))) : 0;
   ui.selectedIdeaId = target.id; ui.selectedPaperId = "";
-  ui.session = { lineId: currentLine.id, ideaId: target.id, elapsed: 0, startedAt: Date.now(), running: true };
+  ui.session = { lineId: currentLine.id, ideaId: target.id, elapsed, startedAt: Date.now(), running: true };
   $("#session-title").textContent = target.title;
   $("#session-line").textContent = `阅读线：${currentLine.title}`;
-  $("#session-note").value = "";
+  $("#session-note").value = typeof draft?.note === "string" ? draft.note.slice(0, 4000) : "";
+  $("#session-next-question").value = typeof draft?.nextQuestion === "string" ? draft.nextQuestion.slice(0, 1000) : "";
+  const recap = readingRecap(target.id);
+  $("#session-recap").hidden = !recap;
+  $("#session-recap").innerHTML = recap;
   const source = state.edges.find((item) => item.fromType === "paper" && item.toId === target.id);
   const url = source?.sourceUrl || paper(source?.fromId)?.zoteroUrl || "";
   const link = $("#session-zotero");
   link.hidden = !url;
-  link.href = safeHref(url);
+  link.href = safeUrl(url);
   updateClock();
   ui.timer = setInterval(updateClock, 1000);
   openDialog("#session-dialog");
@@ -376,7 +511,7 @@ async function searchZotero() {
   try {
     const result = await api(`/api/zotero/search?q=${encodeURIComponent(query)}`);
     ui.zoteroResults = result.items;
-    $("#zotero-results").innerHTML = result.items.length ? result.items.map((item, index) => `<div class="zotero-result"><div><strong>${esc(item.title)}</strong><small>${esc([item.authors, item.year].filter(Boolean).join(" · ") || "Zotero 条目")}</small></div><button type="button" class="button quiet" data-action="import-zotero" data-index="${index}">导入</button></div>`).join("") : `<p class="field-help">没有找到符合条件的条目。</p>`;
+    $("#zotero-results").innerHTML = result.items.length ? result.items.map((item, index) => `<div class="zotero-result"><div><strong data-user-content>${esc(item.title)}</strong><small ${item.authors || item.year ? "data-user-content" : ""}>${esc([item.authors, item.year].filter(Boolean).join(" · ") || "Zotero 条目")}</small></div><button type="button" class="button quiet" data-action="import-zotero" data-index="${index}">导入</button></div>`).join("") : `<p class="field-help">没有找到符合条件的条目。</p>`;
     localize($("#zotero-results"));
   } catch (error) { $("#zotero-results").innerHTML = `<p class="field-error">${esc(tr(error.message))}</p>`; }
 }
@@ -402,11 +537,13 @@ document.addEventListener("click", async (event) => {
   try {
     if (action.startsWith("view-")) { ui.view = action.slice(5); ui.selectedPaperId = ""; render(); }
     else if (action === "select-line") { ui.selectedLineId = id; ui.selectedIdeaId = line(id)?.activeIdeaId || line(id)?.ideaIds[0] || ""; ui.selectedPaperId = ""; render(); }
-    else if (action === "select-idea") { ui.selectedIdeaId = id; ui.selectedPaperId = ""; if (ui.view === "papers") ui.view = "graph"; render(); }
+    else if (action === "select-idea") selectIdea(id);
     else if (action === "select-paper") { ui.selectedPaperId = id; if (ui.view === "papers") ui.selectedIdeaId = ""; render(); }
     else if (action === "new-line") openLineDialog();
     else if (action === "edit-line") openLineDialog(true);
     else if (action === "new-idea") openIdeaDialog();
+    else if (action === "derive-idea") openIdeaDialog(null, ui.selectedIdeaId);
+    else if (action === "reuse-idea") await reuseIdea(id);
     else if (action === "new-idea-from-paper") openIdeaDialog({ paperId: ui.selectedPaperId });
     else if (action === "new-paper") openPaperDialog();
     else if (action === "link-paper") openRelation("paper", "idea");
@@ -443,9 +580,10 @@ document.addEventListener("click", async (event) => {
     }
     else if (action === "start-session") openSession(id);
     else if (action === "pause-session" && ui.session) {
-      if (ui.session.running) { ui.session.elapsed += Math.floor((Date.now() - ui.session.startedAt) / 1000); ui.session.running = false; }
+      if (ui.session.running) { ui.session.elapsed = sessionSeconds(); ui.session.running = false; }
       else { ui.session.startedAt = Date.now(); ui.session.running = true; }
       updateClock();
+      checkpointSession();
     }
     else if (action === "set-next") {
       const current = line(ui.selectedLineId);
@@ -487,11 +625,21 @@ document.addEventListener("keydown", (event) => {
   if ((event.key === "Enter" || event.key === " ") && event.target.matches(".graph-node")) {
     event.preventDefault(); event.target.click();
   }
-  if (event.key === "Escape" && $("#session-dialog").open) stopTimer();
 });
+document.addEventListener("input", (event) => {
+  if (event.target.form?.id === "idea-edit-form") captureIdeaDraft(event.target.form);
+  if (["session-note", "session-next-question"].includes(event.target.id)) checkpointSession();
+  if (event.target.id === "idea-search") { ui.ideaQuery = event.target.value; renderIdeaResults(); }
+  if (["idea-title", "idea-aliases"].includes(event.target.id)) renderIdeaMatches();
+});
+document.addEventListener("change", (event) => {
+  if (event.target.form?.id === "idea-edit-form") captureIdeaDraft(event.target.form);
+});
+window.addEventListener("pagehide", () => stopTimer());
 $("#zotero-query").addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); searchZotero(); } });
 $("#relation-mode").addEventListener("change", relationTargets);
-document.querySelectorAll("dialog").forEach((dialog) => dialog.addEventListener("close", () => { if (dialog.id === "session-dialog") stopTimer(); }));
+document.querySelectorAll("dialog").forEach((dialog) => dialog.addEventListener("close", () => { if (dialog.id === "session-dialog" && !dialog.open) stopTimer(); }));
+$("#session-dialog").addEventListener("cancel", (event) => { if (ui.session?.saving) event.preventDefault(); });
 
 $("#line-form").addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -507,15 +655,11 @@ $("#line-form").addEventListener("submit", async (event) => {
 $("#idea-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
-    const source = ui.pendingSource;
     const payload = {
       title: $("#idea-title").value, kind: $("#idea-kind").value,
       summary: $("#idea-summary").value, lineId: $("#idea-line").value,
+      aliases: $("#idea-aliases").value, ...ideaSourcePayload(),
     };
-    if (source) {
-      const sourceNote = [source.text ? `摘录：${source.text}` : "", source.comment ? `批注：${source.comment}` : ""].filter(Boolean).join("\n").slice(0, 3000);
-      Object.assign(payload, { paperId: source.paperId, relation: $("#idea-source-relation").value, sourceNote, sourceUrl: source.sourceUrl });
-    }
     await act("idea.create", payload);
     ui.view = "graph";
     closeDialog($("#idea-dialog"));
@@ -567,14 +711,25 @@ $("#relation-form").addEventListener("submit", async (event) => {
 });
 $("#session-form").addEventListener("submit", async (event) => {
   event.preventDefault();
+  const session = ui.session;
+  if (!session || session.saving) return;
+  session.saving = true;
+  $("#session-note").disabled = true;
+  $("#session-next-question").disabled = true;
+  $("#session-save").disabled = true;
   try {
-    const session = ui.session;
-    if (!session) return;
-    const elapsed = session.elapsed + (session.running ? Math.floor((Date.now() - session.startedAt) / 1000) : 0);
-    await act("session.create", { lineId: session.lineId, ideaId: session.ideaId, note: $("#session-note").value, durationSeconds: elapsed });
+    const elapsed = sessionSeconds(session);
+    await act("session.create", { lineId: session.lineId, ideaId: session.ideaId, note: $("#session-note").value, nextQuestion: $("#session-next-question").value, durationSeconds: elapsed });
+    stopTimer(true);
     closeDialog($("#session-dialog"));
     toast("本次阅读已记录。下次可以从这张卡继续。");
   } catch (error) { toast(error.message, true); }
+  finally {
+    session.saving = false;
+    $("#session-note").disabled = false;
+    $("#session-next-question").disabled = false;
+    $("#session-save").disabled = false;
+  }
 });
 $("#settings-form").addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -590,7 +745,7 @@ document.addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
     const form = new FormData(event.target);
-    await act("idea.update", { id: ui.selectedIdeaId, ...Object.fromEntries(form.entries()) });
+    await act("idea.update", { id: event.target.dataset.id, ...Object.fromEntries(form.entries()) });
     toast("卡片已保存。");
   } catch (error) { toast(error.message, true); }
 });

@@ -10,6 +10,7 @@ import re
 import secrets
 import tempfile
 import threading
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -87,6 +88,22 @@ def field(payload: dict[str, Any], name: str, limit: int = 5000, required: bool 
     if len(value) > limit:
         raise ValueError(f"{name} 过长。")
     return value
+
+
+def idea_aliases(payload: dict[str, Any]) -> list[str]:
+    text = field(payload, "aliases", 1500)
+    result = []
+    seen = set()
+    for alias in re.split(r"[,，;；\n]+", text):
+        alias = alias.strip()
+        key = unicodedata.normalize("NFKC", alias).casefold()
+        if not alias or key in seen:
+            continue
+        if len(alias) > 120 or len(result) >= 12:
+            raise ValueError("最多填写 12 个别名，每个不超过 120 字。")
+        seen.add(key)
+        result.append(alias)
+    return result
 
 
 def find(state: dict[str, Any], collection: str, item_id: str) -> dict[str, Any]:
@@ -169,16 +186,22 @@ def apply_action(state: dict[str, Any], action: str, payload: dict[str, Any]) ->
         kind = field(payload, "kind", 20) or "concept"
         if kind not in IDEA_KINDS:
             raise ValueError("思想卡类型无效。")
+        parent_id = field(payload, "fromIdeaId", 40)
+        if parent_id:
+            find(state, "ideas", parent_id)
         idea_id = fresh_id("i")
         title = field(payload, "title", 120, True)
         idea = {
             "id": idea_id, "title": title, "fileName": f"{slug(title)}-{idea_id}.md",
             "kind": kind, "summary": field(payload, "summary", 4000),
+            "aliases": idea_aliases(payload),
             "mechanism": field(payload, "mechanism", 6000),
             "thoughts": field(payload, "thoughts", 6000), "status": "inbox",
             "createdAt": utc_now(), "updatedAt": utc_now(),
         }
         state["ideas"].append(idea)
+        if parent_id:
+            add_edge(state, "idea", parent_id, idea_id, "extends")
         line_id = field(payload, "lineId", 40)
         if line_id:
             line = find(state, "lines", line_id)
@@ -196,6 +219,24 @@ def apply_action(state: dict[str, Any], action: str, payload: dict[str, Any]) ->
                 field(payload, "sourceUrl", 1500),
             )
         result["ideaId"] = idea_id
+    elif action == "idea.reuse":
+        idea_id = field(payload, "id", 40, True)
+        find(state, "ideas", idea_id)
+        for from_type, key, default_relation in (("paper", "paperId", "uses"), ("idea", "fromIdeaId", "extends")):
+            from_id = field(payload, key, 40)
+            if not from_id:
+                continue
+            relation = (field(payload, "relation", 20) or default_relation) if from_type == "paper" else default_relation
+            note = field(payload, "sourceNote", 3000) if from_type == "paper" else ""
+            source_url = field(payload, "sourceUrl", 1500) if from_type == "paper" else ""
+            exists = any(edge["fromType"] == from_type and edge["fromId"] == from_id and edge["toId"] == idea_id and edge["relation"] == relation for edge in state["edges"])
+            if not exists or note or source_url:
+                add_edge(state, from_type, from_id, idea_id, relation, note, source_url)
+        line_id = field(payload, "lineId", 40)
+        if line_id:
+            apply_action(state, "line.attach", {"lineId": line_id, "ideaId": idea_id})
+            result["lineId"] = line_id
+        result["ideaId"] = idea_id
     elif action == "idea.update":
         idea = find(state, "ideas", field(payload, "id", 40, True))
         status = field(payload, "status", 20)
@@ -206,6 +247,8 @@ def apply_action(state: dict[str, Any], action: str, payload: dict[str, Any]) ->
             idea[name] = field(payload, name, limit, name == "title")
         idea["kind"] = kind
         idea["status"] = status
+        if "aliases" in payload:
+            idea["aliases"] = idea_aliases(payload)
         idea["updatedAt"] = utc_now()
         result["ideaId"] = idea["id"]
     elif action == "paper.create":
@@ -264,6 +307,7 @@ def apply_action(state: dict[str, Any], action: str, payload: dict[str, Any]) ->
         state["sessions"].append({
             "id": fresh_id("s"), "lineId": line["id"], "ideaId": idea["id"],
             "note": field(payload, "note", 4000, True),
+            "nextQuestion": field(payload, "nextQuestion", 1000),
             "durationSeconds": duration, "createdAt": utc_now(),
         })
         line["activeIdeaId"] = idea["id"]
@@ -404,6 +448,8 @@ def render_note(state: dict[str, Any], kind: str, item: dict[str, Any]) -> str:
 
     lines = [f"# {item['title']}", ""]
     if kind == "idea":
+        if item.get("aliases"):
+            lines += [f"{tr('别名', 'Aliases')}: {', '.join(item['aliases'])}", ""]
         type_labels = {"concept": tr("基础概念", "Core concept"), "innovation": tr("创新思想", "New idea"), "question": tr("引申问题", "Follow-up question")}
         status_labels = {"inbox": tr("待学", "To learn"), "learning": tr("正在学", "Learning"), "understood": tr("已理解", "Understood")}
         lines += [f"{tr('类型', 'Type')}：{type_labels[item['kind']]} · {tr('状态', 'Status')}：{status_labels[item['status']]}", ""]
@@ -434,6 +480,8 @@ def render_note(state: dict[str, Any], kind: str, item: dict[str, Any]) -> str:
         lines += ["", f"## {tr('阅读记录', 'Reading sessions')}", ""]
         for session in sessions:
             lines.append(f"- {session['createdAt'][:10]} · {session['note']}")
+            if session.get("nextQuestion"):
+                lines.append(f"  - {tr('下次要弄清', 'Explore next')}: {session['nextQuestion']}")
         if not sessions:
             lines.append(tr("暂无。", "None yet."))
     elif kind == "paper":
