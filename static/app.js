@@ -153,7 +153,15 @@ function render() {
   renderMain();
   renderInspector();
   localize();
+  centerGraph();
 }
+function centerGraph() {
+  const scroller = $(".graph-scroll");
+  if (scroller && scroller.scrollWidth > scroller.clientWidth) {
+    scroller.scrollLeft = (scroller.scrollWidth - scroller.clientWidth) / 2;
+  }
+}
+window.addEventListener("resize", centerGraph);
 function renderNav() {
   document.querySelectorAll(".nav-button").forEach((button) => {
     button.classList.toggle("active", button.dataset.action === `view-${ui.view}`);
@@ -233,7 +241,7 @@ function graphMarkup(focus) {
     paths += `<path class="graph-link idea-link" d="M 650 ${centerY} C 705 ${centerY}, 705 ${y}, 760 ${y}"/><text class="graph-edge-label" x="705" y="${(y + centerY) / 2 - 9}" text-anchor="middle">${connection.fromId === focus.id ? "→" : "←"} ${labels.idea[connection.relation]}</text>`;
     nodes += graphNode("idea", node, 760, y - 31, 205, connection.relation);
   });
-  const center = `<g class="graph-focus" role="group" aria-label="当前思想 ${esc(focus.title)}"><rect x="410" y="${centerY - 48}" width="240" height="96" rx="16"/><text x="430" y="${centerY - 10}" class="focus-title" data-user-content>${esc(truncate(focus.title, 22))}</text><text x="430" y="${centerY + 19}" class="focus-sub">${labels.kind[focus.kind]} · ${labels.status[focus.status]}</text></g>`;
+  const center = `<g class="graph-focus" role="group" aria-label="当前思想 ${esc(focus.title)}"><rect x="410" y="${centerY - 48}" width="240" height="96" rx="22"/><text x="430" y="${centerY - 10}" class="focus-title" data-user-content>${esc(truncate(focus.title, 22))}</text><text x="430" y="${centerY + 19}" class="focus-sub">${labels.kind[focus.kind]} · ${labels.status[focus.status]}</text></g>`;
   const more = paperEdges.length > 7 || ideaEdges.length > 7;
   const paperCount = new Set(paperEdges.map((item) => item.fromId)).size;
   const parent = ideaEdges.find((connection) => connection.toId === focus.id && connection.relation === "extends");
@@ -244,7 +252,7 @@ function graphMarkup(focus) {
 }
 function graphNode(kind, item, x, y, width) {
   const secondary = kind === "paper" ? [item.authors, item.year].filter(Boolean).join(" · ") || "来源论文" : `${labels.kind[item.kind]} · ${labels.status[item.status]}`;
-  return `<g class="graph-node ${kind}-node" data-action="select-${kind}" data-id="${esc(item.id)}" role="button" tabindex="0" aria-label="查看${kind === "paper" ? "论文" : "思想"} ${esc(item.title)}"><rect x="${x}" y="${y}" width="${width}" height="62" rx="12"/><text x="${x + 16}" y="${y + 26}" class="node-title" data-user-content>${esc(truncate(item.title, kind === "paper" ? 25 : 20))}</text><text x="${x + 16}" y="${y + 47}" class="node-sub" ${kind === "paper" && (item.authors || item.year) ? "data-user-content" : ""}>${esc(truncate(secondary, 30))}</text></g>`;
+  return `<g class="graph-node ${kind}-node" data-action="select-${kind}" data-id="${esc(item.id)}" role="button" tabindex="0" aria-label="查看${kind === "paper" ? "论文" : "思想"} ${esc(item.title)}"><rect x="${x}" y="${y}" width="${width}" height="62" rx="17"/><text x="${x + 16}" y="${y + 26}" class="node-title" data-user-content>${esc(truncate(item.title, kind === "paper" ? 25 : 20))}</text><text x="${x + 16}" y="${y + 47}" class="node-sub" ${kind === "paper" && (item.authors || item.year) ? "data-user-content" : ""}>${esc(truncate(secondary, 30))}</text></g>`;
 }
 
 function renderOutline(current) {
@@ -605,7 +613,7 @@ document.addEventListener("click", async (event) => {
       $("#attach-idea").innerHTML = options(choices, "", "请选择");
       openDialog("#attach-dialog");
     }
-    else if (action === "expand-graph") { ui.graphExpanded = !ui.graphExpanded; renderMain(); localize($("#main-view")); }
+    else if (action === "expand-graph") { ui.graphExpanded = !ui.graphExpanded; renderMain(); localize($("#main-view")); centerGraph(); }
     else if (action === "open-settings") openSettings();
     else if (action === "request-notification") {
       if (!("Notification" in window)) { toast("当前浏览器不支持桌面通知；站内提醒仍可使用。", true); return; }
