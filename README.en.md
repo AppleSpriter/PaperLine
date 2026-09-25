@@ -31,14 +31,27 @@ You can switch the interface between Simplified Chinese and English in **Setting
 
 Card edits are kept as drafts when you switch cards or reload the page. **Continue later** keeps your reading time and notes; open the same card again to resume without counting the break. Drafts are stored in the current browser. Choose **Save card** or **Save reading session** to include them in app data, backups, and exports.
 
+Card type and status are button rows: one click saves them right away, with no need to choose **Save card**. Text fields still behave as drafts.
+
+## Deleting and shortcuts
+
+- Idea card: **Delete this idea card** at the bottom of the details panel. Its paper connections, idea connections, and reading sessions go with it.
+- Paper: **Delete this paper** at the bottom of the details panel. Only its connections are removed; the idea cards stay.
+- Reading path: **Delete reading path** inside the **Edit reading path** dialog. Idea cards, papers, and reading sessions are kept.
+- Deleting only touches app data. Notes already exported to Obsidian are left alone; remove them yourself when you want.
+- Shortcuts (no dialog open, focus outside a text field): `1`–`4` switch between idea graph, reading path, idea library, and papers; `n` new idea card; `p` add paper; `l` new reading path; `s` start reading the current card; `/` jump to the idea library search.
+
 Keep Zotero running and enable **Allow other applications on this computer to communicate with Zotero** under Zotero's advanced settings. PaperLine only reads Zotero's local API and does not modify your Zotero library.
 
 ## Data and Obsidian export
 
 - App data is stored in `data/state.json`. Git ignores the `data/` directory.
+- Before each write, the previous data is copied to `data/state.backup.json`. If the main file is damaged, PaperLine changes nothing and points you to that backup.
 - **Settings → Back up data** downloads a complete JSON backup.
 - Notes are exported to `PaperLine/` inside your chosen Obsidian vault. It contains folders for reading paths, idea cards, and papers. Folder names stay in Chinese so links remain stable when you switch languages.
-- On later exports, only content between `PAPERLINE:START/END` markers is updated. Your notes outside the markers stay intact. If a same-named file has no markers, export stops to avoid overwriting it.
+- On later exports, only content between `PAPERLINE:START/END` markers is updated. Your notes outside the markers stay intact. If a same-named file has no markers, export stops and names that file instead of overwriting it.
+- Notes whose content did not change are skipped instead of rewritten, so Obsidian sync does not re-upload the whole vault. The result reports how many notes were written and how many were skipped.
+- A note file name is derived from the title when the item is created and stays fixed when you rename it, so existing Obsidian links keep working. The title inside the note is updated.
 - A newly exported paper note includes sections for a one-sentence summary, problem, core mechanism, thoughts, techniques, relationship to other methods, limitations, and the paper/report. New section headings follow your selected language. Existing handwritten sections are preserved when you switch languages.
 
 PaperLine binds only to `127.0.0.1`. It needs no account or cloud service. The graph and reading timer run locally.
@@ -49,5 +62,5 @@ PaperLine binds only to `127.0.0.1`. It needs no account or cloud service. The g
 python3 -m unittest discover -s tests -v
 node --check static/app.js
 node --check static/i18n.js
-node --test tests/frontend.test.js
+node --test tests/*.test.js
 ```

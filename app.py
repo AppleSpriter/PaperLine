@@ -8,6 +8,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import tempfile
 import threading
 import unicodedata
@@ -23,6 +24,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parent
 DATA_FILE = ROOT / "data" / "state.json"
+BACKUP_FILE = ROOT / "data" / "state.backup.json"
 STATIC = {
     "/": (ROOT / "static" / "index.html", "text/html; charset=utf-8"),
     "/i18n.js": (ROOT / "static" / "i18n.js", "text/javascript; charset=utf-8"),
@@ -60,8 +62,11 @@ def default_state() -> dict[str, Any]:
 def load_state() -> dict[str, Any]:
     if not DATA_FILE.exists():
         return default_state()
-    with DATA_FILE.open("r", encoding="utf-8") as handle:
-        state = json.load(handle)
+    try:
+        with DATA_FILE.open("r", encoding="utf-8") as handle:
+            state = json.load(handle)
+    except json.JSONDecodeError as error:
+        raise ValueError(f"数据文件已损坏，未修改任何内容；上一份备份：{BACKUP_FILE}") from error
     if state.get("version") != 1:
         raise ValueError("数据版本不受支持。")
     return state
@@ -69,6 +74,9 @@ def load_state() -> dict[str, Any]:
 
 def save_state(state: dict[str, Any]) -> None:
     DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
+    if DATA_FILE.exists():
+        # 写入前留下上一份可用数据，文件损坏时还能找回来。
+        shutil.copy2(DATA_FILE, BACKUP_FILE)
     with tempfile.NamedTemporaryFile(
         "w", encoding="utf-8", dir=DATA_FILE.parent, delete=False, prefix=".state-"
     ) as handle:
@@ -251,6 +259,48 @@ def apply_action(state: dict[str, Any], action: str, payload: dict[str, Any]) ->
             idea["aliases"] = idea_aliases(payload)
         idea["updatedAt"] = utc_now()
         result["ideaId"] = idea["id"]
+    elif action == "idea.mark":
+        idea = find(state, "ideas", field(payload, "id", 40, True))
+        kind = field(payload, "kind", 20)
+        status = field(payload, "status", 20)
+        if not kind and not status:
+            raise ValueError("请选择要修改的类型或状态。")
+        if kind:
+            if kind not in IDEA_KINDS:
+                raise ValueError("思想卡类型无效。")
+            idea["kind"] = kind
+        if status:
+            if status not in IDEA_STATUSES:
+                raise ValueError("思想卡状态无效。")
+            idea["status"] = status
+        idea["updatedAt"] = utc_now()
+        result["ideaId"] = idea["id"]
+    elif action == "idea.delete":
+        idea_id = find(state, "ideas", field(payload, "id", 40, True))["id"]
+        for line in state["lines"]:
+            if idea_id not in line["ideaIds"]:
+                continue
+            line["ideaIds"] = [item for item in line["ideaIds"] if item != idea_id]
+            if line["activeIdeaId"] == idea_id:
+                line["activeIdeaId"] = line["ideaIds"][0] if line["ideaIds"] else ""
+            line["updatedAt"] = utc_now()
+        state["edges"] = [
+            edge for edge in state["edges"]
+            if edge["toId"] != idea_id and not (edge["fromType"] == "idea" and edge["fromId"] == idea_id)
+        ]
+        state["sessions"] = [session for session in state["sessions"] if session["ideaId"] != idea_id]
+        state["ideas"] = [item for item in state["ideas"] if item["id"] != idea_id]
+    elif action == "paper.delete":
+        paper_id = find(state, "papers", field(payload, "id", 40, True))["id"]
+        state["edges"] = [
+            edge for edge in state["edges"]
+            if not (edge["fromType"] == "paper" and edge["fromId"] == paper_id)
+        ]
+        state["papers"] = [item for item in state["papers"] if item["id"] != paper_id]
+    elif action == "line.delete":
+        line_id = find(state, "lines", field(payload, "id", 40, True))["id"]
+        # 思想卡、论文和阅读记录都保留，只移除这条阅读线本身。
+        state["lines"] = [item for item in state["lines"] if item["id"] != line_id]
     elif action == "paper.create":
         key = field(payload, "zoteroKey", 40)
         if key and not re.fullmatch(r"[A-Z0-9]{8}", key):
@@ -516,11 +566,12 @@ def managed_document(item_id: str, generated: str, extra: str) -> str:
     return f"<!-- PAPERLINE:START {item_id} -->\n{generated}<!-- PAPERLINE:END {item_id} -->\n\n{extra}"
 
 
-def merge_managed(existing: str, item_id: str, generated: str) -> str:
+def merge_managed(existing: str, item_id: str, generated: str, where: str = "") -> str:
     start = f"<!-- PAPERLINE:START {item_id} -->"
     end = f"<!-- PAPERLINE:END {item_id} -->"
     if existing.count(start) != 1 or existing.count(end) != 1:
-        raise ValueError("已存在同名笔记且没有应用标记；为保护手写内容，已跳过。")
+        location = f"：{where}" if where else "。"
+        raise ValueError(f"已存在同名笔记且没有 PaperLine 标记，为保护手写内容已取消本次导出{location}")
     before, rest = existing.split(start, 1)
     _, after = rest.split(end, 1)
     return before + start + "\n" + generated + end + after
@@ -535,6 +586,7 @@ def export_obsidian(state: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("Obsidian 库路径已失效，请重新设置。")
     root = vault / "PaperLine"
     plans = []
+    skipped = 0
     for kind, collection, folder in (
         ("line", "lines", "阅读线"),
         ("idea", "ideas", "思想卡"),
@@ -544,7 +596,12 @@ def export_obsidian(state: dict[str, Any]) -> dict[str, Any]:
             target = root / folder / note_name(item)
             generated = render_note(state, kind, item)
             if target.exists():
-                content = merge_managed(target.read_text(encoding="utf-8"), item["id"], generated)
+                existing = target.read_text(encoding="utf-8")
+                content = merge_managed(existing, item["id"], generated, str(target.relative_to(vault)))
+                if content == existing:
+                    # 内容没变就不重写，避免 Obsidian 同步整库刷新。
+                    skipped += 1
+                    continue
             else:
                 if kind == "paper":
                     if state.get("settings", {}).get("language") == "en":
@@ -563,7 +620,7 @@ def export_obsidian(state: dict[str, Any]) -> dict[str, Any]:
             handle.write(content)
             temp_name = handle.name
         os.replace(temp_name, target)
-    return {"count": len(plans), "folder": str(root)}
+    return {"count": len(plans), "skipped": skipped, "folder": str(root)}
 
 
 class Handler(BaseHTTPRequestHandler):

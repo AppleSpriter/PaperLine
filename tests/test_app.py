@@ -169,6 +169,131 @@ class ReadingGraphTests(unittest.TestCase):
             "zotero://open-pdf/library/items/EFGH5678?page=4&annotation=IJKL9012",
         )
 
+    def test_deleting_a_card_paper_or_path_cleans_up_related_data(self):
+        line_id, idea_id = self.make_line_and_idea()
+        second_id = app.apply_action(self.state, "idea.create", {"title": "第二张卡", "lineId": line_id})["ideaId"]
+        paper_id = app.apply_action(self.state, "paper.create", {"title": "论文 A"})["paperId"]
+        app.apply_action(self.state, "edge.create", {
+            "fromType": "paper", "fromId": paper_id, "toId": idea_id, "relation": "uses",
+        })
+        app.apply_action(self.state, "session.create", {
+            "lineId": line_id, "ideaId": idea_id, "durationSeconds": 60, "note": "读过一次。",
+        })
+
+        app.apply_action(self.state, "idea.delete", {"id": idea_id})
+        self.assertEqual([item["id"] for item in self.state["ideas"]], [second_id])
+        self.assertEqual(self.state["edges"], [])
+        self.assertEqual(self.state["sessions"], [])
+        self.assertEqual(self.state["lines"][0]["ideaIds"], [second_id])
+        self.assertEqual(self.state["lines"][0]["activeIdeaId"], second_id)
+        with self.assertRaises(ValueError):
+            app.apply_action(self.state, "idea.delete", {"id": idea_id})
+
+        app.apply_action(self.state, "paper.delete", {"id": paper_id})
+        self.assertEqual(self.state["papers"], [])
+
+        app.apply_action(self.state, "line.delete", {"id": line_id})
+        self.assertEqual(self.state["lines"], [])
+        self.assertEqual([item["id"] for item in self.state["ideas"]], [second_id])
+
+    def test_marking_a_card_changes_only_type_and_status(self):
+        _, idea_id = self.make_line_and_idea()
+        summary = app.find(self.state, "ideas", idea_id)["summary"]
+        app.apply_action(self.state, "idea.mark", {"id": idea_id, "status": "understood"})
+        app.apply_action(self.state, "idea.mark", {"id": idea_id, "kind": "innovation"})
+        idea = app.find(self.state, "ideas", idea_id)
+        self.assertEqual((idea["kind"], idea["status"]), ("innovation", "understood"))
+        self.assertEqual(idea["summary"], summary)
+        with self.assertRaisesRegex(ValueError, "请选择要修改的类型或状态"):
+            app.apply_action(self.state, "idea.mark", {"id": idea_id})
+        with self.assertRaisesRegex(ValueError, "状态无效"):
+            app.apply_action(self.state, "idea.mark", {"id": idea_id, "status": "done"})
+
+    def test_export_skips_unchanged_notes_and_names_a_conflicting_file(self):
+        self.make_line_and_idea()
+        with tempfile.TemporaryDirectory() as folder:
+            vault = Path(folder)
+            (vault / ".obsidian").mkdir()
+            app.apply_action(self.state, "settings.update", {"vaultPath": str(vault)})
+            first = app.export_obsidian(self.state)
+            self.assertEqual((first["count"], first["skipped"]), (2, 0))
+
+            idea_path = vault / "PaperLine" / "思想卡" / app.note_name(self.state["ideas"][0])
+            stamp = idea_path.stat().st_mtime_ns
+            again = app.export_obsidian(self.state)
+            self.assertEqual((again["count"], again["skipped"]), (0, 2))
+            self.assertEqual(idea_path.stat().st_mtime_ns, stamp)
+
+            paper_id = app.apply_action(self.state, "paper.create", {"title": "论文 A"})["paperId"]
+            paper_path = vault / "PaperLine" / "论文" / app.note_name(app.find(self.state, "papers", paper_id))
+            paper_path.parent.mkdir(parents=True, exist_ok=True)
+            paper_path.write_text("我自己写的论文笔记", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "保护手写内容已取消本次导出：PaperLine/论文/"):
+                app.export_obsidian(self.state)
+            self.assertEqual(paper_path.read_text(encoding="utf-8"), "我自己写的论文笔记")
+            self.assertEqual(idea_path.stat().st_mtime_ns, stamp)
+
+    def test_damaged_data_file_changes_nothing_and_points_at_the_backup(self):
+        with tempfile.TemporaryDirectory() as folder:
+            data = Path(folder) / "state.json"
+            backup = Path(folder) / "state.backup.json"
+            with patch.object(app, "DATA_FILE", data), patch.object(app, "BACKUP_FILE", backup):
+                app.save_state(app.default_state())
+                self.assertFalse(backup.exists())
+                state = app.load_state()
+                app.apply_action(state, "line.create", {"title": "一条阅读线"})
+                app.save_state(state)
+                self.assertEqual(json.loads(backup.read_text(encoding="utf-8"))["lines"], [])
+
+                data.write_text("{ 这不是 JSON", encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "数据文件已损坏"):
+                    app.load_state()
+                self.assertEqual(json.loads(backup.read_text(encoding="utf-8"))["lines"], [])
+
+    def test_zotero_search_and_annotations_survive_malformed_items(self):
+        def fake_get(path, params=None):
+            if path == "/items/top":
+                return [
+                    {"key": "AAAA1111", "data": {"itemType": "attachment", "title": "附件"}},
+                    {"key": "ABCD1234", "data": {
+                        "itemType": "journalArticle",
+                        "creators": [{"name": "某作者"}, {"firstName": "A", "lastName": "B"}],
+                        "date": "2024-03-01", "DOI": "10.1/x",
+                    }},
+                    {"key": "", "data": {}},
+                ]
+            if path.endswith("/ABCD1234/children"):
+                return [
+                    {"key": "bad-key", "data": {"itemType": "attachment"}},
+                    {"key": "EFGH5678", "data": {"itemType": "attachment"}},
+                ]
+            if path.endswith("/EFGH5678/children"):
+                return [
+                    {"key": "IJKL9012", "data": {"itemType": "annotation", "annotationText": "   ", "annotationComment": ""}},
+                    {"key": "MNOP3456", "data": {
+                        "itemType": "annotation", "annotationComment": "只有批注",
+                        "annotationPosition": "not json",
+                    }},
+                ]
+            raise AssertionError(path)
+
+        with patch.object(app, "zotero_get", side_effect=fake_get):
+            items = app.zotero_search("grpo")
+            annotations = app.zotero_annotations("ABCD1234")
+
+        self.assertEqual(len(items), 2)
+        self.assertEqual(items[0]["authors"], "某作者, A B")
+        self.assertEqual(items[0]["year"], "2024")
+        self.assertEqual(items[0]["title"], "未命名论文")
+        self.assertEqual(len(annotations), 1)
+        self.assertEqual(annotations[0]["comment"], "只有批注")
+        self.assertEqual(annotations[0]["page"], "")
+        self.assertEqual(
+            annotations[0]["sourceUrl"],
+            "zotero://open-pdf/library/items/EFGH5678?annotation=MNOP3456",
+        )
+
+
 
 class HttpTests(unittest.TestCase):
     def test_local_api_persists_and_rejects_foreign_origin(self):

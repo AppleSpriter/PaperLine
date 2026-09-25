@@ -52,7 +52,7 @@
       <input type="hidden" id="line-id">
       <label>这条线要回答什么问题？<input id="line-title" maxlength="120" placeholder="例如：如何稳定策略更新？" required></label>
       <label>研究目标或背景 <span class="optional">可选</span><textarea id="line-question" rows="3" maxlength="800" placeholder="写下你为什么要追这条线，以及希望得到什么答案。"></textarea></label>
-      <div class="modal-actions"><button type="button" class="button quiet" data-action="close-dialog">取消</button><button type="submit" class="button primary">保存阅读线</button></div>
+      <div class="modal-actions"><button type="button" class="button danger" id="delete-line-button" data-action="delete-line" hidden>删除阅读线</button><span class="modal-spacer"></span><button type="button" class="button quiet" data-action="close-dialog">取消</button><button type="submit" class="button primary">保存阅读线</button></div>
     </form>
   </dialog>
 
@@ -64,10 +64,8 @@
       <label>思想名称<input id="idea-title" maxlength="120" placeholder="例如：GRPO" required></label>
       <label>别名 <span class="optional">可选</span><input id="idea-aliases" maxlength="1500" placeholder="缩写、全称或其他写法，用逗号分隔"></label>
       <div id="idea-matches" class="idea-matches" aria-live="polite" hidden></div>
-      <div class="form-grid">
-        <label>卡片类型<select id="idea-kind"><option value="concept">基础概念</option><option value="innovation">创新思想</option><option value="question">引申问题</option></select></label>
-        <label>加入阅读线<select id="idea-line"></select></label>
-      </div>
+      <div class="choice-field" role="group" aria-labelledby="idea-kind-label"><span class="choice-label" id="idea-kind-label">卡片类型</span><div class="choice-row"><input type="radio" class="choice-input" id="idea-kind-concept" name="idea-kind" value="concept" checked><label class="choice-button" for="idea-kind-concept">基础概念</label><input type="radio" class="choice-input" id="idea-kind-innovation" name="idea-kind" value="innovation"><label class="choice-button" for="idea-kind-innovation">创新思想</label><input type="radio" class="choice-input" id="idea-kind-question" name="idea-kind" value="question"><label class="choice-button" for="idea-kind-question">引申问题</label></div></div>
+      <label>加入阅读线<select id="idea-line"></select></label>
       <label>一句话理解 <span class="optional">可选</span><textarea id="idea-summary" rows="3" maxlength="4000" placeholder="先写粗略理解，之后可以继续修正。"></textarea></label>
       <label id="idea-source-relation-wrap" hidden>这篇论文与思想的关系<select id="idea-source-relation"><option value="uses">使用</option><option value="proposes">提出</option><option value="improves">改进</option><option value="questions">质疑</option></select></label>
       <div class="modal-actions"><button type="button" class="button quiet" data-action="close-dialog">取消</button><button type="submit" class="button primary">创建卡片</button></div>

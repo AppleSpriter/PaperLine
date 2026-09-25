@@ -261,15 +261,37 @@
     "阅读时间无效。": "Invalid reading duration.",
     "未知操作。": "Unknown action.",
     "未命名论文": "Untitled paper",
-    "已存在同名笔记且没有应用标记；为保护手写内容，已跳过。": "A note with the same name has no PaperLine markers. Export stopped to protect your notes.",
+    "已存在同名笔记且没有 PaperLine 标记，为保护手写内容已取消本次导出。": "A note with the same name has no PaperLine markers. Export was cancelled to protect your notes.",
     "页面不存在。": "Page not found.",
     "请求格式无效。": "Invalid request format.",
     "请求内容过大或为空。": "The request is too large or empty.",
     "请求内容无效。": "Invalid request body.",
     "操作内容无效。": "Invalid action payload.",
+    "全部": "All",
+    "按状态筛选": "Filter by status",
+    "搜索论文": "Search papers",
+    "搜索标题、作者、年份或 DOI": "Search title, authors, year, or DOI",
+    "没有找到论文": "No papers found",
+    "换个关键词，或添加新的论文来源。": "Try another keyword or add a new paper.",
+    "删除这张思想卡": "Delete this idea card",
+    "删除这篇论文": "Delete this paper",
+    "删除阅读线": "Delete reading path",
+    "删除这张思想卡？它的关系和阅读记录会一并删除，已导出的 Obsidian 笔记需要手动清理。": "Delete this idea card? Its connections and reading sessions go with it, and exported Obsidian notes must be removed by hand.",
+    "删除这篇论文？它与思想卡的关系会一并删除，思想卡本身保留。": "Delete this paper? Its connections to idea cards go with it; the cards themselves stay.",
+    "删除这条阅读线？思想卡、论文和阅读记录都会保留。": "Delete this reading path? Idea cards, papers, and reading sessions are kept.",
+    "思想卡已删除。": "Idea card deleted.",
+    "论文已删除。": "Paper deleted.",
+    "阅读线已删除。": "Reading path deleted.",
+    "状态已更新。": "Status updated.",
+    "类型已更新。": "Card type updated.",
+    "请选择要修改的类型或状态。": "Choose a card type or status to change.",
+    "思想卡状态无效。": "Invalid idea card status.",
   };
 
   const patterns = [
+    [/^已导出 (\d+) 篇笔记到 Obsidian，(\d+) 篇无变化。$/, (_, count, skipped) => `Exported ${count} note${count === "1" ? "" : "s"} to Obsidian; ${skipped} unchanged.`],
+    [/^数据文件已损坏，未修改任何内容；上一份备份：(.+)$/, (_, path) => `The data file is damaged. Nothing was changed. Latest backup: ${path}`],
+    [/^已存在同名笔记且没有 PaperLine 标记，为保护手写内容已取消本次导出：(.+)$/, (_, path) => `A note with the same name has no PaperLine markers. Export was cancelled to protect your notes: ${path}`],
     [/^(基础概念|创新思想|引申问题) · (待学|正在学|已理解)$/, (_, kind, status) => `${en[kind]} · ${en[status]}`],
     [/^([→←]) (引申|依赖|对比|改进)$/, (_, arrow, relation) => `${arrow} ${en[relation]}`],
     [/^(\d+) 张卡(?: · 下一张：(.+))?$/, (_, count, next) => `${count} card${count === "1" ? "" : "s"}${next ? ` · Next: ${next}` : ""}`],
@@ -301,6 +323,7 @@
 
   const originalTexts = new WeakMap();
   const originalAttributes = new WeakMap();
+  let everTranslated = false;
   function translate(value) {
     const text = String(value ?? "");
     const match = text.match(/^(\s*)([\s\S]*?)(\s*)$/);
@@ -315,6 +338,13 @@
   }
   function apply(root, language) {
     const lang = language === "en" ? "en" : "zh";
+    if (lang === "en") everTranslated = true;
+    if (lang === "zh" && !everTranslated) {
+      // 界面本来就是中文：没有任何节点被翻译过，无需遍历。
+      document.documentElement.lang = "zh-CN";
+      document.title = "读线 · PaperLine";
+      return;
+    }
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
     const nodes = [];
     while (walker.nextNode()) nodes.push(walker.currentNode);

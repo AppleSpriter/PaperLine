@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
 APP = ROOT / "app.py"
 DEFAULT_PORT = 8765
+LOG_LIMIT = 512 * 1024
 
 
 def url(port: int) -> str:
@@ -46,6 +47,15 @@ def files(port: int) -> tuple[Path, Path]:
     return DATA_DIR / f"launcher-{port}.pid", DATA_DIR / f"launcher-{port}.log"
 
 
+def rotate_log(log_file: Path) -> None:
+    """日志超过上限就保留一份旧档，避免无限增长。"""
+    try:
+        if log_file.exists() and log_file.stat().st_size > LOG_LIMIT:
+            log_file.replace(log_file.with_name(log_file.name + ".1"))
+    except OSError:
+        pass
+
+
 def open_page(port: int, no_browser: bool) -> None:
     if not no_browser:
         webbrowser.open(url(port), new=2)
@@ -69,6 +79,7 @@ def start_background(port: int, no_browser: bool) -> int:
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     pid_file, log_file = files(port)
+    rotate_log(log_file)
     with log_file.open("a", encoding="utf-8") as log:
         log.write(f"\n--- 启动 PaperLine：{time.strftime('%Y-%m-%d %H:%M:%S')} ---\n")
         log.flush()

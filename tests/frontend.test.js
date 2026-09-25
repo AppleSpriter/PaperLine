@@ -52,7 +52,7 @@ function createApp(storage = new Map(), clock = { now: 0 }) {
   });
   vm.runInContext(appSource, context);
   const app = vm.runInContext(`({ ui, openSession, closeDialog, stopTimer, sessionSeconds, captureIdeaDraft, searchIdeas, selectIdea, latestSession, readingRecap,
-    renderIdeaInspector, renderInspector, readDraft, act, setState(value) { state = value; } })`, context);
+    renderIdeaInspector, renderInspector, renderIdeas, renderPaperResults, searchPapers, markIdea, readDraft, act, setState(value) { state = value; } })`, context);
   app.setState(fixture());
   app.ui.selectedLineId = "l1";
   return { app, node, context, storage, clock };
@@ -108,7 +108,7 @@ test("card drafts survive selection changes, rerenders, and a reload", () => {
   reloaded.app.ui.selectedIdeaId = "i1";
   reloaded.app.renderInspector();
   assert.match(reloaded.node("#inspector").innerHTML, /Unsaved &lt;insight&gt;/);
-  assert.match(reloaded.node("#inspector").innerHTML, /value="learning" selected/);
+  assert.match(reloaded.node("#inspector").innerHTML, /value="learning" checked/);
 });
 
 test("a pending session save cannot be submitted twice or close a different session", async () => {
@@ -208,4 +208,49 @@ test("an idea outside every reading path can still be opened from the library", 
   assert.equal(app.ui.selectedLineId, "");
   assert.equal(app.ui.selectedIdeaId, "i2");
   assert.match(node("#main-view").innerHTML, /这张思想卡还没有加入阅读线/);
+});
+
+test("one click on a status button saves the card and keeps unsaved text as a draft", async () => {
+  const { app, context } = createApp();
+  const values = { title: "i1", kind: "concept", status: "inbox", summary: "Unsaved text", mechanism: "", thoughts: "" };
+  app.captureIdeaDraft({ dataset: { id: "i1" }, values });
+  const sent = [];
+  context.fetch = async (_path, options) => {
+    sent.push(JSON.parse(options.body));
+    return { ok: true, json: async () => ({ state: fixture(), result: { ideaId: "i1" } }) };
+  };
+  await app.markIdea("i1", "status", "learning");
+  assert.deepEqual(sent, [{ action: "idea.mark", payload: { id: "i1", status: "learning" } }]);
+  const draft = app.readDraft("idea:i1");
+  assert.equal(draft.summary, "Unsaved text");
+  assert.equal(draft.status, "learning");
+});
+
+test("the paper library matches titles, authors, years, and DOIs", () => {
+  const { app } = createApp();
+  const data = fixture();
+  data.papers = [
+    { id: "p1", title: "GRPO for reasoning", authors: "Zhang", year: "2024", doi: "10.1/a" },
+    { id: "p2", title: "PPO baseline", authors: "Li", year: "2019", doi: "10.2/b" },
+  ];
+  app.setState(data);
+  assert.deepEqual(app.searchPapers("ｇｒｐｏ").map((item) => item.id), ["p1"]);
+  assert.deepEqual(app.searchPapers("2019").map((item) => item.id), ["p2"]);
+  assert.deepEqual(app.searchPapers("10.2/B").map((item) => item.id), ["p2"]);
+  assert.equal(app.searchPapers("not present").length, 0);
+});
+
+test("the idea library keeps only the cards in the selected status", () => {
+  const { app, node } = createApp();
+  const data = fixture();
+  data.ideas[0].status = "learning";
+  data.ideas[1].status = "understood";
+  app.setState(data);
+  app.ui.ideaStatus = "learning";
+  app.renderIdeas();
+  assert.match(node("#idea-search-results").innerHTML, /1 张思想卡/);
+  assert.match(node("#main-view").innerHTML, /data-status="learning"[^>]*aria-pressed="true"/);
+  app.ui.ideaStatus = "";
+  app.renderIdeas();
+  assert.match(node("#idea-search-results").innerHTML, /2 张思想卡/);
 });
