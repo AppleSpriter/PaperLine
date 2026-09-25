@@ -254,3 +254,14 @@ test("the idea library keeps only the cards in the selected status", () => {
   app.renderIdeas();
   assert.match(node("#idea-search-results").innerHTML, /2 张思想卡/);
 });
+
+test("the top bar offers help and the guide covers every section", () => {
+  const html = readFileSync(resolve(__dirname, "../static/index.html"), "utf8");
+  assert.match(html, /data-action="open-help"[^>]*>帮助</);
+  assert.match(html, /<dialog id="help-dialog"/);
+  for (const heading of ["三个概念", "五步上手", "每天怎么用", "配合 Zotero", "导出到 Obsidian", "数据与删除", "快捷键"]) {
+    assert.ok(html.includes(`<h3>${heading}</h3>`), `缺少章节：${heading}`);
+  }
+  assert.match(appSource, /action === "open-help"/);
+  assert.match(appSource, /event\.key === "\?"/);
+});

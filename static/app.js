@@ -146,10 +146,18 @@ function syncSelection() {
   if (ui.selectedPaperId && !paper(ui.selectedPaperId)) ui.selectedPaperId = "";
 }
 
+let animatedView = "";
+function markMainAnimation(animate) {
+  const main = $("#main-view");
+  if (main?.dataset) main.dataset.animate = animate ? "1" : "0";
+}
 function render() {
   syncSelection();
   renderNav();
   renderSidebar();
+  const viewKey = `${ui.view}:${ui.selectedLineId}`;
+  markMainAnimation(viewKey !== animatedView);
+  animatedView = viewKey;
   renderMain();
   renderInspector();
   localize();
@@ -599,7 +607,7 @@ document.addEventListener("click", async (event) => {
     else if (action === "select-line") { ui.selectedLineId = id; ui.selectedIdeaId = line(id)?.activeIdeaId || line(id)?.ideaIds[0] || ""; ui.selectedPaperId = ""; render(); }
     else if (action === "select-idea") selectIdea(id);
     else if (action === "select-paper") { ui.selectedPaperId = id; if (ui.view === "papers") ui.selectedIdeaId = ""; render(); }
-    else if (action === "filter-status") { ui.ideaStatus = button.dataset.status || ""; renderIdeas(); localize($("#main-view")); }
+    else if (action === "filter-status") { ui.ideaStatus = button.dataset.status || ""; markMainAnimation(false); renderIdeas(); localize($("#main-view")); }
     else if (action === "delete-idea") {
       if (!window.confirm(tr("删除这张思想卡？它的关系和阅读记录会一并删除，已导出的 Obsidian 笔记需要手动清理。"))) return;
       ui.selectedIdeaId = "";
@@ -686,8 +694,9 @@ document.addEventListener("click", async (event) => {
       $("#attach-idea").innerHTML = options(choices, "", "请选择");
       openDialog("#attach-dialog");
     }
-    else if (action === "expand-graph") { ui.graphExpanded = !ui.graphExpanded; renderMain(); localize($("#main-view")); centerGraph(); }
+    else if (action === "expand-graph") { ui.graphExpanded = !ui.graphExpanded; markMainAnimation(false); renderMain(); localize($("#main-view")); centerGraph(); }
     else if (action === "open-settings") openSettings();
+    else if (action === "open-help") openDialog("#help-dialog");
     else if (action === "request-notification") {
       if (!("Notification" in window)) { toast("当前浏览器不支持桌面通知；站内提醒仍可使用。", true); return; }
       const permission = await Notification.requestPermission();
@@ -719,6 +728,7 @@ document.addEventListener("keydown", (event) => {
   else if (event.key === "l") { event.preventDefault(); openLineDialog(); }
   else if (event.key === "s") { event.preventDefault(); openSession(ui.selectedIdeaId); }
   else if (event.key === "/") { event.preventDefault(); ui.view = "ideas"; render(); $("#idea-search")?.focus(); }
+  else if (event.key === "?" || event.key === "h") { event.preventDefault(); openDialog("#help-dialog"); }
 });
 document.addEventListener("input", (event) => {
   if (event.target.form?.id === "idea-edit-form" && !["kind", "status"].includes(event.target.name)) captureIdeaDraft(event.target.form);

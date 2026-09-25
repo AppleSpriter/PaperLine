@@ -18,6 +18,8 @@ python3 app.py
 
 The app opens at `http://127.0.0.1:8765`.
 
+**Help** in the top right opens the full in-app guide: the concepts, the five first steps, Zotero and Obsidian setup, and the shortcuts.
+
 ## Get started
 
 1. Create a reading path around a research question.
@@ -39,7 +41,7 @@ Card type and status are button rows: one click saves them right away, with no n
 - Paper: **Delete this paper** at the bottom of the details panel. Only its connections are removed; the idea cards stay.
 - Reading path: **Delete reading path** inside the **Edit reading path** dialog. Idea cards, papers, and reading sessions are kept.
 - Deleting only touches app data. Notes already exported to Obsidian are left alone; remove them yourself when you want.
-- Shortcuts (no dialog open, focus outside a text field): `1`–`4` switch between idea graph, reading path, idea library, and papers; `n` new idea card; `p` add paper; `l` new reading path; `s` start reading the current card; `/` jump to the idea library search.
+- Shortcuts (no dialog open, focus outside a text field): `1`–`4` switch between idea graph, reading path, idea library, and papers; `n` new idea card; `p` add paper; `l` new reading path; `s` start reading the current card; `/` jump to the idea library search; `?` open the in-app guide.
 
 Keep Zotero running and enable **Allow other applications on this computer to communicate with Zotero** under Zotero's advanced settings. PaperLine only reads Zotero's local API and does not modify your Zotero library.
 
