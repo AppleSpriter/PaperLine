@@ -23,7 +23,7 @@ The app opens at `http://127.0.0.1:8765`.
 ## Get started
 
 1. Create a reading path around a research question.
-2. Search the **Idea library** before creating a card. The creation form also suggests similar cards. Cards can have aliases and belong to several paths.
+2. **Search** covers reading paths, idea cards, and papers in one box. Results carry a coloured left bar and tag for their type (green for idea cards, blue for reading paths, purple for papers) and open the matching view on click; a status filter narrows results to idea cards. The creation form also suggests similar cards. Cards can have aliases and belong to several paths.
 3. Search your local Zotero library under **Papers** and import a paper, or add one manually. You can load text annotations and create cards from them.
 4. Connect several papers to the same card. Record how each paper uses the idea and link to the relevant passage. Use **New branch** when a new question comes up; the card is connected to its source idea automatically.
 5. Start a reading session. Before finishing, write two sentences in your own words and leave a question for next time. The previous note appears when you reopen the card.
@@ -41,7 +41,7 @@ Card type and status are button rows: one click saves them right away, with no n
 - Paper: **Delete this paper** at the bottom of the details panel. Only its connections are removed; the idea cards stay.
 - Reading path: **Delete reading path** inside the **Edit reading path** dialog. Idea cards, papers, and reading sessions are kept.
 - Deleting only touches app data. Notes already exported to Obsidian are left alone; remove them yourself when you want.
-- Shortcuts (no dialog open, focus outside a text field): `1`–`4` switch between idea graph, reading path, idea library, and papers; `n` new idea card; `p` add paper; `l` new reading path; `s` start reading the current card; `/` jump to the idea library search; `?` open the in-app guide.
+- Shortcuts (no dialog open, focus outside a text field): `1`–`4` switch between idea graph, reading path, search, and papers; `n` new idea card; `p` add paper; `l` new reading path; `s` start reading the current card; `/` jump to search; `?` open the in-app guide.
 
 Keep Zotero running and enable **Allow other applications on this computer to communicate with Zotero** under Zotero's advanced settings. PaperLine only reads Zotero's local API and does not modify your Zotero library.
 

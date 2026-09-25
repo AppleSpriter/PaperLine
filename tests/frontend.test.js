@@ -52,7 +52,7 @@ function createApp(storage = new Map(), clock = { now: 0 }) {
   });
   vm.runInContext(appSource, context);
   const app = vm.runInContext(`({ ui, openSession, closeDialog, stopTimer, sessionSeconds, captureIdeaDraft, searchIdeas, selectIdea, latestSession, readingRecap,
-    renderIdeaInspector, renderInspector, renderIdeas, renderPaperResults, searchPapers, markIdea, readDraft, act, setState(value) { state = value; } })`, context);
+    renderIdeaInspector, renderInspector, renderIdeas, renderPaperResults, searchPapers, searchLines, searchEverything, markIdea, readDraft, act, setState(value) { state = value; } })`, context);
   app.setState(fixture());
   app.ui.selectedLineId = "l1";
   return { app, node, context, storage, clock };
@@ -240,7 +240,7 @@ test("the paper library matches titles, authors, years, and DOIs", () => {
   assert.equal(app.searchPapers("not present").length, 0);
 });
 
-test("the idea library keeps only the cards in the selected status", () => {
+test("a status filter narrows the search to idea cards", () => {
   const { app, node } = createApp();
   const data = fixture();
   data.ideas[0].status = "learning";
@@ -248,11 +248,36 @@ test("the idea library keeps only the cards in the selected status", () => {
   app.setState(data);
   app.ui.ideaStatus = "learning";
   app.renderIdeas();
-  assert.match(node("#idea-search-results").innerHTML, /1 张思想卡/);
+  assert.match(node("#idea-search-results").innerHTML, /1 条结果/);
   assert.match(node("#main-view").innerHTML, /data-status="learning"[^>]*aria-pressed="true"/);
+  assert.doesNotMatch(node("#idea-search-results").innerHTML, /type-tag (line|paper)/);
   app.ui.ideaStatus = "";
   app.renderIdeas();
-  assert.match(node("#idea-search-results").innerHTML, /2 张思想卡/);
+  assert.match(node("#idea-search-results").innerHTML, /4 条结果/);
+});
+
+test("one search covers reading paths, idea cards, and papers, each tagged by type", () => {
+  const { app, node } = createApp();
+  const data = fixture();
+  data.lines[0].title = "如何稳定策略更新";
+  data.lines[0].question = "policy 更新为什么会崩";
+  data.ideas[0].title = "策略梯度";
+  data.ideas[1].title = "无关卡片";
+  data.papers[0].title = "Stable policy updates";
+  app.setState(data);
+
+  // Array.from 把跨 realm 的数组搬回当前 realm，否则 deepEqual 会比较原型。
+  assert.deepEqual(Array.from(app.searchEverything("策略"), (hit) => hit.kind), ["line", "idea"]);
+  assert.deepEqual(Array.from(app.searchEverything("policy"), (hit) => hit.kind), ["line", "paper"]);
+  assert.deepEqual(app.searchLines("崩").map((item) => item.id), ["l1"]);
+
+  app.ui.ideaQuery = "策略";
+  app.renderIdeas();
+  const html = node("#idea-search-results").innerHTML;
+  assert.match(html, /class="search-result line"[^>]*data-kind="line"/);
+  assert.match(html, /class="search-result idea"[^>]*data-kind="idea"/);
+  assert.match(html, /<span class="type-tag line">阅读线<\/span>/);
+  assert.match(html, /<span class="type-tag idea">思想卡<\/span>/);
 });
 
 test("the top bar offers help and the guide covers every section", () => {

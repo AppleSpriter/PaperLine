@@ -304,6 +304,16 @@
     "开始阅读当前卡": "Start reading this card",
     "打开使用说明": "Open this guide",
     "开始使用": "Start using it",
+    "SEARCH / 搜索": "SEARCH",
+    "搜索全部内容": "Search everything",
+    "搜索标题、别名、研究问题、作者或笔记内容": "Search titles, aliases, research questions, authors, or notes",
+    "一个框同时搜阅读线、思想卡和论文，左侧色条和标签区分类型。": "One box searches reading paths, idea cards, and papers. The left bar and the tag show the type.",
+    "搜索页一个框同时搜阅读线、思想卡和论文，左侧色条和标签区分类型。": "On the search page one box covers reading paths, idea cards, and papers; the left bar and the tag show the type.",
+    "思想卡": "Idea card",
+    "没有找到相关内容": "Nothing matched",
+    "换个关键词，或者新建一张思想卡。": "Try another keyword, or create an idea card.",
+    "还没写下这条线要回答的问题": "No research question written yet",
+    "打开搜索": "Open search",
     "全部": "All",
     "按状态筛选": "Filter by status",
     "搜索论文": "Search papers",
@@ -326,6 +336,7 @@
   };
 
   const patterns = [
+    [/^(\d+) 条结果$/, (_, count) => `${count} result${count === "1" ? "" : "s"}`],
     [/^已导出 (\d+) 篇笔记到 Obsidian，(\d+) 篇无变化。$/, (_, count, skipped) => `Exported ${count} note${count === "1" ? "" : "s"} to Obsidian; ${skipped} unchanged.`],
     [/^数据文件已损坏，未修改任何内容；上一份备份：(.+)$/, (_, path) => `The data file is damaged. Nothing was changed. Latest backup: ${path}`],
     [/^已存在同名笔记且没有 PaperLine 标记，为保护手写内容已取消本次导出：(.+)$/, (_, path) => `A note with the same name has no PaperLine markers. Export was cancelled to protect your notes: ${path}`],

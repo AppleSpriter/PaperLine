@@ -281,18 +281,45 @@ function statusFilterButtons() {
   const options = [["", "全部"], ["inbox", "待学"], ["learning", "正在学"], ["understood", "已理解"]];
   return options.map(([value, label]) => `<button type="button" class="filter-button ${ui.ideaStatus === value ? "active" : ""}" data-action="filter-status" data-status="${value}" aria-pressed="${ui.ideaStatus === value ? "true" : "false"}">${label}</button>`).join("");
 }
-function renderIdeas() {
-  $("#main-view").innerHTML = pageHeader("IDEA LIBRARY", "思想库", "搜索已有思想，把不同论文连到同一张卡。", `<button type="button" class="button secondary" data-action="new-idea">＋ 思想卡</button>`, false)
-    + `<div class="filter-bar" role="group" aria-label="按状态筛选">${statusFilterButtons()}</div>`
-    + `<label class="idea-search-label">搜索思想<input id="idea-search" type="search" placeholder="搜索名称、别名或笔记内容" value="${esc(ui.ideaQuery)}"></label><div id="idea-search-results" aria-live="polite"></div>`;
-  renderIdeaResults();
+function searchLines(query) {
+  const terms = normalized(query).split(/\s+/).filter(Boolean);
+  return state.lines.filter((item) => terms.every((term) => normalized([item.title, item.question].join(" ")).includes(term)));
 }
-function renderIdeaResults() {
-  const results = searchIdeas(ui.ideaQuery).filter((item) => !ui.ideaStatus || item.status === ui.ideaStatus);
-  $("#idea-search-results").innerHTML = `<p class="field-help result-count">${results.length} 张思想卡</p>` + (results.length ? `<div class="idea-library">${results.map((item) => {
-    const count = new Set(state.edges.filter((connection) => connection.fromType === "paper" && connection.toId === item.id).map((connection) => connection.fromId)).size;
-    return `<button type="button" class="idea-result" data-action="select-idea" data-id="${esc(item.id)}"><div class="idea-result-top"><strong data-user-content>${esc(item.title)}</strong><span class="status-pill ${item.status}">${labels.status[item.status]}</span></div>${item.aliases?.length ? `<small data-user-content>${esc(item.aliases.join(" · "))}</small>` : ""}<p ${item.summary ? "data-user-content" : ""}>${esc(truncate(item.summary || "等待写下一句话理解", 150))}</p><span>${count} 篇论文</span></button>`;
-  }).join("")}</div>` : `<div class="empty-main compact"><h2>没有找到思想卡</h2><p>换个关键词，或创建一张新卡。</p><button type="button" class="button primary" data-action="new-idea">新建思想卡</button></div>`);
+function searchEverything(query) {
+  // 选了状态就只看思想卡：阅读线和论文没有状态可比。
+  if (ui.ideaStatus) return searchIdeas(query).filter((item) => item.status === ui.ideaStatus).map((item) => ({ kind: "idea", item }));
+  return [
+    ...searchLines(query).map((item) => ({ kind: "line", item })),
+    ...searchIdeas(query).map((item) => ({ kind: "idea", item })),
+    ...searchPapers(query).map((item) => ({ kind: "paper", item })),
+  ];
+}
+function paperCountFor(ideaId) {
+  return new Set(state.edges.filter((connection) => connection.fromType === "paper" && connection.toId === ideaId).map((connection) => connection.fromId)).size;
+}
+function searchResult({ kind, item }) {
+  const open = `data-action="search-open" data-kind="${kind}" data-id="${esc(item.id)}"`;
+  if (kind === "line") {
+    const next = idea(item.activeIdeaId) || idea(item.ideaIds[0]);
+    return `<button type="button" class="search-result line" ${open}><div class="search-result-top"><strong data-user-content>${esc(item.title)}</strong><span class="type-tag line">阅读线</span></div><p ${item.question ? "data-user-content" : ""}>${esc(truncate(item.question || "还没写下这条线要回答的问题", 150))}</p><span>${item.ideaIds.length} 张卡${next ? ` · 下一张：${esc(truncate(next.title, 13))}` : ""}</span></button>`;
+  }
+  if (kind === "paper") {
+    const ideaCount = new Set(state.edges.filter((connection) => connection.fromType === "paper" && connection.fromId === item.id).map((connection) => connection.toId)).size;
+    return `<button type="button" class="search-result paper" ${open}><div class="search-result-top"><strong data-user-content>${esc(item.title)}</strong><span class="type-tag paper">论文</span></div><small ${item.authors || item.year ? "data-user-content" : ""}>${esc([item.authors, item.year].filter(Boolean).join(" · ") || "手动添加")}</small><span>${ideaCount} 个思想</span></button>`;
+  }
+  return `<button type="button" class="search-result idea" ${open}><div class="search-result-top"><strong data-user-content>${esc(item.title)}</strong><span class="tag-row"><span class="type-tag idea">思想卡</span><span class="status-pill ${item.status}">${labels.status[item.status]}</span></span></div>${item.aliases?.length ? `<small data-user-content>${esc(item.aliases.join(" · "))}</small>` : ""}<p ${item.summary ? "data-user-content" : ""}>${esc(truncate(item.summary || "等待写下一句话理解", 150))}</p><span>${paperCountFor(item.id)} 篇论文</span></button>`;
+}
+function renderIdeas() {
+  $("#main-view").innerHTML = pageHeader("SEARCH / 搜索", "搜索", "一个框同时搜阅读线、思想卡和论文，左侧色条和标签区分类型。", `<button type="button" class="button secondary" data-action="new-idea">＋ 思想卡</button>`, false)
+    + `<div class="filter-bar" role="group" aria-label="按状态筛选">${statusFilterButtons()}</div>`
+    + `<label class="idea-search-label">搜索全部内容<input id="idea-search" type="search" placeholder="搜索标题、别名、研究问题、作者或笔记内容" value="${esc(ui.ideaQuery)}"></label><div id="idea-search-results" aria-live="polite"></div>`;
+  renderSearchResults();
+}
+function renderSearchResults() {
+  const results = searchEverything(ui.ideaQuery);
+  $("#idea-search-results").innerHTML = `<p class="field-help result-count">${results.length} 条结果</p>` + (results.length
+    ? `<div class="search-list">${results.map(searchResult).join("")}</div>`
+    : `<div class="empty-main compact"><h2>没有找到相关内容</h2><p>换个关键词，或者新建一张思想卡。</p><button type="button" class="button primary" data-action="new-idea">新建思想卡</button></div>`);
   localize($("#idea-search-results"));
 }
 let ideaMatchTimer = null;
@@ -607,6 +634,22 @@ document.addEventListener("click", async (event) => {
     else if (action === "select-line") { ui.selectedLineId = id; ui.selectedIdeaId = line(id)?.activeIdeaId || line(id)?.ideaIds[0] || ""; ui.selectedPaperId = ""; render(); }
     else if (action === "select-idea") selectIdea(id);
     else if (action === "select-paper") { ui.selectedPaperId = id; if (ui.view === "papers") ui.selectedIdeaId = ""; render(); }
+    else if (action === "search-open") {
+      const kind = button.dataset.kind;
+      if (kind === "idea") selectIdea(id);
+      else if (kind === "line") {
+        ui.selectedLineId = id;
+        ui.selectedIdeaId = line(id)?.activeIdeaId || line(id)?.ideaIds[0] || "";
+        ui.selectedPaperId = "";
+        ui.view = "graph";
+        render();
+      } else {
+        ui.selectedPaperId = id;
+        ui.selectedIdeaId = "";
+        ui.view = "papers";
+        render();
+      }
+    }
     else if (action === "filter-status") { ui.ideaStatus = button.dataset.status || ""; markMainAnimation(false); renderIdeas(); localize($("#main-view")); }
     else if (action === "delete-idea") {
       if (!window.confirm(tr("删除这张思想卡？它的关系和阅读记录会一并删除，已导出的 Obsidian 笔记需要手动清理。"))) return;
@@ -733,7 +776,7 @@ document.addEventListener("keydown", (event) => {
 document.addEventListener("input", (event) => {
   if (event.target.form?.id === "idea-edit-form" && !["kind", "status"].includes(event.target.name)) captureIdeaDraft(event.target.form);
   if (["session-note", "session-next-question"].includes(event.target.id)) checkpointSession();
-  if (event.target.id === "idea-search") { ui.ideaQuery = event.target.value; renderIdeaResults(); }
+  if (event.target.id === "idea-search") { ui.ideaQuery = event.target.value; renderSearchResults(); }
   if (event.target.id === "paper-search") { ui.paperQuery = event.target.value; renderPaperResults(); }
   if (["idea-title", "idea-aliases"].includes(event.target.id)) scheduleIdeaMatches();
 });
