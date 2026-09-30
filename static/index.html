@@ -196,6 +196,7 @@
           <li>删除思想卡会连带它的关系和阅读记录；删除论文只删关系；删除阅读线会保留卡片。</li>
           <li>已经导出到 Obsidian 的笔记不会被自动删除，需要时自己清理。</li>
           <li>在设置里填好 WebDAV 后，改动会自动上传到云端，并每天保留一份历史版本；右上角会显示同步状态。</li>
+          <li>上传前会比较本机和云端的保存时间：云端更新时自动上传会暂停，右上角显示“云端更新”，可以在设置里从云端恢复，或确认后用本机覆盖。</li>
         </ul>
       </section>
 
@@ -230,7 +231,8 @@
         <div class="form-grid"><label>用户名<input id="webdav-username" maxlength="200" autocomplete="off" spellcheck="false"></label><label>密码<input id="webdav-password" type="password" maxlength="500" autocomplete="new-password" placeholder="留空则沿用已保存的密码"></label></div>
         <label>云端文件夹<input id="webdav-folder" maxlength="200" placeholder="PaperLine" spellcheck="false"></label>
         <p id="webdav-status" class="field-help" data-user-content aria-live="polite"></p>
-        <div class="settings-actions"><button type="button" class="button secondary" data-action="webdav-test">测试连接</button><button type="button" class="button secondary" data-action="webdav-sync">立即同步</button></div>
+        <p id="webdav-compare" class="field-help cloud-compare" aria-live="polite" hidden></p>
+        <div class="settings-actions"><button type="button" class="button secondary" data-action="webdav-test">测试连接</button><button type="button" class="button secondary" data-action="webdav-sync">立即同步</button><button type="button" class="button secondary" data-action="webdav-restore">从云端恢复</button></div>
       </section>
       <input type="file" id="restore-file" accept="application/json,.json" hidden>
       <div class="modal-actions"><a class="button quiet" href="/api/backup" download="paperline-backup.json">备份数据</a><button type="button" class="button quiet" data-action="restore-backup">从备份恢复</button><span class="modal-spacer"></span><button type="button" class="button quiet" data-action="close-dialog">取消</button><button type="submit" class="button primary">保存设置</button></div>

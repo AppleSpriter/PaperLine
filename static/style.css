@@ -298,6 +298,8 @@ input:focus, textarea:focus, select:focus { border-color: #78ab80; box-shadow: 0
 .sync-badge.ok { background: #e3f1e1; color: #2f6b47; }
 .sync-badge.pending { background: #faf0dc; color: #84653c; }
 .sync-badge.error { background: #faece8; color: #a0443b; border-color: #efcfc8; }
+.sync-badge.conflict { background: #e2edf8; color: #2f5d86; border-color: #c7dbef; }
+.cloud-compare { color: var(--ink); }
 .help-section { margin: 0 0 18px; }
 .help-section h3 { margin: 0 0 8px; font-size: 13px; color: var(--green-dark); }
 .help-section ul, .help-section ol { margin: 0; padding-left: 19px; }

@@ -118,7 +118,12 @@ function toast(message, bad = false) {
 async function api(path, options = {}) {
   const response = await fetch(path, options);
   const data = await response.json();
-  if (!response.ok) throw new Error(data.error || "请求失败，请重试。");
+  if (!response.ok) {
+    const error = new Error(data.error || "请求失败，请重试。");
+    error.status = response.status;
+    error.conflict = Boolean(data.conflict);
+    throw error;
+  }
   return data;
 }
 function postJson(path, body) {
@@ -134,7 +139,8 @@ function webdavPayload() {
 function webdavStatusText(info) {
   if (!info?.url) return tr("尚未设置 WebDAV。");
   const parts = [];
-  if (info.status.lastError) parts.push(`${tr("上次同步失败：")}${tr(info.status.lastError)}`);
+  if (info.status.conflict) parts.push(tr(info.status.lastError));
+  else if (info.status.lastError) parts.push(`${tr("上次同步失败：")}${tr(info.status.lastError)}`);
   else if (info.status.lastSuccessAt) parts.push(`${tr("上次同步：")}${new Date(info.status.lastSuccessAt).toLocaleString(language() === "en" ? "en-US" : "zh-CN")}`);
   else parts.push(tr("还没有同步过。"));
   const waitSeconds = info.status.nextUploadIn;
@@ -148,7 +154,7 @@ function renderSyncBadge(info) {
   if (!badge) return;
   if (!info?.enabled || !info.url) { badge.hidden = true; return; }
   const status = info.status;
-  const [kind, text] = status.lastError ? ["error", "同步失败"] : status.pending || status.running ? ["pending", "待同步"] : ["ok", "已同步"];
+  const [kind, text] = status.conflict ? ["conflict", "云端更新"] : status.lastError ? ["error", "同步失败"] : status.pending || status.running ? ["pending", "待同步"] : ["ok", "已同步"];
   badge.hidden = false;
   badge.className = `sync-badge ${kind}`;
   badge.textContent = tr(text);
@@ -158,6 +164,24 @@ function showWebdav(info) {
   renderSyncBadge(info);
   const status = $("#webdav-status");
   if (status) status.textContent = webdavStatusText(info);
+}
+const newerLabels = { local: "本机的数据更新", cloud: "云端的数据更新", same: "两边一致", unknown: "无法判断哪边更新" };
+function stampText(value) {
+  return value ? new Date(value).toLocaleString(language() === "en" ? "en-US" : "zh-CN") : tr("时间未知");
+}
+function countsText(counts) {
+  return tr(`${counts.lines} 条阅读线、${counts.ideas} 张思想卡、${counts.papers} 篇论文`);
+}
+function cloudCompareText(info) {
+  const local = `${tr("本机：")}${stampText(info.local?.savedAt)}`;
+  const cloud = `${tr("云端：")}${info.cloud ? stampText(info.cloud.savedAt) : tr("还没有备份")}`;
+  return [local, cloud, tr(newerLabels[info.newer] || newerLabels.unknown)].join(" · ");
+}
+function showCloudCompare(info) {
+  const target = $("#webdav-compare");
+  if (!target) return;
+  target.hidden = !info;
+  target.textContent = info ? cloudCompareText(info) : "";
 }
 async function refreshWebdav() {
   try { showWebdav(await api("/api/webdav")); } catch { /* 拿不到同步状态时不打扰阅读 */ }
@@ -630,8 +654,10 @@ async function openSettings() {
   fillWebdavFields(ui.webdav);
   showWebdav(ui.webdav);
   openDialog("#settings-dialog");
+  showCloudCompare(null);
   await refreshWebdav();
   if (!$("#webdav-url").value) fillWebdavFields(ui.webdav);
+  if (ui.webdav?.url) api("/api/webdav/cloud").then(showCloudCompare).catch(() => {});
 }
 function checkReminder() {
   if (!state?.settings?.reminderTime) return;
@@ -852,6 +878,30 @@ document.addEventListener("click", async (event) => {
     else if (action === "expand-graph") { ui.graphExpanded = !ui.graphExpanded; markMainAnimation(false); renderMain(); localize($("#main-view")); centerGraph(); }
     else if (action === "open-settings") openSettings();
     else if (action === "open-help") openDialog("#help-dialog");
+    else if (action === "webdav-restore") {
+      toast("正在读取云端数据…");
+      showWebdav(await postJson("/api/webdav/config", webdavPayload()));
+      $("#webdav-password").value = "";
+      const info = await api("/api/webdav/cloud");
+      showCloudCompare(info);
+      if (!info.cloud) { toast("云端还没有 PaperLine 备份。", true); return; }
+      if (info.newer === "same") { toast("本机和云端的数据一致，无需恢复。"); return; }
+      const question = [
+        tr("用云端数据替换本机当前的数据？"),
+        `${tr("云端：")}${stampText(info.cloud.savedAt)} · ${countsText(info.cloud.counts)}`,
+        `${tr("本机：")}${stampText(info.local.savedAt)} · ${countsText(info.local.counts)}`,
+        info.newer === "local" ? tr("本机的数据比云端新，恢复会用较旧的云端数据替换它。") : "",
+        tr("当前数据会先另存一份。"),
+      ].filter(Boolean).join("\n");
+      if (!window.confirm(question)) return;
+      const data = await postJson("/api/webdav/restore", { expectSavedAt: info.cloud.savedAt || "" });
+      state = data.state;
+      Object.assign(ui, { selectedLineId: "", selectedIdeaId: "", selectedPaperId: "", view: "graph" });
+      closeDialog($("#settings-dialog"));
+      render();
+      await refreshWebdav();
+      toast(`已从云端恢复。原来的数据另存为 ${data.result.kept}。`);
+    }
     else if (action === "restore-backup") { $("#restore-file").value = ""; $("#restore-file").click(); }
     else if (action === "webdav-test") {
       toast("正在测试 WebDAV 连接…");
@@ -861,8 +911,16 @@ document.addEventListener("click", async (event) => {
     else if (action === "webdav-sync") {
       toast("正在上传到 WebDAV…");
       showWebdav(await postJson("/api/webdav/config", webdavPayload()));
-      showWebdav(await postJson("/api/webdav/sync", {}));
       $("#webdav-password").value = "";
+      try {
+        showWebdav(await postJson("/api/webdav/sync", {}));
+      } catch (error) {
+        if (!error.conflict) throw error;
+        await refreshWebdav();
+        if (!window.confirm(tr("云端的数据比本机新。仍然用本机数据覆盖云端吗？云端那份会先存进 history 文件夹。"))) { toast(error.message, true); return; }
+        showWebdav(await postJson("/api/webdav/sync", { force: true }));
+      }
+      api("/api/webdav/cloud").then(showCloudCompare).catch(() => {});
       toast("已上传到 WebDAV。");
     }
     else if (action === "request-notification") {

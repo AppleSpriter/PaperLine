@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import email.utils
 import json
 import os
 import re
@@ -48,6 +49,11 @@ IDEA_RELATIONS = {"extends", "depends", "compares", "improves"}
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def stamp_now() -> str:
+    # 毫秒精度：用来比较本机和云端哪份数据更新。
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 
 def fresh_id(prefix: str) -> str:
@@ -103,22 +109,24 @@ def validate_backup(data: Any) -> dict[str, Any]:
     return data
 
 
-def restore_state(data: Any) -> dict[str, Any]:
+def restore_state(data: Any, keep_stamp: bool = False, label: str = "before-restore") -> dict[str, Any]:
     backup = validate_backup(data)
     current = load_state()
     DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     # 覆盖前单独留一份恢复前的数据，恢复错了还能退回去。
-    keep = DATA_FILE.parent / f"state.before-restore-{stamp}.json"
+    keep = DATA_FILE.parent / f"state.{label}-{stamp}.json"
     keep.write_text(json.dumps(current, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     os.chmod(keep, 0o600)
     # 设备相关的设置沿用本机，不从别的电脑的备份里带过来。
     backup["settings"] = {**default_state()["settings"], **current.get("settings", {})}
-    save_state(backup)
+    save_state(backup, stamp=not keep_stamp)
     return {"kept": keep.name, "counts": {key: len(backup[key]) for key in RESTORE_COLLECTIONS}}
 
 
-def save_state(state: dict[str, Any]) -> None:
+def save_state(state: dict[str, Any], stamp: bool = True) -> None:
+    if stamp or not state.get("savedAt"):
+        state["savedAt"] = stamp_now()
     DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
     if DATA_FILE.exists():
         # 写入前留下上一份可用数据，文件损坏时还能找回来。
@@ -765,25 +773,32 @@ def webdav_failure(code: int) -> str:
     return f"WebDAV 返回错误 {code}。"
 
 
-def webdav_request(
+def webdav_exchange(
     config: dict[str, Any], method: str, path: str = "",
     body: bytes | None = None, headers: dict[str, str] | None = None,
-) -> int:
+) -> tuple[int, bytes, Any]:
     parts = [urllib.parse.quote(part) for part in path.split("/") if part]
     url = config["url"] + "/".join(parts) + ("/" if path.endswith("/") and parts else "")
     request = urllib.request.Request(url, data=body, method=method, headers=headers or {})
     if config["username"] or config["password"]:
-        token = base64.b64encode(f"{config['username']}:{config['password']}".encode("utf-8")).decode("ascii")
-        request.add_header("Authorization", f"Basic {token}")
+        pair = f"{config['username']}:{config['password']}".encode("utf-8")
+        request.add_header("Authorization", "Basic " + base64.b64encode(pair).decode("ascii"))
     try:
         with urllib.request.urlopen(request, timeout=WEBDAV_TIMEOUT) as response:
-            response.read()
-            return response.status
+            return response.status, response.read(), response.headers
     except urllib.error.HTTPError as error:
+        reply_headers = error.headers
         error.close()
-        return error.code
+        return error.code, b"", reply_headers
     except (urllib.error.URLError, TimeoutError, OSError) as error:
         raise ConnectionError("连不上 WebDAV 服务器，请检查地址和网络。") from error
+
+
+def webdav_request(
+    config: dict[str, Any], method: str, path: str = "",
+    body: bytes | None = None, headers: dict[str, str] | None = None,
+) -> int:
+    return webdav_exchange(config, method, path, body, headers)[0]
 
 
 def webdav_ensure_folders(config: dict[str, Any], folder: str) -> None:
@@ -814,6 +829,91 @@ def webdav_upload(config: dict[str, Any], body: bytes, when: datetime) -> None:
             raise ConnectionError(webdav_failure(code))
 
 
+CONFLICT_MESSAGE = "云端有更新的数据，已暂停自动上传。请在设置里从云端恢复，或用立即同步覆盖云端。"
+
+
+class SyncConflict(ConnectionError):
+    """云端的数据比本机新，不能直接覆盖。"""
+
+
+def parse_stamp(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            moment = email.utils.parsedate_to_datetime(value)
+        except (TypeError, ValueError):
+            return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+
+
+def comparable(data: dict[str, Any]) -> dict[str, Any]:
+    # 设置属于各自的机器，时间戳本身也不算内容。
+    return {key: value for key, value in data.items() if key not in {"savedAt", "settings"}}
+
+
+def local_snapshot() -> dict[str, Any]:
+    with LOCK:
+        exists = DATA_FILE.exists()
+        data = load_state()
+        stamp = data.get("savedAt") if isinstance(data.get("savedAt"), str) else ""
+        if not stamp and exists:
+            stamp = datetime.fromtimestamp(DATA_FILE.stat().st_mtime, timezone.utc).isoformat(timespec="seconds")
+    return {"data": data, "savedAt": stamp, "exists": exists}
+
+
+def cloud_snapshot(config: dict[str, Any], strict: bool = True) -> dict[str, Any] | None:
+    code, body, headers = webdav_exchange(config, "GET", f"{config['folder']}/state.json")
+    if code == 404:
+        return None
+    if code != 200:
+        raise ConnectionError(webdav_failure(code))
+    try:
+        data = validate_backup(json.loads(body))
+    except ValueError:
+        if strict:
+            raise ValueError("云端的 state.json 不是有效的 PaperLine 数据。")
+        return None
+    stamp = data.get("savedAt") if isinstance(data.get("savedAt"), str) else ""
+    if not stamp:
+        # 旧版本上传的文件没有时间戳，退回用服务器记录的修改时间。
+        moment = parse_stamp(headers.get("Last-Modified", "") if headers else "")
+        stamp = moment.isoformat(timespec="seconds") if moment else ""
+    return {"data": data, "savedAt": stamp}
+
+
+def newer_side(local: dict[str, Any], cloud: dict[str, Any] | None) -> str:
+    if cloud is None:
+        return "local"
+    if comparable(local["data"]) == comparable(cloud["data"]):
+        return "same"
+    if not local["exists"]:
+        return "cloud"
+    mine, theirs = parse_stamp(local["savedAt"]), parse_stamp(cloud["savedAt"])
+    if mine is None or theirs is None:
+        return "cloud" if mine is None and theirs else "local" if theirs is None and mine else "unknown"
+    if mine == theirs:
+        return "unknown"
+    return "local" if mine > theirs else "cloud"
+
+
+def snapshot_summary(snapshot: dict[str, Any] | None) -> dict[str, Any] | None:
+    if snapshot is None:
+        return None
+    return {"savedAt": snapshot["savedAt"], "counts": {key: len(snapshot["data"][key]) for key in ("lines", "ideas", "papers")}}
+
+
+def webdav_keep_overwritten(config: dict[str, Any], cloud: dict[str, Any]) -> None:
+    webdav_ensure_folders(config, config["folder"] + "/history")
+    body = (json.dumps(cloud["data"], ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    name = f"history/state-overwritten-{datetime.now():%Y%m%d-%H%M%S}.json"
+    code = webdav_request(config, "PUT", f"{config['folder']}/{name}", body, {"Content-Type": "application/json; charset=utf-8"})
+    if code not in (200, 201, 204):
+        raise ConnectionError(webdav_failure(code))
+
+
 class WebDavSync:
     """从第一次未上传的改动算起，攒满一个间隔再统一上传；失败保留待上传状态并按退避重试。"""
 
@@ -828,6 +928,7 @@ class WebDavSync:
         self.stopping = False
         self.last_success = ""
         self.last_error = ""
+        self.conflict = False
         self.thread: threading.Thread | None = None
 
     def status(self) -> dict[str, Any]:
@@ -838,7 +939,8 @@ class WebDavSync:
             return {
                 "lastSuccessAt": self.last_success, "lastError": self.last_error,
                 "pending": self.dirty_at is not None, "running": self.running,
-                "nextUploadIn": next_in,
+                "nextUploadIn": None if self.conflict else next_in,
+                "conflict": self.conflict,
             }
 
     def mark_dirty(self) -> None:
@@ -850,19 +952,31 @@ class WebDavSync:
                 self.dirty_at = time.monotonic()
                 self.condition.notify_all()
 
-    def sync_now(self) -> None:
+    def sync_now(self, force: bool = False) -> None:
         config = load_webdav()
         if not config["url"]:
             raise ValueError("请先填写 WebDAV 地址。")
         with self.upload_lock:
-            with LOCK:
-                body = DATA_FILE.read_bytes() if DATA_FILE.exists() else (
-                    json.dumps(default_state(), ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+            local = local_snapshot()
+            body = (json.dumps(local["data"], ensure_ascii=False, indent=2) + "\n").encode("utf-8")
             with self.condition:
                 self.running = True
                 self.dirty_at = None  # 上传期间的新改动会重新标记
             try:
+                cloud = cloud_snapshot(config, strict=False)
+                if newer_side(local, cloud) in ("cloud", "unknown"):
+                    if not force:
+                        raise SyncConflict(CONFLICT_MESSAGE)
+                    webdav_keep_overwritten(config, cloud)  # 覆盖前把云端那份留进 history
                 webdav_upload(config, body, datetime.now())
+            except SyncConflict as error:
+                with self.condition:
+                    self.running = False
+                    self.conflict = True
+                    self.last_error = str(error)
+                    if self.dirty_at is None:
+                        self.dirty_at = time.monotonic()
+                raise
             except (ConnectionError, ValueError) as error:
                 with self.condition:
                     self.running = False
@@ -874,17 +988,25 @@ class WebDavSync:
                 raise
             with self.condition:
                 self.running = False
+                self.conflict = False
                 self.last_error = ""
                 self.failures = 0
                 self.retry_at = 0.0
                 self.last_success = utc_now()
 
+    def clear_conflict(self) -> None:
+        with self.condition:
+            if self.conflict:
+                self.conflict = False
+                self.last_error = ""
+            self.condition.notify_all()
+
     def run(self) -> None:
         while True:
             with self.condition:
                 while not self.stopping:
-                    if self.dirty_at is None:
-                        self.condition.wait()
+                    if self.dirty_at is None or self.conflict:
+                        self.condition.wait()  # 冲突时不再自动上传，等用户处理
                         continue
                     wait = max(self.dirty_at + self.interval, self.retry_at) - time.monotonic()
                     if wait <= 0:
@@ -928,6 +1050,33 @@ class WebDavSync:
 
 
 SYNC = WebDavSync()
+
+
+def require_webdav() -> dict[str, Any]:
+    config = load_webdav()
+    if not config["url"]:
+        raise ValueError("请先填写 WebDAV 地址。")
+    return config
+
+
+def compare_with_cloud() -> dict[str, Any]:
+    cloud = cloud_snapshot(require_webdav())
+    local = local_snapshot()
+    return {"local": snapshot_summary(local), "cloud": snapshot_summary(cloud), "newer": newer_side(local, cloud)}
+
+
+def restore_from_cloud(expect: str) -> dict[str, Any]:
+    cloud = cloud_snapshot(require_webdav())
+    if cloud is None:
+        raise ValueError("云端还没有 PaperLine 备份。")
+    if expect and cloud["savedAt"] != expect:
+        raise ValueError("云端的数据刚刚有更新，请重新确认后再恢复。")
+    if cloud["savedAt"]:
+        cloud["data"]["savedAt"] = cloud["savedAt"]  # 恢复后两边时间一致，不会被当成冲突
+    with LOCK:
+        result = restore_state(cloud["data"], keep_stamp=True, label="before-cloud-restore")
+    SYNC.clear_conflict()
+    return result
 
 
 def public_webdav() -> dict[str, Any]:
@@ -985,6 +1134,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, {"annotations": zotero_annotations(key)})
             elif parsed.path == "/api/webdav":
                 self._json(200, public_webdav())
+            elif parsed.path == "/api/webdav/cloud":
+                self._json(200, compare_with_cloud())
             elif parsed.path == "/api/backup":
                 with LOCK:
                     body = json.dumps(load_state(), ensure_ascii=False, indent=2).encode("utf-8")
@@ -1031,6 +1182,7 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == "/api/webdav/config":
                 config = clean_webdav(request, load_webdav())
                 save_webdav(config)
+                SYNC.clear_conflict()  # 可能换了服务器，旧的冲突判断作废
                 SYNC.mark_dirty()
                 self._json(200, public_webdav())
             elif self.path == "/api/webdav/test":
@@ -1038,12 +1190,22 @@ class Handler(BaseHTTPRequestHandler):
                 webdav_check(config)
                 self._json(200, {"ok": True, "insecure": config["url"].startswith("http://")})
             elif self.path == "/api/webdav/sync":
-                SYNC.sync_now()
+                SYNC.sync_now(force=request.get("force") is True)
                 self._json(200, public_webdav())
+            elif self.path == "/api/webdav/restore":
+                expect = request.get("expectSavedAt", "")
+                if not isinstance(expect, str):
+                    raise ValueError("恢复请求无效。")
+                result = restore_from_cloud(expect)
+                with LOCK:
+                    state = load_state()
+                self._json(200, {"state": state, "result": result})
             else:
                 self._json(404, {"error": "页面不存在。"})
         except (ValueError, json.JSONDecodeError) as error:
             self._json(400, {"error": str(error)})
+        except SyncConflict as error:
+            self._json(409, {"error": str(error), "conflict": True})
         except ConnectionError as error:
             self._json(503, {"error": str(error)})
 

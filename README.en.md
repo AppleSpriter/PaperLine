@@ -62,7 +62,13 @@ Keep Zotero running and enable **Allow other applications on this computer to co
 - The top bar shows **Synced / Pending / Sync failed**; click it to open Settings and see why. **Sync now** uploads by hand.
 - For Jianguoyun use `https://dav.jianguoyun.com/dav/` with an app password generated in its dashboard. Nextcloud is usually `https://your-domain/remote.php/dav/files/USERNAME/`.
 - Credentials live separately in `data/webdav.json` (mode 600) and never enter `state.json`, the backup download, or the browser. An empty password field keeps the saved one; changing the address or username requires entering it again.
-- This is a one-way backup: it only uploads and never downloads or merges. To restore on another machine, put the cloud `state.json` into that machine's `data/` folder. Prefer https; http sends the password unencrypted.
+- Every save records its time as `savedAt`. Settings show when this machine and the cloud were last saved, and which one is newer.
+- Before uploading, the two times are compared. If the cloud is newer (for example, another computer just uploaded), automatic upload pauses and the top bar shows **Cloud newer** instead of overwriting the cloud.
+- Choose **Restore from cloud** and confirm to replace the data here with the cloud copy; the current data is saved as `data/state.before-cloud-restore-TIME.json` first. After restoring, both sides match and automatic upload carries on.
+- Or choose **Sync now** and confirm to overwrite the cloud with this machine; the overwritten cloud copy is saved as `history/state-overwritten-TIME.json` first.
+- If this machine is newer, **Restore from cloud** warns that it would replace newer data with older data. Nothing is restored when both sides match. The Obsidian path, language, and reminder always stay as set on this machine.
+- Cloud files uploaded by older versions have no `savedAt` and are compared by the server's modification time. If the two computers' clocks differ a lot, the comparison can be wrong.
+- Changes from both sides are never merged: when both computers changed, keep one side, and the other stays as a copy in `history/` or `data/`. Prefer https; http sends the password unencrypted.
 - Notes are exported to `PaperLine/` inside your chosen Obsidian vault. It contains folders for reading paths, idea cards, and papers. Folder names stay in Chinese so links remain stable when you switch languages.
 - On later exports, only content between `PAPERLINE:START/END` markers is updated. Your notes outside the markers stay intact. If a same-named file has no markers, export stops and names that file instead of overwriting it.
 - Notes whose content did not change are skipped instead of rewritten, so Obsidian sync does not re-upload the whole vault. The result reports how many notes were written and how many were skipped.
