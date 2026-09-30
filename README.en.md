@@ -50,6 +50,15 @@ Keep Zotero running and enable **Allow other applications on this computer to co
 - App data is stored in `data/state.json`. Git ignores the `data/` directory.
 - Before each write, the previous data is copied to `data/state.backup.json`. If the main file is damaged, PaperLine changes nothing and points you to that backup.
 - **Settings → Back up data** downloads a complete JSON backup.
+
+## WebDAV sync
+
+- Under **Settings → WebDAV sync**, enter the address, username, password, and cloud folder, tick **Upload to WebDAV automatically**, and choose **Test connection** to confirm it can write.
+- Once enabled, `state.json` is uploaded to the cloud folder once every 5 minutes while there are changes (counted from the first change, so everything within those 5 minutes goes up together; nothing is uploaded when nothing changed), and one `history/state-YYYY-MM-DD.json` is kept per day. Failed uploads retry after 1, 2, 4… up to 15 minutes; PaperLine also uploads once at startup and before a normal shutdown.
+- The top bar shows **Synced / Pending / Sync failed**; click it to open Settings and see why. **Sync now** uploads by hand.
+- For Jianguoyun use `https://dav.jianguoyun.com/dav/` with an app password generated in its dashboard. Nextcloud is usually `https://your-domain/remote.php/dav/files/USERNAME/`.
+- Credentials live separately in `data/webdav.json` (mode 600) and never enter `state.json`, the backup download, or the browser. An empty password field keeps the saved one; changing the address or username requires entering it again.
+- This is a one-way backup: it only uploads and never downloads or merges. To restore on another machine, put the cloud `state.json` into that machine's `data/` folder. Prefer https; http sends the password unencrypted.
 - Notes are exported to `PaperLine/` inside your chosen Obsidian vault. It contains folders for reading paths, idea cards, and papers. Folder names stay in Chinese so links remain stable when you switch languages.
 - On later exports, only content between `PAPERLINE:START/END` markers is updated. Your notes outside the markers stay intact. If a same-named file has no markers, export stops and names that file instead of overwriting it.
 - Notes whose content did not change are skipped instead of rewritten, so Obsidian sync does not re-upload the whole vault. The result reports how many notes were written and how many were skipped.

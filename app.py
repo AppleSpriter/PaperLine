@@ -4,13 +4,16 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import re
 import secrets
 import shutil
+import signal
 import tempfile
 import threading
+import time
 import unicodedata
 import urllib.error
 import urllib.parse
@@ -25,6 +28,10 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent
 DATA_FILE = ROOT / "data" / "state.json"
 BACKUP_FILE = ROOT / "data" / "state.backup.json"
+# WebDAV 账号单独存放：不进 state.json、不进备份下载、不返回给浏览器。
+WEBDAV_FILE = ROOT / "data" / "webdav.json"
+WEBDAV_INTERVAL_SECONDS = 300  # 有改动时每 5 分钟最多上传一次
+WEBDAV_TIMEOUT = 15
 STATIC = {
     "/": (ROOT / "static" / "index.html", "text/html; charset=utf-8"),
     "/i18n.js": (ROOT / "static" / "i18n.js", "text/javascript; charset=utf-8"),
@@ -623,6 +630,259 @@ def export_obsidian(state: dict[str, Any]) -> dict[str, Any]:
     return {"count": len(plans), "skipped": skipped, "folder": str(root)}
 
 
+# ==================== WebDAV 云端同步 ====================
+
+def default_webdav() -> dict[str, Any]:
+    return {"enabled": False, "url": "", "username": "", "password": "", "folder": "PaperLine"}
+
+
+def load_webdav() -> dict[str, Any]:
+    config = default_webdav()
+    try:
+        data = json.loads(WEBDAV_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return config
+    if isinstance(data, dict):
+        for key, default in config.items():
+            if isinstance(data.get(key), type(default)):
+                config[key] = data[key]
+    return config
+
+
+def save_webdav(config: dict[str, Any]) -> None:
+    WEBDAV_FILE.parent.mkdir(parents=True, exist_ok=True)
+    handle, temp_name = tempfile.mkstemp(dir=WEBDAV_FILE.parent, prefix=".webdav-")
+    try:
+        os.fchmod(handle, 0o600)  # 里面有密码，只允许当前用户读写。
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            json.dump(config, stream, ensure_ascii=False, indent=2)
+        os.replace(temp_name, WEBDAV_FILE)
+    except BaseException:
+        Path(temp_name).unlink(missing_ok=True)
+        raise
+
+
+def webdav_folder(value: str) -> str:
+    parts = [part.strip() for part in value.replace("\\", "/").split("/") if part.strip()]
+    if not parts:
+        return "PaperLine"
+    if len(parts) > 5 or any(part in {".", ".."} or len(part) > 80 for part in parts):
+        raise ValueError("云端文件夹名称无效。")
+    return "/".join(parts)
+
+
+def clean_webdav(payload: dict[str, Any], current: dict[str, Any]) -> dict[str, Any]:
+    url = field(payload, "url", 500)
+    if not url:
+        return default_webdav()
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in {"https", "http"} or not parsed.hostname:
+        raise ValueError("WebDAV 地址需以 https:// 或 http:// 开头。")
+    if parsed.username or parsed.password:
+        raise ValueError("请把用户名和密码填在下面的输入框里，不要写进地址。")
+    if parsed.query or parsed.fragment:
+        raise ValueError("WebDAV 地址不能带 ? 或 # 部分。")
+    url = url.rstrip("/") + "/"
+    username = field(payload, "username", 200)
+    password = payload.get("password", "")
+    if not isinstance(password, str) or len(password) > 500:
+        raise ValueError("WebDAV 密码无效。")
+    if not password and current["url"] == url and current["username"] == username:
+        # 留空表示沿用已保存的密码；换了服务器或账号就不沿用，避免把旧密码发给别处。
+        password = current["password"]
+    enabled = payload.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ValueError("自动同步开关无效。")
+    return {
+        "enabled": enabled, "url": url, "username": username, "password": password,
+        "folder": webdav_folder(field(payload, "folder", 200)),
+    }
+
+
+def webdav_failure(code: int) -> str:
+    if code in (401, 403):
+        return "WebDAV 拒绝了访问：用户名、密码或写入权限不对。"
+    if code in (404, 409):
+        return "WebDAV 上找不到这个地址或文件夹。"
+    if code == 507:
+        return "WebDAV 云端空间不足。"
+    return f"WebDAV 返回错误 {code}。"
+
+
+def webdav_request(
+    config: dict[str, Any], method: str, path: str = "",
+    body: bytes | None = None, headers: dict[str, str] | None = None,
+) -> int:
+    parts = [urllib.parse.quote(part) for part in path.split("/") if part]
+    url = config["url"] + "/".join(parts) + ("/" if path.endswith("/") and parts else "")
+    request = urllib.request.Request(url, data=body, method=method, headers=headers or {})
+    if config["username"] or config["password"]:
+        token = base64.b64encode(f"{config['username']}:{config['password']}".encode("utf-8")).decode("ascii")
+        request.add_header("Authorization", f"Basic {token}")
+    try:
+        with urllib.request.urlopen(request, timeout=WEBDAV_TIMEOUT) as response:
+            response.read()
+            return response.status
+    except urllib.error.HTTPError as error:
+        error.close()
+        return error.code
+    except (urllib.error.URLError, TimeoutError, OSError) as error:
+        raise ConnectionError("连不上 WebDAV 服务器，请检查地址和网络。") from error
+
+
+def webdav_ensure_folders(config: dict[str, Any], folder: str) -> None:
+    current = ""
+    for part in folder.split("/"):
+        current += part + "/"
+        code = webdav_request(config, "MKCOL", current)
+        if code not in (200, 201, 204, 301, 405):  # 405 表示文件夹已经存在
+            raise ConnectionError(webdav_failure(code))
+
+
+def webdav_check(config: dict[str, Any]) -> None:
+    if not config["url"]:
+        raise ValueError("请先填写 WebDAV 地址。")
+    code = webdav_request(config, "PROPFIND", "", headers={"Depth": "0"})
+    if code not in (200, 207):
+        raise ConnectionError(webdav_failure(code))
+    webdav_ensure_folders(config, config["folder"])
+
+
+def webdav_upload(config: dict[str, Any], body: bytes, when: datetime) -> None:
+    folder = config["folder"]
+    webdav_ensure_folders(config, folder + "/history")
+    headers = {"Content-Type": "application/json; charset=utf-8"}
+    for name in ("state.json", f"history/state-{when:%Y-%m-%d}.json"):
+        code = webdav_request(config, "PUT", f"{folder}/{name}", body, headers)
+        if code not in (200, 201, 204):
+            raise ConnectionError(webdav_failure(code))
+
+
+class WebDavSync:
+    """从第一次未上传的改动算起，攒满一个间隔再统一上传；失败保留待上传状态并按退避重试。"""
+
+    def __init__(self, interval: float = WEBDAV_INTERVAL_SECONDS) -> None:
+        self.interval = interval
+        self.condition = threading.Condition()
+        self.upload_lock = threading.Lock()
+        self.dirty_at: float | None = None
+        self.retry_at = 0.0
+        self.failures = 0
+        self.running = False
+        self.stopping = False
+        self.last_success = ""
+        self.last_error = ""
+        self.thread: threading.Thread | None = None
+
+    def status(self) -> dict[str, Any]:
+        with self.condition:
+            next_in = None
+            if self.dirty_at is not None:
+                next_in = max(0, int(max(self.dirty_at + self.interval, self.retry_at) - time.monotonic()))
+            return {
+                "lastSuccessAt": self.last_success, "lastError": self.last_error,
+                "pending": self.dirty_at is not None, "running": self.running,
+                "nextUploadIn": next_in,
+            }
+
+    def mark_dirty(self) -> None:
+        if not load_webdav()["enabled"]:
+            return
+        with self.condition:
+            # 只记第一次改动的时间：后续改动并入同一次上传，不会一直往后推。
+            if self.dirty_at is None:
+                self.dirty_at = time.monotonic()
+                self.condition.notify_all()
+
+    def sync_now(self) -> None:
+        config = load_webdav()
+        if not config["url"]:
+            raise ValueError("请先填写 WebDAV 地址。")
+        with self.upload_lock:
+            with LOCK:
+                body = DATA_FILE.read_bytes() if DATA_FILE.exists() else (
+                    json.dumps(default_state(), ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+            with self.condition:
+                self.running = True
+                self.dirty_at = None  # 上传期间的新改动会重新标记
+            try:
+                webdav_upload(config, body, datetime.now())
+            except (ConnectionError, ValueError) as error:
+                with self.condition:
+                    self.running = False
+                    self.last_error = str(error)
+                    self.failures += 1
+                    if self.dirty_at is None:
+                        self.dirty_at = time.monotonic()
+                    self.retry_at = time.monotonic() + min(900, 60 * 2 ** (self.failures - 1))
+                raise
+            with self.condition:
+                self.running = False
+                self.last_error = ""
+                self.failures = 0
+                self.retry_at = 0.0
+                self.last_success = utc_now()
+
+    def run(self) -> None:
+        while True:
+            with self.condition:
+                while not self.stopping:
+                    if self.dirty_at is None:
+                        self.condition.wait()
+                        continue
+                    wait = max(self.dirty_at + self.interval, self.retry_at) - time.monotonic()
+                    if wait <= 0:
+                        break
+                    self.condition.wait(wait)
+                if self.stopping:
+                    return
+            if not load_webdav()["enabled"]:
+                with self.condition:
+                    self.dirty_at = None
+                continue
+            try:
+                self.sync_now()
+            except (ConnectionError, ValueError):
+                pass  # 错误已记录在状态里，等待退避后重试
+
+    def start(self) -> None:
+        if self.thread:
+            return
+        self.thread = threading.Thread(target=self.run, name="webdav-sync", daemon=True)
+        self.thread.start()
+        self.mark_dirty()  # 启动时补传一次，覆盖上次没传成功的改动
+
+    def stop(self, flush: bool = True) -> None:
+        with self.condition:
+            self.stopping = True
+            pending = self.dirty_at is not None
+            self.condition.notify_all()
+        if self.thread:
+            self.thread.join(timeout=2)
+        if flush and pending and load_webdav()["enabled"]:
+            last = threading.Thread(target=self._quiet_sync, daemon=True)
+            last.start()
+            last.join(timeout=10)
+
+    def _quiet_sync(self) -> None:
+        try:
+            self.sync_now()
+        except (ConnectionError, ValueError):
+            pass
+
+
+SYNC = WebDavSync()
+
+
+def public_webdav() -> dict[str, Any]:
+    config = load_webdav()
+    return {
+        "enabled": config["enabled"], "url": config["url"], "username": config["username"],
+        "folder": config["folder"], "hasPassword": bool(config["password"]),
+        "insecure": config["url"].startswith("http://"), "status": SYNC.status(),
+    }
+
+
 class Handler(BaseHTTPRequestHandler):
     server: ThreadingHTTPServer
 
@@ -667,6 +927,8 @@ class Handler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/zotero/annotations":
                 key = urllib.parse.parse_qs(parsed.query).get("key", [""])[0]
                 self._json(200, {"annotations": zotero_annotations(key)})
+            elif parsed.path == "/api/webdav":
+                self._json(200, public_webdav())
             elif parsed.path == "/api/backup":
                 with LOCK:
                     body = json.dumps(load_state(), ensure_ascii=False, indent=2).encode("utf-8")
@@ -698,15 +960,30 @@ class Handler(BaseHTTPRequestHandler):
                     state = load_state()
                     result = apply_action(state, action, payload)
                     save_state(state)
+                SYNC.mark_dirty()
                 self._json(200, {"state": state, "result": result})
             elif self.path == "/api/export":
                 with LOCK:
                     result = export_obsidian(load_state())
                 self._json(200, result)
+            elif self.path == "/api/webdav/config":
+                config = clean_webdav(request, load_webdav())
+                save_webdav(config)
+                SYNC.mark_dirty()
+                self._json(200, public_webdav())
+            elif self.path == "/api/webdav/test":
+                config = clean_webdav(request, load_webdav())
+                webdav_check(config)
+                self._json(200, {"ok": True, "insecure": config["url"].startswith("http://")})
+            elif self.path == "/api/webdav/sync":
+                SYNC.sync_now()
+                self._json(200, public_webdav())
             else:
                 self._json(404, {"error": "页面不存在。"})
         except (ValueError, json.JSONDecodeError) as error:
             self._json(400, {"error": str(error)})
+        except ConnectionError as error:
+            self._json(503, {"error": str(error)})
 
 
 def main() -> None:
@@ -719,12 +996,19 @@ def main() -> None:
     print(f"PaperLine 已启动：{url}", flush=True)
     if not args.no_browser:
         threading.Timer(0.5, lambda: webbrowser.open(url)).start()
+
+    def stop_on_term(*_: Any) -> None:
+        raise KeyboardInterrupt  # 让启动器的 SIGTERM 也走下面的收尾，把最后的改动传上去
+
+    signal.signal(signal.SIGTERM, stop_on_term)
+    SYNC.start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
         server.server_close()
+        SYNC.stop()
 
 
 if __name__ == "__main__":

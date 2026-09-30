@@ -93,17 +93,74 @@ function selectIdea(id) {
 }
 function toast(message, bad = false) {
   const node = $("#toast");
+  // 弹窗在浏览器顶层，普通 fixed 提示会被它和背景盖住：
+  // 把提示挪进当前弹窗，再作为 popover 重新推到顶层最上面。
+  const host = document.querySelector("dialog[open]") || document.body;
+  if (host?.appendChild && node.parentElement !== host) host.appendChild(node);
   node.textContent = tr(message);
   node.classList.toggle("error", bad);
+  node.classList.remove("visible");
+  if (typeof node.showPopover === "function") {
+    if (node.matches(":popover-open")) node.hidePopover();
+    node.showPopover();
+    void node.offsetWidth;  // 先让透明状态生效，淡入动画才会播放
+  }
   node.classList.add("visible");
   clearTimeout(toast.timer);
-  toast.timer = setTimeout(() => node.classList.remove("visible"), 4400);
+  toast.timer = setTimeout(() => {
+    node.classList.remove("visible");
+    toast.timer = setTimeout(() => { if (node.matches?.(":popover-open")) node.hidePopover(); }, 300);
+  }, 4400);
 }
 async function api(path, options = {}) {
   const response = await fetch(path, options);
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || "请求失败，请重试。");
   return data;
+}
+function postJson(path, body) {
+  return api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+}
+function webdavPayload() {
+  return {
+    enabled: $("#webdav-enabled").checked, url: $("#webdav-url").value.trim(),
+    username: $("#webdav-username").value.trim(), password: $("#webdav-password").value,
+    folder: $("#webdav-folder").value.trim(),
+  };
+}
+function webdavStatusText(info) {
+  if (!info?.url) return tr("尚未设置 WebDAV。");
+  const parts = [];
+  if (info.status.lastError) parts.push(`${tr("上次同步失败：")}${tr(info.status.lastError)}`);
+  else if (info.status.lastSuccessAt) parts.push(`${tr("上次同步：")}${new Date(info.status.lastSuccessAt).toLocaleString(language() === "en" ? "en-US" : "zh-CN")}`);
+  else parts.push(tr("还没有同步过。"));
+  const waitSeconds = info.status.nextUploadIn;
+  if (info.status.pending) parts.push(waitSeconds > 60 ? tr(`约 ${Math.ceil(waitSeconds / 60)} 分钟后自动上传。`) : tr("有改动等待上传。"));
+  if (!info.enabled) parts.push(tr("自动上传已关闭。"));
+  if (info.insecure) parts.push(tr("当前是 http 地址，密码会明文传输，建议改用 https。"));
+  return parts.join(" ");
+}
+function renderSyncBadge(info) {
+  const badge = $("#sync-badge");
+  if (!badge) return;
+  if (!info?.enabled || !info.url) { badge.hidden = true; return; }
+  const status = info.status;
+  const [kind, text] = status.lastError ? ["error", "同步失败"] : status.pending || status.running ? ["pending", "待同步"] : ["ok", "已同步"];
+  badge.hidden = false;
+  badge.className = `sync-badge ${kind}`;
+  badge.textContent = tr(text);
+}
+function showWebdav(info) {
+  ui.webdav = info;
+  renderSyncBadge(info);
+  const status = $("#webdav-status");
+  if (status) status.textContent = webdavStatusText(info);
+}
+async function refreshWebdav() {
+  try { showWebdav(await api("/api/webdav")); } catch { /* 拿不到同步状态时不打扰阅读 */ }
+}
+function noteLocalChange() {
+  if (ui.webdav?.enabled) refreshWebdav();  // 取回服务端排好的下次上传时间
 }
 async function act(action, payload) {
   const data = await api("/api/action", {
@@ -119,6 +176,7 @@ async function act(action, payload) {
   if (data.result.ideaId) { ui.selectedIdeaId = data.result.ideaId; ui.selectedPaperId = ""; }
   if (data.result.paperId) { ui.selectedPaperId = data.result.paperId; ui.selectedIdeaId = ""; }
   render();
+  noteLocalChange();
   return data.result;
 }
 function closeDialog(dialog = document.querySelector("dialog[open]")) {
@@ -520,11 +578,22 @@ function editRelation(id) {
   $("#relation-source-url").value = item.sourceUrl || "";
   openDialog("#relation-dialog");
 }
-function openSettings() {
+function fillWebdavFields(info) {
+  $("#webdav-enabled").checked = Boolean(info?.enabled);
+  $("#webdav-url").value = info?.url || "";
+  $("#webdav-username").value = info?.username || "";
+  $("#webdav-password").value = "";
+  $("#webdav-folder").value = info?.folder || "PaperLine";
+}
+async function openSettings() {
   $("#vault-path").value = state.settings.vaultPath || "";
   $("#language").value = language();
   $("#reminder-time").value = state.settings.reminderTime || "";
+  fillWebdavFields(ui.webdav);
+  showWebdav(ui.webdav);
   openDialog("#settings-dialog");
+  await refreshWebdav();
+  if (!$("#webdav-url").value) fillWebdavFields(ui.webdav);
 }
 function checkReminder() {
   if (!state?.settings?.reminderTime) return;
@@ -740,6 +809,18 @@ document.addEventListener("click", async (event) => {
     else if (action === "expand-graph") { ui.graphExpanded = !ui.graphExpanded; markMainAnimation(false); renderMain(); localize($("#main-view")); centerGraph(); }
     else if (action === "open-settings") openSettings();
     else if (action === "open-help") openDialog("#help-dialog");
+    else if (action === "webdav-test") {
+      toast("正在测试 WebDAV 连接…");
+      const result = await postJson("/api/webdav/test", webdavPayload());
+      toast(result.insecure ? "WebDAV 连接正常，但 http 地址会明文传输密码。" : "WebDAV 连接正常。");
+    }
+    else if (action === "webdav-sync") {
+      toast("正在上传到 WebDAV…");
+      showWebdav(await postJson("/api/webdav/config", webdavPayload()));
+      showWebdav(await postJson("/api/webdav/sync", {}));
+      $("#webdav-password").value = "";
+      toast("已上传到 WebDAV。");
+    }
     else if (action === "request-notification") {
       if (!("Notification" in window)) { toast("当前浏览器不支持桌面通知；站内提醒仍可使用。", true); return; }
       const permission = await Notification.requestPermission();
@@ -885,6 +966,7 @@ $("#settings-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
     await act("settings.update", { vaultPath: $("#vault-path").value, reminderTime: $("#reminder-time").value, language: $("#language").value });
+    showWebdav(await postJson("/api/webdav/config", webdavPayload()));
     closeDialog($("#settings-dialog"));
     toast("设置已保存。");
     checkReminder();
@@ -900,7 +982,7 @@ document.addEventListener("submit", async (event) => {
   } catch (error) { toast(error.message, true); }
 });
 
-api("/api/state").then((data) => { state = data; render(); checkReminder(); setInterval(checkReminder, 30_000); }).catch((error) => {
+api("/api/state").then((data) => { state = data; render(); checkReminder(); setInterval(checkReminder, 30_000); refreshWebdav(); setInterval(refreshWebdav, 30_000); }).catch((error) => {
   $("#main-view").innerHTML = `<div class="welcome"><h1>无法读取应用数据</h1><p>${esc(error.message)}</p></div>`;
   localize($("#main-view"));
 });

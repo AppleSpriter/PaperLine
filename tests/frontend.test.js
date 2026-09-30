@@ -52,7 +52,7 @@ function createApp(storage = new Map(), clock = { now: 0 }) {
   });
   vm.runInContext(appSource, context);
   const app = vm.runInContext(`({ ui, openSession, closeDialog, stopTimer, sessionSeconds, captureIdeaDraft, searchIdeas, selectIdea, latestSession, readingRecap,
-    renderIdeaInspector, renderInspector, renderIdeas, renderPaperResults, searchPapers, searchLines, searchEverything, markIdea, readDraft, act, setState(value) { state = value; } })`, context);
+    renderIdeaInspector, renderInspector, renderIdeas, renderPaperResults, searchPapers, searchLines, searchEverything, markIdea, toast, readDraft, act, setState(value) { state = value; } })`, context);
   app.setState(fixture());
   app.ui.selectedLineId = "l1";
   return { app, node, context, storage, clock };
@@ -289,4 +289,24 @@ test("the top bar offers help and the guide covers every section", () => {
   }
   assert.match(appSource, /action === "open-help"/);
   assert.match(appSource, /event\.key === "\?"/);
+});
+
+test("toasts rise above an open dialog so settings feedback stays visible", () => {
+  const { app, node, context } = createApp();
+  const appended = [];
+  const dialog = { appendChild(child) { appended.push(child); child.parentElement = dialog; } };
+  const toastNode = node("#toast");
+  let open = false;
+  const calls = [];
+  Object.assign(toastNode, {
+    parentElement: null, offsetWidth: 0, matches: () => open,
+    showPopover() { open = true; calls.push("show"); },
+    hidePopover() { open = false; calls.push("hide"); },
+  });
+  context.document.querySelector = (selector) => selector === "dialog[open]" ? dialog : node(selector);
+  app.toast("WebDAV 连接正常。");
+  app.toast("已上传到 WebDAV。");
+  assert.equal(appended.length, 1);
+  assert.deepEqual(calls, ["show", "hide", "show"]);
+  assert.equal(toastNode.textContent, "已上传到 WebDAV。");
 });

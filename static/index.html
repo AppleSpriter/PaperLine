@@ -23,6 +23,7 @@
         <button type="button" class="nav-button" data-action="view-papers">论文库</button>
       </nav>
       <div class="top-actions">
+        <button type="button" id="sync-badge" class="sync-badge" data-action="open-settings" hidden></button>
         <button type="button" class="button quiet" data-action="open-help" aria-label="使用说明">帮助</button>
         <button type="button" class="button quiet" data-action="open-settings" aria-label="设置">设置</button>
         <button type="button" class="button secondary export-button" data-action="export">导出到 Obsidian</button>
@@ -45,7 +46,7 @@
     </div>
   </div>
 
-  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <div id="toast" class="toast" role="status" aria-live="polite" popover="manual" data-user-content></div>
 
   <dialog id="line-dialog" class="modal">
     <form id="line-form" method="dialog">
@@ -191,6 +192,7 @@
           <li>所有数据只留在这台机器上，写入前会自动留一份备份，设置里也能下载完整 JSON。</li>
           <li>删除思想卡会连带它的关系和阅读记录；删除论文只删关系；删除阅读线会保留卡片。</li>
           <li>已经导出到 Obsidian 的笔记不会被自动删除，需要时自己清理。</li>
+          <li>在设置里填好 WebDAV 后，改动会自动上传到云端，并每天保留一份历史版本；右上角会显示同步状态。</li>
         </ul>
       </section>
 
@@ -217,6 +219,16 @@
       <p class="field-help">应用页面保持打开时会提醒你当前阅读线的下一张卡。浏览器通知需要单独开启。</p>
       <button type="button" class="button secondary" data-action="request-notification">开启浏览器通知</button>
       <button type="button" class="button secondary mobile-export" data-action="export">导出到 Obsidian</button>
+      <section class="settings-section">
+        <h3>WebDAV 云同步 <span class="optional">可选</span></h3>
+        <p class="field-help">有改动时每 5 分钟自动上传一次到云端文件夹，另外每天留一份历史版本。坚果云等服务请使用应用专用密码。</p>
+        <label class="check-row"><input type="checkbox" id="webdav-enabled">自动上传到 WebDAV</label>
+        <label>WebDAV 地址<input id="webdav-url" maxlength="500" placeholder="https://dav.jianguoyun.com/dav/" autocomplete="off" spellcheck="false"></label>
+        <div class="form-grid"><label>用户名<input id="webdav-username" maxlength="200" autocomplete="off" spellcheck="false"></label><label>密码<input id="webdav-password" type="password" maxlength="500" autocomplete="new-password" placeholder="留空则沿用已保存的密码"></label></div>
+        <label>云端文件夹<input id="webdav-folder" maxlength="200" placeholder="PaperLine" spellcheck="false"></label>
+        <p id="webdav-status" class="field-help" data-user-content aria-live="polite"></p>
+        <div class="settings-actions"><button type="button" class="button secondary" data-action="webdav-test">测试连接</button><button type="button" class="button secondary" data-action="webdav-sync">立即同步</button></div>
+      </section>
       <div class="modal-actions"><a class="button quiet" href="/api/backup" download="paperline-backup.json">备份数据</a><span class="modal-spacer"></span><button type="button" class="button quiet" data-action="close-dialog">取消</button><button type="submit" class="button primary">保存设置</button></div>
     </form>
   </dialog>
