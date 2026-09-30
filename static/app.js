@@ -38,6 +38,9 @@ function forgetDraft(key) {
 }
 function captureIdeaDraft(form) {
   const values = Object.fromEntries(new FormData(form).entries());
+  // 记住开始编辑时这张卡的版本，保存时用来发现别的页面是否已经改过。
+  const previous = readDraft(`idea:${form.dataset.id}`);
+  values.baseUpdatedAt = previous?.baseUpdatedAt ?? idea(form.dataset.id)?.updatedAt ?? "";
   writeDraft(`idea:${form.dataset.id}`, values);
   const status = $("#idea-draft-status");
   if (status) { status.hidden = false; status.textContent = "草稿已保留，点击保存卡片可写入笔记。"; localize(status); }
@@ -162,6 +165,34 @@ async function refreshWebdav() {
 function noteLocalChange() {
   if (ui.webdav?.enabled) refreshWebdav();  // 取回服务端排好的下次上传时间
 }
+async function refreshState() {
+  if (!state || document.querySelector("dialog[open]") || ui.session) return false;
+  const next = await api("/api/state");
+  if (JSON.stringify(next) === JSON.stringify(state)) return false;
+  state = next;
+  render();
+  return true;
+}
+async function acceptNewerCard(id) {
+  // 载入别处的新版本；草稿保留，并跟上新版本，确认后再保存就会覆盖。
+  try { state = await api("/api/state"); } catch { return; }
+  const draft = readDraft(`idea:${id}`);
+  if (draft) writeDraft(`idea:${id}`, { ...draft, baseUpdatedAt: idea(id)?.updatedAt || "" });
+  render();
+}
+function formatDuration(seconds) {
+  const minutes = Math.round((seconds || 0) / 60);
+  if (minutes < 1) return "不到 1 分钟";
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  if (!hours) return `${minutes} 分钟`;
+  return rest ? `${hours} 小时 ${rest} 分钟` : `${hours} 小时`;
+}
+function readingTotal(ideaIds) {
+  const wanted = new Set(ideaIds);
+  const sessions = state.sessions.filter((session) => wanted.has(session.ideaId));
+  return { seconds: sessions.reduce((sum, session) => sum + (session.durationSeconds || 0), 0), count: sessions.length };
+}
 async function act(action, payload) {
   const data = await api("/api/action", {
     method: "POST", headers: { "Content-Type": "application/json" },
@@ -170,7 +201,7 @@ async function act(action, payload) {
   state = data.state;
   if (action === "idea.update") {
     const draft = readDraft(`idea:${payload.id}`);
-    if (draft && Object.entries(draft).every(([key, value]) => payload[key] === value)) forgetDraft(`idea:${payload.id}`);
+    if (draft && Object.entries(draft).every(([key, value]) => key === "baseUpdatedAt" || payload[key] === value)) forgetDraft(`idea:${payload.id}`);
   }
   if (data.result.lineId) ui.selectedLineId = data.result.lineId;
   if (data.result.ideaId) { ui.selectedIdeaId = data.result.ideaId; ui.selectedPaperId = ""; }
@@ -323,14 +354,17 @@ function graphNode(kind, item, x, y, width) {
 
 function renderOutline(current) {
   const actions = `${current.ideaIds.length ? `<button type="button" class="button primary" data-action="start-session">开始读 ↗</button>` : ""}<button type="button" class="button secondary" data-action="new-idea">＋ 思想卡</button><button type="button" class="button quiet" data-action="attach-idea">关联已有卡片</button><button type="button" class="button quiet" data-action="edit-line">编辑</button>`;
+  const last = current.ideaIds.length - 1;
   let rows = current.ideaIds.map((id, index) => {
     const item = idea(id);
     if (!item) return "";
     const paperCount = state.edges.filter((connection) => connection.fromType === "paper" && connection.toId === id).length;
-    return `<div class="outline-row ${current.activeIdeaId === id ? "is-next" : ""}"><span class="step-num">${String(index + 1).padStart(2, "0")}</span><button type="button" class="outline-body" data-action="select-idea" data-id="${esc(id)}"><strong data-user-content>${esc(item.title)}</strong><small><span ${item.summary ? "data-user-content" : ""}>${esc(item.summary || "等待写下一句话理解")}</span> · <span>${paperCount} 篇论文</span></small></button><span class="status-pill ${item.status}">${labels.status[item.status]}</span><button type="button" class="mini-action" data-action="set-next" data-id="${esc(id)}">${current.activeIdeaId === id ? "下一张" : "设为下一张"}</button><button type="button" class="mini-action remove-action" data-action="detach-idea" data-id="${esc(id)}" aria-label="从阅读线移出 ${esc(item.title)}">×</button></div>`;
+    const read = readingTotal([id]).seconds;
+    const moves = `<span class="move-group"><button type="button" class="mini-action move-action" data-action="move-idea" data-id="${esc(id)}" data-offset="-1" aria-label="上移 ${esc(item.title)}" ${index === 0 ? "disabled" : ""}>↑</button><button type="button" class="mini-action move-action" data-action="move-idea" data-id="${esc(id)}" data-offset="1" aria-label="下移 ${esc(item.title)}" ${index === last ? "disabled" : ""}>↓</button></span>`;
+    return `<div class="outline-row ${current.activeIdeaId === id ? "is-next" : ""}"><span class="step-num">${String(index + 1).padStart(2, "0")}</span><button type="button" class="outline-body" data-action="select-idea" data-id="${esc(id)}"><strong data-user-content>${esc(item.title)}</strong><small><span ${item.summary ? "data-user-content" : ""}>${esc(item.summary || "等待写下一句话理解")}</span> · <span>${paperCount} 篇论文</span>${read ? ` · <span>已读 ${formatDuration(read)}</span>` : ""}</small></button><span class="status-pill ${item.status}">${labels.status[item.status]}</span>${moves}<button type="button" class="mini-action" data-action="set-next" data-id="${esc(id)}">${current.activeIdeaId === id ? "下一张" : "设为下一张"}</button><button type="button" class="mini-action remove-action" data-action="detach-idea" data-id="${esc(id)}" aria-label="从阅读线移出 ${esc(item.title)}">×</button></div>`;
   }).join("");
   $("#main-view").innerHTML = pageHeader("READING PATH / 阅读线", current.title, current.question || "这条线要回答的问题可以在“编辑”中补充。", actions, true, Boolean(current.question))
-    + `<div class="section-title"><div><span class="eyebrow">YOUR ROUTE</span><h2>按顺序学习</h2></div><span>${current.ideaIds.length} 张卡</span></div>`
+    + `<div class="section-title"><div><span class="eyebrow">YOUR ROUTE</span><h2>按顺序学习</h2></div><span><span>${current.ideaIds.length} 张卡</span>${readingTotal(current.ideaIds).seconds ? ` · <span>累计阅读 ${formatDuration(readingTotal(current.ideaIds).seconds)}</span>` : ""}</span></div>`
     + (rows ? `<div class="outline-list">${rows}</div>` : `<div class="empty-main compact"><h2>还没有思想卡</h2><p>记录阅读时遇到的第一个概念、创新或问题。</p><button type="button" class="button primary" data-action="new-idea">添加第一张卡</button></div>`)
     + `<div class="outline-tip"><strong>阅读线是学习顺序。</strong><span>同一张思想卡可以加入多条阅读线，论文关系会共用。</span></div>`;
 }
@@ -439,6 +473,9 @@ async function markIdea(id, name, value) {
   if (draft) writeDraft(`idea:${id}`, { ...draft, [name]: value });
   try {
     await act("idea.mark", { id, [name]: value });
+    // 这次改动是自己点的，不算冲突：把草稿的版本跟上。
+    const kept = readDraft(`idea:${id}`);
+    if (kept) writeDraft(`idea:${id}`, { ...kept, baseUpdatedAt: idea(id)?.updatedAt || "" });
     toast(name === "status" ? "状态已更新。" : "类型已更新。");
   } catch (error) { toast(error.message, true); render(); }
 }
@@ -457,6 +494,7 @@ function renderIdeaInspector(item) {
   const related = state.edges.filter((connection) => connection.fromType === "idea" && (connection.fromId === item.id || connection.toId === item.id));
   const lineNames = state.lines.filter((entry) => entry.ideaIds.includes(item.id)).map((entry) => entry.title);
   $("#inspector").innerHTML = `<div class="inspector-top"><span class="eyebrow">IDEA CARD</span><span class="status-pill ${item.status}">${labels.status[item.status]}</span></div><h2 class="inspector-title" data-user-content>${esc(item.title)}</h2><p class="inspector-sub">${labels.kind[item.kind]} · 出现在 ${lineNames.length} 条阅读线</p>
+    ${(() => { const total = readingTotal([item.id]); return total.count ? `<p class="reading-total">累计阅读 ${formatDuration(total.seconds)} · ${total.count} 次</p>` : ""; })()}
     <form id="idea-edit-form" class="detail-form" data-id="${esc(item.id)}"><label>名称<input name="title" maxlength="120" value="${esc(edit.title)}" required></label><label>别名<input name="aliases" maxlength="1500" value="${esc(edit.aliases)}" placeholder="缩写、全称或其他写法，用逗号分隔"></label><div class="choice-grid">${choiceField("kind", "类型", labels.kind, edit.kind, item.id)}${choiceField("status", "状态", labels.status, edit.status, item.id)}</div>
     <label>一句话理解<textarea name="summary" rows="3" maxlength="4000" placeholder="用自己的话说清这张卡。">${esc(edit.summary)}</textarea></label><label>核心机制<textarea name="mechanism" rows="4" maxlength="6000" placeholder="关键步骤、公式或假设。">${esc(edit.mechanism)}</textarea></label><label>我的思考<textarea name="thoughts" rows="4" maxlength="6000" placeholder="质疑、联系、引申。">${esc(edit.thoughts)}</textarea></label><p id="idea-draft-status" class="field-help" ${draft ? "" : "hidden"}>草稿已保留，点击保存卡片可写入笔记。</p><button type="submit" class="button primary full">保存卡片</button></form>
     <div class="inspector-section"><div class="inspector-section-head"><h3>论文来源 <span>${papers.length}</span></h3><button type="button" data-action="link-paper">＋</button></div>${papers.length ? papers.map((connection) => relationRow(connection, "paper", paper(connection.fromId))).join("") : `<p class="empty-small">关联论文后，这里会显示每篇论文如何使用这个思想。</p>`}</div>
@@ -786,6 +824,11 @@ document.addEventListener("click", async (event) => {
       updateClock();
       checkpointSession();
     }
+    else if (action === "move-idea") {
+      const current = line(ui.selectedLineId);
+      if (!current) return;
+      await act("line.move", { lineId: current.id, ideaId: id, offset: Number(button.dataset.offset) });
+    }
     else if (action === "set-next") {
       const current = line(ui.selectedLineId);
       await act("line.update", { id: current.id, title: current.title, question: current.question, activeIdeaId: id });
@@ -809,6 +852,7 @@ document.addEventListener("click", async (event) => {
     else if (action === "expand-graph") { ui.graphExpanded = !ui.graphExpanded; markMainAnimation(false); renderMain(); localize($("#main-view")); centerGraph(); }
     else if (action === "open-settings") openSettings();
     else if (action === "open-help") openDialog("#help-dialog");
+    else if (action === "restore-backup") { $("#restore-file").value = ""; $("#restore-file").click(); }
     else if (action === "webdav-test") {
       toast("正在测试 WebDAV 连接…");
       const result = await postJson("/api/webdav/test", webdavPayload());
@@ -869,8 +913,29 @@ document.addEventListener("change", (event) => {
   else captureIdeaDraft(form);
 });
 window.addEventListener("pagehide", () => stopTimer());
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") refreshState().catch(() => {}); });
+window.addEventListener("focus", () => { refreshState().catch(() => {}); });
 $("#zotero-query").addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); searchZotero(); } });
 $("#relation-mode").addEventListener("change", relationTargets);
+$("#restore-file").addEventListener("change", async (event) => {
+  const file = event.target.files?.[0];
+  if (!file) return;
+  try {
+    if (file.size > 20_000_000) throw new Error("备份文件太大，无法恢复。");
+    let backup;
+    try { backup = JSON.parse(await file.text()); } catch { throw new Error("这不是可以恢复的 PaperLine 备份文件。"); }
+    const count = (key) => (Array.isArray(backup?.[key]) ? backup[key].length : 0);
+    const question = `用这份备份替换当前数据？备份里有 ${count("lines")} 条阅读线、${count("ideas")} 张思想卡、${count("papers")} 篇论文。当前数据会先另存一份。`;
+    if (!window.confirm(tr(question))) return;
+    const data = await postJson("/api/restore", { backup });
+    state = data.state;
+    Object.assign(ui, { selectedLineId: "", selectedIdeaId: "", selectedPaperId: "", view: "graph" });
+    closeDialog($("#settings-dialog"));
+    render();
+    noteLocalChange();
+    toast(`已从备份恢复。原来的数据另存为 ${data.result.kept}。`);
+  } catch (error) { toast(error.message, true); }
+});
 document.querySelectorAll("dialog").forEach((dialog) => dialog.addEventListener("close", () => { if (dialog.id === "session-dialog" && !dialog.open) stopTimer(); }));
 $("#session-dialog").addEventListener("cancel", (event) => { if (ui.session?.saving) event.preventDefault(); });
 
@@ -976,10 +1041,16 @@ document.addEventListener("submit", async (event) => {
   if (event.target.id !== "idea-edit-form") return;
   event.preventDefault();
   try {
+    const id = event.target.dataset.id;
     const form = new FormData(event.target);
-    await act("idea.update", { id: event.target.dataset.id, ...Object.fromEntries(form.entries()) });
+    const draft = readDraft(`idea:${id}`);
+    const baseUpdatedAt = draft?.baseUpdatedAt ?? idea(id)?.updatedAt ?? "";
+    await act("idea.update", { id, ...Object.fromEntries(form.entries()), baseUpdatedAt });
     toast("卡片已保存。");
-  } catch (error) { toast(error.message, true); }
+  } catch (error) {
+    if (/别的页面改过/.test(error.message)) await acceptNewerCard(event.target.dataset.id);
+    toast(error.message, true);
+  }
 });
 
 api("/api/state").then((data) => { state = data; render(); checkReminder(); setInterval(checkReminder, 30_000); refreshWebdav(); setInterval(refreshWebdav, 30_000); }).catch((error) => {

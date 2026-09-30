@@ -157,7 +157,8 @@
         <h3>每天怎么用</h3>
         <ul>
           <li>左栏下方的下一步永远显示当前阅读线的下一张卡，点一下就能开始计时阅读。</li>
-          <li>在阅读线视图里可以调整顺序、把某张卡设为下一张，或者把它移出这条线。</li>
+          <li>在阅读线视图里可以用上下箭头调整顺序、把某张卡设为下一张，或者把它移出这条线。</li>
+          <li>每张卡会累计阅读时长，阅读线顶部显示整条线读了多久。</li>
           <li>卡片的类型和状态是按钮，点一次立即保存；正文改完要点保存卡片。</li>
           <li>读出新问题时点引申新卡，新卡会自动连回来源思想。</li>
           <li>同一张思想卡可以加入多条阅读线，它的论文关系是共用的。</li>
@@ -190,6 +191,8 @@
         <h3>数据与删除</h3>
         <ul>
           <li>所有数据只留在这台机器上，写入前会自动留一份备份，设置里也能下载完整 JSON。</li>
+          <li>设置里的“从备份恢复”可以选一个备份文件替换当前数据，替换前会把当前数据另存一份。</li>
+          <li>同时开着两个页面时，切回页面会自动载入最新数据；如果一张卡已在别处改过，保存会先提醒你。</li>
           <li>删除思想卡会连带它的关系和阅读记录；删除论文只删关系；删除阅读线会保留卡片。</li>
           <li>已经导出到 Obsidian 的笔记不会被自动删除，需要时自己清理。</li>
           <li>在设置里填好 WebDAV 后，改动会自动上传到云端，并每天保留一份历史版本；右上角会显示同步状态。</li>
@@ -229,7 +232,8 @@
         <p id="webdav-status" class="field-help" data-user-content aria-live="polite"></p>
         <div class="settings-actions"><button type="button" class="button secondary" data-action="webdav-test">测试连接</button><button type="button" class="button secondary" data-action="webdav-sync">立即同步</button></div>
       </section>
-      <div class="modal-actions"><a class="button quiet" href="/api/backup" download="paperline-backup.json">备份数据</a><span class="modal-spacer"></span><button type="button" class="button quiet" data-action="close-dialog">取消</button><button type="submit" class="button primary">保存设置</button></div>
+      <input type="file" id="restore-file" accept="application/json,.json" hidden>
+      <div class="modal-actions"><a class="button quiet" href="/api/backup" download="paperline-backup.json">备份数据</a><button type="button" class="button quiet" data-action="restore-backup">从备份恢复</button><span class="modal-spacer"></span><button type="button" class="button quiet" data-action="close-dialog">取消</button><button type="submit" class="button primary">保存设置</button></div>
     </form>
   </dialog>
 </body>

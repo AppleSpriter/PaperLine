@@ -52,7 +52,7 @@ function createApp(storage = new Map(), clock = { now: 0 }) {
   });
   vm.runInContext(appSource, context);
   const app = vm.runInContext(`({ ui, openSession, closeDialog, stopTimer, sessionSeconds, captureIdeaDraft, searchIdeas, selectIdea, latestSession, readingRecap,
-    renderIdeaInspector, renderInspector, renderIdeas, renderPaperResults, searchPapers, searchLines, searchEverything, markIdea, toast, readDraft, act, setState(value) { state = value; } })`, context);
+    renderIdeaInspector, renderInspector, renderIdeas, renderPaperResults, searchPapers, searchLines, searchEverything, markIdea, toast, readDraft, act, refreshState, formatDuration, readingTotal, renderOutline, setState(value) { state = value; } })`, context);
   app.setState(fixture());
   app.ui.selectedLineId = "l1";
   return { app, node, context, storage, clock };
@@ -309,4 +309,43 @@ test("toasts rise above an open dialog so settings feedback stays visible", () =
   assert.equal(appended.length, 1);
   assert.deepEqual(calls, ["show", "hide", "show"]);
   assert.equal(toastNode.textContent, "已上传到 WebDAV。");
+});
+
+test("reading time adds up per card and per reading path", () => {
+  const { app, node } = createApp();
+  const data = fixture();
+  data.sessions = [
+    { ideaId: "i1", createdAt: "2026-09-29T12:00:00Z", note: "a", durationSeconds: 1500 },
+    { ideaId: "i1", createdAt: "2026-09-30T12:00:00Z", note: "b", durationSeconds: 2400 },
+    { ideaId: "i2", createdAt: "2026-09-30T13:00:00Z", note: "c", durationSeconds: 300 },
+  ];
+  app.setState(data);
+  assert.equal(app.formatDuration(20), "不到 1 分钟");
+  assert.equal(app.formatDuration(3900), "1 小时 5 分钟");
+  assert.equal(app.readingTotal(["i1"]).count, 2);
+  app.renderIdeaInspector(data.ideas[0]);
+  assert.match(node("#inspector").innerHTML, /累计阅读 1 小时 5 分钟 · 2 次/);
+  app.renderOutline(data.lines[0]);
+  assert.match(node("#main-view").innerHTML, /累计阅读 1 小时 10 分钟/);
+  assert.match(node("#main-view").innerHTML, /data-action="move-idea"[^>]*data-offset="-1"[^>]*disabled/);
+});
+
+test("a stale draft remembers the version it started from", async () => {
+  const { app, context } = createApp();
+  const data = fixture();
+  data.ideas[0].updatedAt = "2026-09-30T01:00:00+00:00";
+  app.setState(data);
+  const values = { title: "i1", kind: "concept", status: "inbox", summary: "本页", mechanism: "", thoughts: "" };
+  app.captureIdeaDraft({ dataset: { id: "i1" }, values });
+  assert.equal(app.readDraft("idea:i1").baseUpdatedAt, "2026-09-30T01:00:00+00:00");
+  // 测试替身对任何选择器都返回节点；这里声明没有打开的弹窗。
+  const fallback = context.document.querySelector;
+  context.document.querySelector = (selector) => selector === "dialog[open]" ? null : fallback(selector);
+  let polled = 0;
+  context.fetch = async () => { polled += 1; return { ok: true, json: async () => data }; };
+  assert.equal(await app.refreshState(), false);
+  assert.equal(polled, 1);
+  const newer = { ...data, ideas: [{ ...data.ideas[0], summary: "别处改的" }, data.ideas[1]] };
+  context.fetch = async () => ({ ok: true, json: async () => newer });
+  assert.equal(await app.refreshState(), true);
 });

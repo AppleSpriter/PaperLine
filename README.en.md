@@ -35,6 +35,10 @@ Card edits are kept as drafts when you switch cards or reload the page. **Contin
 
 Card type and status are button rows: one click saves them right away, with no need to choose **Save card**. Text fields still behave as drafts.
 
+In the reading path view, use ↑ and ↓ on each row to set the learning order. Each card adds up its reading time: the card details show the total and the number of sessions, and the reading path shows the total for the whole path.
+
+With two pages open, switching back loads the latest data. If a card was changed elsewhere, saving warns you and loads the newer version while keeping your text as a draft; save again to overwrite.
+
 ## Deleting and shortcuts
 
 - Idea card: **Delete this idea card** at the bottom of the details panel. Its paper connections, idea connections, and reading sessions go with it.
@@ -49,7 +53,7 @@ Keep Zotero running and enable **Allow other applications on this computer to co
 
 - App data is stored in `data/state.json`. Git ignores the `data/` directory.
 - Before each write, the previous data is copied to `data/state.backup.json`. If the main file is damaged, PaperLine changes nothing and points you to that backup.
-- **Settings → Back up data** downloads a complete JSON backup.
+- **Settings → Back up data** downloads a complete JSON backup, and **Restore from backup** replaces the current data with a backup file. The file's format and references are checked first, and the current data is saved as `data/state.before-restore-TIME.json`. The Obsidian path, language, and reminder stay as set on this machine. Files from the WebDAV `history/` folder can be restored the same way.
 
 ## WebDAV sync
 

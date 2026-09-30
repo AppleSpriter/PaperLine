@@ -294,6 +294,66 @@ class ReadingGraphTests(unittest.TestCase):
         )
 
 
+    def test_cards_move_up_and_down_within_a_reading_path(self):
+        line_id, first = self.make_line_and_idea()
+        second = app.apply_action(self.state, "idea.create", {"title": "B", "lineId": line_id})["ideaId"]
+        third = app.apply_action(self.state, "idea.create", {"title": "C", "lineId": line_id})["ideaId"]
+        app.apply_action(self.state, "line.move", {"lineId": line_id, "ideaId": third, "offset": -1})
+        self.assertEqual(self.state["lines"][0]["ideaIds"], [first, third, second])
+        app.apply_action(self.state, "line.move", {"lineId": line_id, "ideaId": first, "offset": -1})
+        self.assertEqual(self.state["lines"][0]["ideaIds"], [first, third, second])
+        app.apply_action(self.state, "line.move", {"lineId": line_id, "ideaId": first, "offset": 1})
+        self.assertEqual(self.state["lines"][0]["ideaIds"], [third, first, second])
+        self.assertEqual(self.state["lines"][0]["activeIdeaId"], first)
+        with self.assertRaisesRegex(ValueError, "移动方向无效"):
+            app.apply_action(self.state, "line.move", {"lineId": line_id, "ideaId": first, "offset": 2})
+        with self.assertRaisesRegex(ValueError, "不在阅读线中"):
+            app.apply_action(self.state, "line.move", {"lineId": line_id, "ideaId": "missing", "offset": 1})
+
+    def test_saving_a_card_changed_elsewhere_is_refused(self):
+        _, idea_id = self.make_line_and_idea()
+        seen = app.find(self.state, "ideas", idea_id)["updatedAt"]
+        payload = {"id": idea_id, "title": "GRPO", "kind": "concept", "status": "inbox",
+                   "summary": "本页的理解", "mechanism": "", "thoughts": "", "baseUpdatedAt": seen}
+        app.find(self.state, "ideas", idea_id)["updatedAt"] = "2099-01-01T00:00:00+00:00"
+        with self.assertRaisesRegex(ValueError, "别的页面改过"):
+            app.apply_action(self.state, "idea.update", payload)
+        self.assertNotEqual(app.find(self.state, "ideas", idea_id)["summary"], "本页的理解")
+        app.apply_action(self.state, "idea.update", {**payload, "baseUpdatedAt": "2099-01-01T00:00:00+00:00"})
+        self.assertEqual(app.find(self.state, "ideas", idea_id)["summary"], "本页的理解")
+        del payload["baseUpdatedAt"]
+        app.apply_action(self.state, "idea.update", {**payload, "summary": "老客户端"})
+        self.assertEqual(app.find(self.state, "ideas", idea_id)["summary"], "老客户端")
+
+    def test_restoring_a_backup_keeps_a_copy_and_local_settings(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            with patch.object(app, "DATA_FILE", root / "state.json"), patch.object(app, "BACKUP_FILE", root / "state.backup.json"):
+                current = app.default_state()
+                app.apply_action(current, "line.create", {"title": "现在的线"})
+                current["settings"]["language"] = "en"
+                app.save_state(current)
+
+                backup = app.default_state()
+                line_id = app.apply_action(backup, "line.create", {"title": "备份里的线"})["lineId"]
+                app.apply_action(backup, "idea.create", {"title": "备份卡", "lineId": line_id})
+                backup["settings"]["vaultPath"] = "/Volumes/别人的电脑"
+
+                result = app.restore_state(json.loads(json.dumps(backup)))
+                restored = app.load_state()
+                self.assertEqual([line["title"] for line in restored["lines"]], ["备份里的线"])
+                self.assertEqual(restored["settings"]["language"], "en")
+                self.assertEqual(restored["settings"]["vaultPath"], "")
+                self.assertEqual(result["counts"]["ideas"], 1)
+                kept = json.loads((root / result["kept"]).read_text(encoding="utf-8"))
+                self.assertEqual(kept["lines"][0]["title"], "现在的线")
+
+                for broken in ({"version": 2}, {**backup, "ideas": "x"},
+                               {**backup, "lines": [{"id": "l", "ideaIds": ["ghost"]}]}):
+                    with self.assertRaises(ValueError):
+                        app.restore_state(broken)
+                self.assertEqual(app.load_state()["lines"][0]["title"], "备份里的线")
+
 
 class HttpTests(unittest.TestCase):
     def test_local_api_persists_and_rejects_foreign_origin(self):

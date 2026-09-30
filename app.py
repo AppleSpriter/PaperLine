@@ -79,6 +79,45 @@ def load_state() -> dict[str, Any]:
     return state
 
 
+RESTORE_COLLECTIONS = ("lines", "ideas", "papers", "edges", "sessions")
+
+
+def validate_backup(data: Any) -> dict[str, Any]:
+    if not isinstance(data, dict) or data.get("version") != 1:
+        raise ValueError("这不是可以恢复的 PaperLine 备份文件。")
+    for key in RESTORE_COLLECTIONS:
+        items = data.get(key)
+        if not isinstance(items, list) or not all(isinstance(item, dict) and isinstance(item.get("id"), str) for item in items):
+            raise ValueError("备份文件内容不完整，无法恢复。")
+    if not isinstance(data.get("settings"), dict):
+        raise ValueError("备份文件内容不完整，无法恢复。")
+    ideas = {item["id"] for item in data["ideas"]}
+    papers = {item["id"] for item in data["papers"]}
+    for line in data["lines"]:
+        if not isinstance(line.get("ideaIds"), list) or not set(line["ideaIds"]) <= ideas:
+            raise ValueError("备份文件里的阅读线引用了不存在的思想卡。")
+    for edge in data["edges"]:
+        source = papers if edge.get("fromType") == "paper" else ideas
+        if edge.get("fromId") not in source or edge.get("toId") not in ideas:
+            raise ValueError("备份文件里有关系指向不存在的内容。")
+    return data
+
+
+def restore_state(data: Any) -> dict[str, Any]:
+    backup = validate_backup(data)
+    current = load_state()
+    DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    # 覆盖前单独留一份恢复前的数据，恢复错了还能退回去。
+    keep = DATA_FILE.parent / f"state.before-restore-{stamp}.json"
+    keep.write_text(json.dumps(current, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.chmod(keep, 0o600)
+    # 设备相关的设置沿用本机，不从别的电脑的备份里带过来。
+    backup["settings"] = {**default_state()["settings"], **current.get("settings", {})}
+    save_state(backup)
+    return {"kept": keep.name, "counts": {key: len(backup[key]) for key in RESTORE_COLLECTIONS}}
+
+
 def save_state(state: dict[str, Any]) -> None:
     DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
     if DATA_FILE.exists():
@@ -188,6 +227,20 @@ def apply_action(state: dict[str, Any], action: str, payload: dict[str, Any]) ->
         line["activeIdeaId"] = active
         line["updatedAt"] = utc_now()
         result["lineId"] = line["id"]
+    elif action == "line.move":
+        line = find(state, "lines", field(payload, "lineId", 40, True))
+        idea_id = field(payload, "ideaId", 40, True)
+        if idea_id not in line["ideaIds"]:
+            raise ValueError("这张卡不在阅读线中。")
+        step = payload.get("offset")
+        if step not in (-1, 1):
+            raise ValueError("移动方向无效。")
+        index = line["ideaIds"].index(idea_id)
+        target = index + step
+        if 0 <= target < len(line["ideaIds"]):
+            line["ideaIds"][index], line["ideaIds"][target] = line["ideaIds"][target], line["ideaIds"][index]
+            line["updatedAt"] = utc_now()
+        result["lineId"] = line["id"]
     elif action == "line.attach":
         line = find(state, "lines", field(payload, "lineId", 40, True))
         idea = find(state, "ideas", field(payload, "ideaId", 40, True))
@@ -254,6 +307,9 @@ def apply_action(state: dict[str, Any], action: str, payload: dict[str, Any]) ->
         result["ideaId"] = idea_id
     elif action == "idea.update":
         idea = find(state, "ideas", field(payload, "id", 40, True))
+        seen = field(payload, "baseUpdatedAt", 40)
+        if seen and seen != idea.get("updatedAt", ""):
+            raise ValueError("这张卡已在别的页面改过。刷新后再保存，你写的内容会作为草稿保留。")
         status = field(payload, "status", 20)
         kind = field(payload, "kind", 20)
         if status not in IDEA_STATUSES or kind not in IDEA_KINDS:
@@ -946,7 +1002,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             length = int(self.headers.get("Content-Length", "0"))
-            if not 0 < length <= 1_000_000:
+            if not 0 < length <= 20_000_000:
                 raise ValueError("请求内容过大或为空。")
             request = json.loads(self.rfile.read(length))
             if not isinstance(request, dict):
@@ -960,6 +1016,12 @@ class Handler(BaseHTTPRequestHandler):
                     state = load_state()
                     result = apply_action(state, action, payload)
                     save_state(state)
+                SYNC.mark_dirty()
+                self._json(200, {"state": state, "result": result})
+            elif self.path == "/api/restore":
+                with LOCK:
+                    result = restore_state(request.get("backup"))
+                    state = load_state()
                 SYNC.mark_dirty()
                 self._json(200, {"state": state, "result": result})
             elif self.path == "/api/export":
