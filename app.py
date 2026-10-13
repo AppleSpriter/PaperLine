@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import copy
 import email.utils
 import json
 import os
@@ -25,6 +26,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from paper_map import ARXIV, RECOMMENDATIONS_VERSION, collect_snapshot, doi_key, reference_recommendations
+
 
 ROOT = Path(__file__).resolve().parent
 DATA_FILE = ROOT / "data" / "state.json"
@@ -40,6 +43,7 @@ STATIC = {
     "/style.css": (ROOT / "static" / "style.css", "text/css; charset=utf-8"),
 }
 LOCK = threading.RLock()
+_RECOMMENDATION_CACHE: tuple[Any, list[dict[str, Any]]] | None = None
 ZOTERO_BASE = "http://127.0.0.1:23119/api/users/0"
 IDEA_KINDS = {"concept", "innovation", "question"}
 IDEA_STATUSES = {"inbox", "learning", "understood"}
@@ -67,6 +71,10 @@ def default_state() -> dict[str, Any]:
         "lines": [],
         "ideas": [],
         "papers": [],
+        "citations": [],
+        "recommendations": [],
+        "recommendationsVersion": RECOMMENDATIONS_VERSION,
+        "zoteroSync": {},
         "edges": [],
         "sessions": [],
     }
@@ -78,10 +86,18 @@ def load_state() -> dict[str, Any]:
     try:
         with DATA_FILE.open("r", encoding="utf-8") as handle:
             state = json.load(handle)
+            stat = os.fstat(handle.fileno())
+            cache_key = (str(DATA_FILE), stat.st_ino, stat.st_mtime_ns, stat.st_size)
     except json.JSONDecodeError as error:
         raise ValueError(f"数据文件已损坏，未修改任何内容；上一份备份：{BACKUP_FILE}") from error
     if state.get("version") != 1:
         raise ValueError("数据版本不受支持。")
+    state.setdefault("citations", [])
+    state.setdefault("recommendations", [])
+    state.setdefault("zoteroSync", {})
+    for paper in state["papers"]:
+        paper.setdefault("readStatus", "unread")
+    ensure_recommendations(state, cache_key)
     return state
 
 
@@ -100,12 +116,56 @@ def validate_backup(data: Any) -> dict[str, Any]:
     ideas = {item["id"] for item in data["ideas"]}
     papers = {item["id"] for item in data["papers"]}
     for line in data["lines"]:
-        if not isinstance(line.get("ideaIds"), list) or not set(line["ideaIds"]) <= ideas:
+        if (not isinstance(line.get("ideaIds"), list)
+                or not all(isinstance(item, str) for item in line["ideaIds"])
+                or not set(line["ideaIds"]) <= ideas):
             raise ValueError("备份文件里的阅读线引用了不存在的思想卡。")
     for edge in data["edges"]:
         source = papers if edge.get("fromType") == "paper" else ideas
-        if edge.get("fromId") not in source or edge.get("toId") not in ideas:
+        if (not isinstance(edge.get("fromId"), str) or not isinstance(edge.get("toId"), str)
+                or edge["fromId"] not in source or edge["toId"] not in ideas):
             raise ValueError("备份文件里有关系指向不存在的内容。")
+    citations = data.get("citations", [])
+    if not isinstance(citations, list) or any(
+        not isinstance(edge, dict) or not isinstance(edge.get("id"), str)
+        or not isinstance(edge.get("fromId"), str) or not isinstance(edge.get("toId"), str)
+        or edge["fromId"] not in papers or edge["toId"] not in papers
+        or edge["fromId"] == edge["toId"]
+        or any(not isinstance(edge.get(name, ""), str) for name in ("evidence", "method", "attachmentKey"))
+        for edge in citations
+    ):
+        raise ValueError("备份文件里的论文引用关系无效。")
+    if "recommendationsVersion" in data and (type(data["recommendationsVersion"]) is not int
+                                              or data["recommendationsVersion"] < 0):
+        raise ValueError("备份文件里的推荐论文版本无效。")
+    recommendations = data.get("recommendations", [])
+    if not isinstance(recommendations, list):
+        raise ValueError("备份文件里的推荐论文无效。")
+    for item in recommendations:
+        if (not isinstance(item, dict) or not isinstance(item.get("id"), str)
+                or any(not isinstance(item.get(name, ""), str) for name in ("title", "doi", "arxivId", "url", "referenceText"))
+                or not isinstance(item.get("verification"), str)
+                or item["verification"] not in {"library", "identifier", "identifier_only", "title", "raw"}
+                or not isinstance(item.get("citingIds"), list)
+                or not all(isinstance(value, str) and value in papers for value in item["citingIds"])
+                or len(set(item["citingIds"])) != len(item["citingIds"])
+                or type(item.get("citationCount")) is not int
+                or item["citationCount"] != len(item["citingIds"])
+                or (item.get("matchedPaperId") is not None and
+                    (not isinstance(item["matchedPaperId"], str) or item["matchedPaperId"] not in papers))
+                or not isinstance(item.get("evidence"), list)):
+            raise ValueError("备份文件里的推荐论文无效。")
+        for evidence in item["evidence"]:
+            if (not isinstance(evidence, dict) or evidence.get("citingId") not in item["citingIds"]
+                    or any(not isinstance(evidence.get(name, ""), str) for name in ("attachmentKey", "text"))):
+                raise ValueError("备份文件里的推荐论文证据无效。")
+    if any(paper.get("readStatus", "unread") not in ("read", "unread") for paper in data["papers"]):
+        raise ValueError("备份文件里的论文阅读状态无效。")
+    sync = data.get("zoteroSync", {})
+    if (not isinstance(sync, dict)
+            or ("syncedAt" in sync and not isinstance(sync["syncedAt"], str))
+            or ("stats" in sync and not isinstance(sync["stats"], dict))):
+        raise ValueError("备份文件里的 Zotero 同步信息无效。")
     return data
 
 
@@ -120,6 +180,7 @@ def restore_state(data: Any, keep_stamp: bool = False, label: str = "before-rest
     os.chmod(keep, 0o600)
     # 设备相关的设置沿用本机，不从别的电脑的备份里带过来。
     backup["settings"] = {**default_state()["settings"], **current.get("settings", {})}
+    ensure_recommendations(backup)
     save_state(backup, stamp=not keep_stamp)
     return {"kept": keep.name, "counts": {key: len(backup[key]) for key in RESTORE_COLLECTIONS}}
 
@@ -368,6 +429,47 @@ def apply_action(state: dict[str, Any], action: str, payload: dict[str, Any]) ->
             if not (edge["fromType"] == "paper" and edge["fromId"] == paper_id)
         ]
         state["papers"] = [item for item in state["papers"] if item["id"] != paper_id]
+        state["citations"] = [
+            edge for edge in state.get("citations", [])
+            if paper_id not in {edge["fromId"], edge["toId"]}
+        ]
+        cleaned = []
+        for item in state.get("recommendations", []):
+            item["citingIds"] = [value for value in item["citingIds"] if value != paper_id]
+            item["evidence"] = [value for value in item["evidence"] if value["citingId"] != paper_id]
+            if item.get("matchedPaperId") == paper_id:
+                item.pop("matchedPaperId", None)
+            item["citationCount"] = len(set(item["citingIds"]))
+            if item["citationCount"] >= 2:
+                cleaned.append(item)
+        state["recommendations"] = sorted(cleaned, key=lambda item: -item["citationCount"])
+    elif action == "paper.add_to_line":
+        paper = find(state, "papers", field(payload, "id", 40, True))
+        line = find(state, "lines", field(payload, "lineId", 40, True))
+        linked = {edge["toId"] for edge in state["edges"]
+                  if edge["fromType"] == "paper" and edge["fromId"] == paper["id"]}
+        idea_id = field(payload, "ideaId", 40)
+        if idea_id:
+            find(state, "ideas", idea_id)
+            if idea_id not in linked:
+                raise ValueError("请选择已关联这篇论文的思想卡。")
+        else:
+            idea_id = next((value for value in line["ideaIds"] if value in linked), "")
+        if not idea_id:
+            created = apply_action(state, "idea.create", {"title": paper["title"][:120],
+                                   "paperId": paper["id"], "lineId": line["id"], "relation": "uses"})
+            idea_id = created["ideaId"]
+        else:
+            apply_action(state, "line.attach", {"lineId": line["id"], "ideaId": idea_id})
+        result.update(lineId=line["id"], ideaId=idea_id, paperId=paper["id"])
+    elif action == "paper.mark":
+        paper = find(state, "papers", field(payload, "id", 40, True))
+        read_status = field(payload, "readStatus", 10, True)
+        if read_status not in {"unread", "read"}:
+            raise ValueError("论文阅读状态无效。")
+        paper["readStatus"] = read_status
+        paper["updatedAt"] = utc_now()
+        result["paperId"] = paper["id"]
     elif action == "line.delete":
         line_id = find(state, "lines", field(payload, "id", 40, True))["id"]
         # 思想卡、论文和阅读记录都保留，只移除这条阅读线本身。
@@ -376,17 +478,25 @@ def apply_action(state: dict[str, Any], action: str, payload: dict[str, Any]) ->
         key = field(payload, "zoteroKey", 40)
         if key and not re.fullmatch(r"[A-Z0-9]{8}", key):
             raise ValueError("Zotero Key 格式无效。")
-        existing = next((paper for paper in state["papers"] if key and paper["zoteroKey"] == key), None)
+        existing = next((paper for paper in state["papers"] if key and paper.get("zoteroKey") == key), None)
         if existing:
             result["paperId"] = existing["id"]
         else:
+            author_names = payload.get("authorNames", [])
+            if (not isinstance(author_names, list) or not all(isinstance(name, str) for name in author_names)
+                    or len(author_names) > 10000):
+                raise ValueError("作者列表无效。")
             paper_id = fresh_id("p")
             title = field(payload, "title", 300, True)
             state["papers"].append({
                 "id": paper_id, "title": title, "fileName": f"{slug(title)}-{paper_id}.md",
-                "authors": field(payload, "authors", 500),
+                "authors": field(payload, "authors", 20000),
+                "authorNames": author_names, "authorCount": len(author_names),
+                "institution": field(payload, "institution", 10000),
+                "extra": field(payload, "extra", 20000),
                 "year": field(payload, "year", 20), "doi": field(payload, "doi", 300),
                 "zoteroKey": key,
+                "readStatus": "unread",
                 "zoteroUrl": f"zotero://select/library/items/{key}" if key else "",
                 "createdAt": utc_now(), "updatedAt": utc_now(),
             })
@@ -485,7 +595,7 @@ def zotero_search(query: str) -> list[dict[str, str]]:
             continue
         creators = data.get("creators", [])
         authors = []
-        for creator in creators[:5]:
+        for creator in creators:
             name = creator.get("name") or " ".join(
                 part for part in (creator.get("firstName"), creator.get("lastName")) if part
             )
@@ -494,10 +604,195 @@ def zotero_search(query: str) -> list[dict[str, str]]:
         year_match = re.search(r"\b(?:19|20)\d{2}\b", data.get("date", ""))
         result.append({
             "title": data.get("title") or "未命名论文", "authors": ", ".join(authors),
+            "authorNames": authors, "authorCount": len(authors),
             "year": year_match.group(0) if year_match else "",
             "doi": data.get("DOI", ""), "zoteroKey": item.get("key", ""),
+            "extra": data.get("extra", ""), "institution": data.get("extra", ""),
         })
     return result
+
+
+def map_recommendations(items: list[dict[str, Any]], by_key: dict[str, dict[str, Any]],
+                        current_keys: set[str]) -> list[dict[str, Any]]:
+    recommendations = []
+    for item in items:
+        citing_ids = list(dict.fromkeys(by_key[key]["id"] for key in item.get("citingKeys", [])
+                                       if key in current_keys and key in by_key))
+        if len(citing_ids) < 2:
+            continue
+        recommendation = {name: copy.deepcopy(item.get(name, "")) for name in
+                          ("id", "title", "doi", "arxivId", "url", "referenceText", "verification")}
+        recommendation.update(citingIds=citing_ids, citationCount=len(citing_ids), evidence=[])
+        matched = by_key.get(item.get("matchedKey"))
+        if matched and item.get("matchedKey") in current_keys:
+            recommendation["matchedPaperId"] = matched["id"]
+        for evidence in item.get("evidence", []):
+            source = by_key.get(evidence.get("citingKey"))
+            if source and source["id"] in citing_ids:
+                recommendation["evidence"].append({"citingId": source["id"],
+                     "attachmentKey": evidence.get("attachmentKey", ""), "text": evidence.get("text", "")})
+        recommendations.append(recommendation)
+    return sorted(recommendations, key=lambda item: (-item["citationCount"], item["id"]))
+
+
+def rebuild_recommendations(state: dict[str, Any]) -> list[dict[str, Any]]:
+    """Upgrade saved reference evidence without contacting Zotero or editing notes."""
+    papers = []
+    by_id = {}
+    for saved in state["papers"]:
+        if saved.get("zoteroMissing"):
+            continue
+        key = saved.get("zoteroKey") or "local:" + saved["id"]
+        identifiers = " ".join(str(saved.get(name) or "") for name in ("doi", "url", "extra"))
+        analysis = saved.get("referenceAnalysis")
+        attachments = analysis.get("attachments") if isinstance(analysis, dict) else None
+        attachments = [item for item in attachments if isinstance(item, dict)
+                       and isinstance(item.get("key"), str) and isinstance(item.get("referenceText", ""), str)] \
+                      if isinstance(attachments, list) else []
+        arxiv_ids = saved.get("arxivIds")
+        arxiv_ids = [value for value in arxiv_ids if isinstance(value, str)] if isinstance(arxiv_ids, list) else []
+        paper = {**saved, "zoteroKey": key, "title": str(saved.get("title") or ""),
+                 "doi": doi_key(str(saved.get("doi") or "")) or doi_key(str(saved.get("url") or "")),
+                 "arxivIds": sorted(set(arxiv_ids) |
+                                    {match.group(1).casefold() for match in ARXIV.finditer(identifiers)}),
+                 "referenceAnalysis": {"attachments": attachments}}
+        papers.append(paper)
+        by_id[saved["id"]] = paper
+    citations = []
+    for edge in state.get("citations", []):
+        source, target = by_id.get(edge["fromId"]), by_id.get(edge["toId"])
+        if source and target and source["id"] != target["id"]:
+            citations.append({"fromKey": source["zoteroKey"], "toKey": target["zoteroKey"],
+                              "attachmentKey": edge.get("attachmentKey", ""), "evidence": edge.get("evidence", "")})
+    by_key = {paper["zoteroKey"]: paper for paper in papers}
+    return map_recommendations(reference_recommendations(papers, citations), by_key, set(by_key))
+
+
+def ensure_recommendations(state: dict[str, Any], cache_key: Any = None) -> None:
+    """Migrate once in memory; reads never write or change the saved timestamp."""
+    global _RECOMMENDATION_CACHE
+    if state.get("recommendationsVersion") == RECOMMENDATIONS_VERSION:
+        return
+    with LOCK:
+        if cache_key is not None and _RECOMMENDATION_CACHE and _RECOMMENDATION_CACHE[0] == cache_key:
+            state["recommendations"] = copy.deepcopy(_RECOMMENDATION_CACHE[1])
+        else:
+            state["recommendations"] = rebuild_recommendations(state)
+            if cache_key is not None:
+                _RECOMMENDATION_CACHE = (cache_key, copy.deepcopy(state["recommendations"]))
+    state["recommendationsVersion"] = RECOMMENDATIONS_VERSION
+    if state.get("zoteroSync", {}).get("stats") is not None:
+        state["zoteroSync"]["stats"]["recommendations"] = len(state["recommendations"])
+
+
+def merge_zotero_snapshot(state: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Merge into the latest state so edits made during PDF analysis survive."""
+    by_key = {paper["zoteroKey"]: paper for paper in state["papers"] if paper.get("zoteroKey")}
+    added = updated = 0
+    current_keys = {item["zoteroKey"] for item in snapshot["papers"]}
+    metadata_fields = ("title", "authors", "year", "doi", "arxivIds", "zoteroVersion", "url", "tags", "referenceAnalysis", "institution", "extra", "authorNames", "authorCount")
+    for item in snapshot["papers"]:
+        item = copy.deepcopy(item)
+        # Cache hits describe this run, not a change to paper metadata.
+        for attachment in item.get("referenceAnalysis", {}).get("attachments", []):
+            attachment.pop("cached", None)
+        key = item["zoteroKey"]
+        paper = by_key.get(key)
+        if paper is None:
+            paper_id = fresh_id("p")
+            paper = {
+                "id": paper_id, "zoteroKey": key, "readStatus": "unread",
+                "fileName": f"{slug(item['title'])}-{paper_id}.md",
+                "createdAt": utc_now(),
+            }
+            state["papers"].append(paper)
+            by_key[key] = paper
+            added += 1
+        elif any(paper.get(name) != item.get(name) for name in metadata_fields):
+            updated += 1
+        for name in metadata_fields:
+            if name in item:
+                paper[name] = item[name]
+        paper.setdefault("readStatus", "unread")
+        paper["zoteroUrl"] = f"zotero://select/library/items/{key}"
+        paper["zoteroMissing"] = False
+        paper["updatedAt"] = utc_now()
+    missing = 0
+    for key, paper in by_key.items():
+        if key not in current_keys:
+            paper["zoteroMissing"] = True
+            missing += 1
+    citations = []
+    seen = set()
+    for edge in snapshot["citations"]:
+        source, target = by_key.get(edge["fromKey"]), by_key.get(edge["toKey"])
+        if not source or not target or source["id"] == target["id"]:
+            continue
+        pair = (source["id"], target["id"])
+        if pair in seen:
+            continue
+        seen.add(pair)
+        citations.append({
+            "id": f"cite_{source['id']}_{target['id']}",
+            "fromId": source["id"], "toId": target["id"],
+            "method": edge.get("method", ""), "evidence": edge.get("evidence", ""),
+            "attachmentKey": edge.get("attachmentKey", ""),
+        })
+    state["citations"] = citations
+    state["recommendations"] = map_recommendations(snapshot.get("recommendations", []), by_key, current_keys)
+    state["recommendationsVersion"] = RECOMMENDATIONS_VERSION
+    stats = {**snapshot["stats"], "added": added, "updated": updated, "missing": missing, "citations": len(citations),
+             "recommendations": len(state["recommendations"])}
+    state["zoteroSync"] = {"syncedAt": utc_now(), "stats": stats}
+    return state["zoteroSync"]
+
+
+class ZoteroLibrarySync:
+    """One background library scan; ordinary reading and marking stay responsive."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.status: dict[str, Any] = {"status": "idle", "processed": 0, "total": 0, "message": ""}
+
+    def public(self) -> dict[str, Any]:
+        with self.lock:
+            return copy.deepcopy(self.status)
+
+    def start(self) -> dict[str, Any]:
+        with self.lock:
+            if self.status["status"] == "running":
+                return copy.deepcopy(self.status)
+            self.status = {"status": "running", "processed": 0, "total": 0, "message": "正在读取 Zotero 论文库…"}
+            threading.Thread(target=self.run, daemon=True, name="zotero-library-sync").start()
+            return copy.deepcopy(self.status)
+
+    def progress(self, update: dict[str, Any]) -> None:
+        with self.lock:
+            self.status.update(
+                processed=update.get("current", 0), total=update.get("total", 0),
+                phase=update.get("phase", ""), title=update.get("title", ""),
+                message="正在解析参考文献…" if update.get("phase") == "references" else "正在读取 Zotero 论文库…",
+            )
+
+    def run(self) -> None:
+        try:
+            with LOCK:
+                previous = copy.deepcopy(load_state()["papers"])
+            snapshot = collect_snapshot(zotero_get, previous, self.progress)
+            with LOCK:
+                state = load_state()
+                result = merge_zotero_snapshot(state, snapshot)
+                save_state(state)
+            SYNC.mark_dirty()
+            with self.lock:
+                self.status.update(status="complete", message="Zotero 论文库已同步。", result=result)
+        except Exception as error:
+            # No partial snapshot is saved. The UI keeps the previous library and can retry.
+            with self.lock:
+                self.status.update(status="error", message="Zotero 同步失败。", error=str(error))
+
+
+ZOTERO_SYNC = ZoteroLibrarySync()
 
 
 def zotero_annotations(paper_key: str) -> list[dict[str, str]]:
@@ -634,18 +929,17 @@ def render_note(state: dict[str, Any], kind: str, item: dict[str, Any]) -> str:
 
 
 def managed_document(item_id: str, generated: str, extra: str) -> str:
-    return f"<!-- PAPERLINE:START {item_id} -->\n{generated}<!-- PAPERLINE:END {item_id} -->\n\n{extra}"
+    return generated + "\n" + extra
 
 
 def merge_managed(existing: str, item_id: str, generated: str, where: str = "") -> str:
     start = f"<!-- PAPERLINE:START {item_id} -->"
     end = f"<!-- PAPERLINE:END {item_id} -->"
-    if existing.count(start) != 1 or existing.count(end) != 1:
-        location = f"：{where}" if where else "。"
-        raise ValueError(f"已存在同名笔记且没有 PaperLine 标记，为保护手写内容已取消本次导出{location}")
+    if existing.count(start) != 1 or existing.count(end) != 1 or existing.index(start) > existing.index(end):
+        raise ValueError(f"已存在同名笔记且无法确认生成内容，为保护手写内容已取消本次导出：{where}")
     before, rest = existing.split(start, 1)
     _, after = rest.split(end, 1)
-    return before + start + "\n" + generated + end + after
+    return before + generated + after
 
 
 def export_obsidian(state: dict[str, Any]) -> dict[str, Any]:
@@ -656,42 +950,171 @@ def export_obsidian(state: dict[str, Any]) -> dict[str, Any]:
     if not vault.is_dir() or not (vault / ".obsidian").is_dir():
         raise ValueError("Obsidian 库路径已失效，请重新设置。")
     root = vault / "PaperLine"
+    manifest_path = root / ".paperline-export.json"
+    folders = {"line": "阅读线", "idea": "思想卡", "paper": "论文"}
+
+    def checked_path(relative: str) -> Path:
+        parts = Path(relative).parts
+        if (len(parts) != 2 or parts[0] not in folders.values() or parts[1] in {".", ".."}
+                or "/" in parts[1] or "\\" in parts[1] or not parts[1].endswith(".md")):
+            raise ValueError("导出笔记路径无效，未修改任何文件。")
+        target = root / relative
+        check = target
+        while check != vault:
+            if check.is_symlink():
+                raise ValueError(f"导出路径含符号链接，未修改任何文件：{check}")
+            check = check.parent
+        return target
+
+    if root.is_symlink() or manifest_path.is_symlink():
+        raise ValueError("导出路径含符号链接，未修改任何文件。")
+    owned = {}
+    if manifest_path.exists():
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if not isinstance(manifest, dict) or manifest.get("version") != 1 or not isinstance(manifest.get("notes"), dict):
+                raise ValueError()
+            owned = manifest["notes"]
+            for relative, entry in owned.items():
+                checked_path(relative)
+                if (not isinstance(entry, dict) or entry.get("kind") not in folders
+                        or Path(relative).parts[0] != folders[entry["kind"]]
+                        or not isinstance(entry.get("id"), str) or not entry["id"]
+                        or not isinstance(entry.get("generated"), str) or not entry["generated"]
+                        or ("pendingGenerated" in entry and
+                            (not isinstance(entry["pendingGenerated"], str) or not entry["pendingGenerated"]))):
+                    raise ValueError()
+        except (ValueError, TypeError, OSError) as error:
+            raise ValueError("导出记录无效，未修改任何文件。") from error
+
+    # Migrate only unambiguous legacy notes whose filenames and markers identify app ownership.
+    for kind, folder in folders.items():
+        directory = root / folder
+        checked_path(f"{folder}/probe.md")
+        if directory.exists():
+            for candidate in directory.glob("*.md"):
+                relative = str(candidate.relative_to(root))
+                checked_path(relative)
+                if relative in owned:
+                    continue
+                text = candidate.read_text(encoding="utf-8")
+                match = re.search(r"<!-- PAPERLINE:START ([lip]_[A-Za-z0-9]+) -->", text)
+                if not match or match[1][0] != {"line": "l", "idea": "i", "paper": "p"}[kind]:
+                    continue
+                item_id = match[1]
+                start, end = match[0], f"<!-- PAPERLINE:END {item_id} -->"
+                if (not candidate.name.endswith(f"-{item_id}.md") or text.count(start) != 1
+                        or text.count(end) != 1 or text.index(start) > text.index(end)):
+                    continue
+                generated = text.split(start, 1)[1].split(end, 1)[0].removeprefix("\n")
+                if generated:
+                    owned[relative] = {"kind": kind, "id": item_id, "generated": generated}
+
     plans = []
     skipped = 0
-    for kind, collection, folder in (
-        ("line", "lines", "阅读线"),
-        ("idea", "ideas", "思想卡"),
-        ("paper", "papers", "论文"),
-    ):
+    next_owned = {}
+    interim_owned = copy.deepcopy(owned)
+    current_ids = {kind: {item["id"] for item in state[collection]}
+                   for kind, collection in (("line", "lines"), ("idea", "ideas"), ("paper", "papers"))}
+    for kind, collection in (("line", "lines"), ("idea", "ideas"), ("paper", "papers")):
         for item in state[collection]:
-            target = root / folder / note_name(item)
+            if Path(note_name(item)).name != note_name(item):
+                raise ValueError("导出笔记路径无效，未修改任何文件。")
+            relative = f"{folders[kind]}/{note_name(item)}"
+            if relative in next_owned:
+                raise ValueError("多篇笔记使用同一导出路径，未修改任何文件。")
+            target = checked_path(relative)
             generated = render_note(state, kind, item)
+            entry = owned.get(relative)
+            if entry and (entry["id"] != item["id"] or entry["kind"] != kind):
+                raise ValueError(f"导出笔记身份冲突，未修改任何文件：PaperLine/{relative}")
+            previous_generated = generated
             if target.exists():
                 existing = target.read_text(encoding="utf-8")
-                content = merge_managed(existing, item["id"], generated, str(target.relative_to(vault)))
+                if f"<!-- PAPERLINE:START {item['id']} -->" in existing:
+                    content = merge_managed(existing, item["id"], generated, f"PaperLine/{relative}")
+                    previous_generated = existing.split(f"<!-- PAPERLINE:START {item['id']} -->", 1)[1].split(
+                        f"<!-- PAPERLINE:END {item['id']} -->", 1)[0].removeprefix("\n")
+                else:
+                    candidates = set(filter(None, (entry.get("generated"), entry.get("pendingGenerated")))) if entry else set()
+                    matches = [(existing.index(value), value) for value in candidates if existing.count(value) == 1]
+                    # A longer pending block can contain its previous shorter version.
+                    matches.sort(key=lambda match: -len(match[1]))
+                    if (not matches or any(existing.count(value) > 1 for value in candidates)
+                            or any(not (matches[0][0] <= offset and offset + len(value) <= matches[0][0] + len(matches[0][1]))
+                                   for offset, value in matches[1:])):
+                        raise ValueError(f"已存在同名笔记且生成内容已修改或无法确认，为保护手写内容已取消本次导出：PaperLine/{relative}")
+                    previous_generated = matches[0][1]
+                    content = existing.replace(previous_generated, generated, 1)
                 if content == existing:
-                    # 内容没变就不重写，避免 Obsidian 同步整库刷新。
                     skipped += 1
-                    continue
+                else:
+                    plans.append((target, content))
             else:
                 if kind == "paper":
-                    if state.get("settings", {}).get("language") == "en":
-                        extra = "## In one sentence\n\n## Problem addressed\n\n## Core mechanism\n\n## My thoughts\n\n## Techniques\n\n### Relationship to other methods\n\n## Limitations\n\n## Paper / report\n"
-                    else:
-                        extra = "## 一句话\n\n## 解决问题\n\n## 核心机制\n\n## 思考\n\n## 技巧\n\n### 与其他方法的关系\n\n## 局限\n\n## 论文/报告\n"
+                    extra = ("## In one sentence\n\n## Problem addressed\n\n## Core mechanism\n\n## My thoughts\n\n## Techniques\n\n### Relationship to other methods\n\n## Limitations\n\n## Paper / report\n"
+                             if state.get("settings", {}).get("language") == "en" else
+                             "## 一句话\n\n## 解决问题\n\n## 核心机制\n\n## 思考\n\n## 技巧\n\n### 与其他方法的关系\n\n## 局限\n\n## 论文/报告\n")
                 else:
                     extra = "## My additions\n\n" if state.get("settings", {}).get("language") == "en" else "## 我的补充\n\n"
-                content = managed_document(item["id"], generated, extra)
-            plans.append((target, content))
-    for target, content in plans:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(
-            "w", encoding="utf-8", dir=target.parent, delete=False, prefix=".paperline-"
-        ) as handle:
+                plans.append((target, managed_document(item["id"], generated, extra)))
+            next_owned[relative] = {"id": item["id"], "kind": kind, "generated": generated}
+            interim_owned[relative] = {"id": item["id"], "kind": kind, "generated": previous_generated,
+                                       "pendingGenerated": generated}
+
+    removals = []
+    for relative, entry in owned.items():
+        if relative in next_owned:
+            continue
+        if entry["id"] in current_ids[entry["kind"]]:
+            # Filename changes are not deletions; retain ownership of the old note.
+            next_owned[relative] = entry
+            continue
+        source = checked_path(relative)
+        if source.exists():
+            trash = vault / ".trash" / "PaperLine" / relative
+            check = trash
+            while check != vault:
+                if check.is_symlink():
+                    raise ValueError("回收站路径含符号链接，未修改任何文件。")
+                check = check.parent
+            while trash.exists():
+                trash = trash.with_name(f"{source.stem}-{secrets.token_hex(4)}.md")
+            removals.append((source, trash))
+
+    # Persist both generations before changing notes, so interrupted exports can resume.
+    def write_manifest(notes: dict[str, Any]) -> None:
+        content = json.dumps({"version": 1, "notes": notes}, ensure_ascii=False, indent=2) + "\n"
+        root.mkdir(parents=True, exist_ok=True)
+        if manifest_path.exists() and manifest_path.read_text(encoding="utf-8") == content:
+            return
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=root,
+                                         delete=False, prefix=".paperline-") as handle:
             handle.write(content)
             temp_name = handle.name
-        os.replace(temp_name, target)
-    return {"count": len(plans), "skipped": skipped, "folder": str(root)}
+        try:
+            os.replace(temp_name, manifest_path)
+        finally:
+            Path(temp_name).unlink(missing_ok=True)
+
+    # Everything is checked before the first write, including stale-note moves.
+    if plans or removals:
+        write_manifest(interim_owned)
+    for target, content in plans:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=target.parent,
+                                         delete=False, prefix=".paperline-") as handle:
+            handle.write(content)
+            temp_name = handle.name
+        try:
+            os.replace(temp_name, target)
+        finally:
+            Path(temp_name).unlink(missing_ok=True)
+    for source, trash in removals:
+        trash.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(source, trash)
+    write_manifest(next_owned)
+    return {"count": len(plans), "skipped": skipped, "removed": len(removals), "folder": str(root)}
 
 
 # ==================== WebDAV 云端同步 ====================
@@ -1132,6 +1555,8 @@ class Handler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/zotero/annotations":
                 key = urllib.parse.parse_qs(parsed.query).get("key", [""])[0]
                 self._json(200, {"annotations": zotero_annotations(key)})
+            elif parsed.path == "/api/zotero/sync":
+                self._json(200, ZOTERO_SYNC.public())
             elif parsed.path == "/api/webdav":
                 self._json(200, public_webdav())
             elif parsed.path == "/api/webdav/cloud":
@@ -1175,6 +1600,8 @@ class Handler(BaseHTTPRequestHandler):
                     state = load_state()
                 SYNC.mark_dirty()
                 self._json(200, {"state": state, "result": result})
+            elif self.path == "/api/zotero/sync":
+                self._json(202, ZOTERO_SYNC.start())
             elif self.path == "/api/export":
                 with LOCK:
                     result = export_obsidian(load_state())

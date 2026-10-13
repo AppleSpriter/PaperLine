@@ -19,6 +19,7 @@ const ui = {
   graphExpanded: false, annotations: null, annotationPaperId: "", pendingSource: null,
   zoteroResults: [], relationFocus: null, editingEdgeId: "", session: null, timer: null,
   ideaQuery: "", ideaStatus: "", paperQuery: "", pendingParentId: "",
+  mapQuery: "", mapStatus: "", mapSort: "citations", inspectorOpen: false, mapAllConnections: false, mapTimelineConnections: true, recommendationAll: false, mapZoom: 1, mapOverviewZoom: 1, zoteroSync: null, zoteroSyncTimer: null, zoteroSyncError: "",
 };
 const draftCache = new Map();
 function readDraft(key) {
@@ -53,6 +54,30 @@ function edge(id) { return state.edges.find((item) => item.id === id); }
 function safeUrl(url) { return /^(https?:\/\/|zotero:\/\/)/i.test(url || "") ? url : "#"; }
 function safeHref(url) { return esc(safeUrl(url)); }
 function truncate(value, count = 38) { const text = String(value || ""); return text.length > count ? text.slice(0, count - 1) + "…" : text; }
+function paperInstitution(item) { return String(item.institution || item.extra || "").trim(); }
+function displayAuthors(item) {
+  const authors = Array.isArray(item.authorNames) && item.authorNames.length ? item.authorNames : Array.isArray(item.authors) ? item.authors : String(item.authors || "").split(/\s*;\s*|\s*；\s*|\s*,\s*|\s*，\s*|\s+and\s+|、/).filter(Boolean);
+  return authors.slice(0, 3).join("; ") + ((item.authorCount || authors.length) > 3 ? (language() === "en" ? "; et al." : " 等") : "");
+}
+function fullAuthorsDetail(item) {
+  const full = Array.isArray(item.authorNames) && item.authorNames.length ? item.authorNames.join("; ") : String(item.authors || "");
+  return displayAuthors(item) && full !== displayAuthors(item) ? `<details class="full-authors"><summary>查看完整作者</summary><p data-user-content>${esc(full)}</p></details>` : "";
+}
+function libraryCitationCounts() {
+  const citing = new Map();
+  for (const connection of validCitations()) {
+    if (!citing.has(connection.fromId)) citing.set(connection.fromId, new Set());
+    citing.get(connection.fromId).add(connection.toId);
+  }
+  return new Map([...citing].map(([id, ids]) => [id, ids.size]));
+}
+function rankedRecommendations() {
+  const libraryIds = new Set(state.papers.map((item) => item.id));
+  return (state.recommendations || []).map((item) => {
+    const citingIds = [...new Set((item.citingIds || []).filter((id) => libraryIds.has(id)))];
+    return { ...item, citingIds, citationCount: citingIds.length };
+  }).filter((item) => { return item.citationCount >= 2; }).sort((a, b) => b.citationCount - a.citationCount || String(a.title).localeCompare(String(b.title)));
+}
 function countUnit(count, chinese, singular, plural) { return language() === "en" ? (count === 1 ? singular : plural) : chinese; }
 function normalized(value) { return String(value || "").normalize("NFKC").toLocaleLowerCase().trim(); }
 function searchIdeas(query, excludeId = "") {
@@ -265,7 +290,10 @@ function markMainAnimation(animate) {
   if (main?.dataset) main.dataset.animate = animate ? "1" : "0";
 }
 function render() {
+  const mapScroll = ui.view === "map" ? $(".paper-map-scroll") : null;
+  const mapPosition = mapScroll ? { left: mapScroll.scrollLeft, top: mapScroll.scrollTop } : null;
   syncSelection();
+  $(".workspace").dataset.view = ui.view;
   renderNav();
   renderSidebar();
   const viewKey = `${ui.view}:${ui.selectedLineId}`;
@@ -275,6 +303,7 @@ function render() {
   renderInspector();
   localize();
   centerGraph();
+  if (mapPosition) { const next = $(".paper-map-scroll"); if (next) { next.scrollLeft = mapPosition.left; next.scrollTop = mapPosition.top; } }
 }
 function centerGraph() {
   const scroller = $(".graph-scroll");
@@ -311,6 +340,8 @@ function pageHeader(kicker, title, description, actions = "", userTitle = true, 
 }
 function renderMain() {
   const current = line(ui.selectedLineId);
+  if (ui.view === "recommendations") return renderRecommendations();
+  if (ui.view === "map") return renderPaperMap();
   if (ui.view === "papers") return renderPapers();
   if (ui.view === "ideas") return renderIdeas();
   if (!current) {
@@ -372,8 +403,10 @@ function graphMarkup(focus) {
     <div class="graph-bottom"><p>${paperCount ? "同一个思想卡可以汇集多篇论文；每条连线记录具体用法。" : "从论文库导入来源，再建立“论文 → 思想”的关联。"}</p><div><button type="button" class="button quiet" data-action="link-paper">＋ 关联论文</button><button type="button" class="button quiet" data-action="derive-idea">＋ 引申新卡</button><button type="button" class="button quiet" data-action="link-idea">关联已有思想</button></div></div></section>`;
 }
 function graphNode(kind, item, x, y, width) {
-  const secondary = kind === "paper" ? [item.authors, item.year].filter(Boolean).join(" · ") || "来源论文" : `${labels.kind[item.kind]} · ${labels.status[item.status]}`;
-  return `<g class="graph-node ${kind}-node" data-action="select-${kind}" data-id="${esc(item.id)}" role="button" tabindex="0" aria-label="查看${kind === "paper" ? "论文" : "思想"} ${esc(item.title)}"><title data-user-content>${esc(item.title)}</title><rect x="${x}" y="${y}" width="${width}" height="62" rx="17"/><text x="${x + 16}" y="${y + 26}" class="node-title" data-user-content>${esc(truncate(item.title, kind === "paper" ? 25 : 20))}</text><text x="${x + 16}" y="${y + 47}" class="node-sub" ${kind === "paper" && (item.authors || item.year) ? "data-user-content" : ""}>${esc(truncate(secondary, 30))}</text></g>`;
+  const secondary = kind === "paper" ? [displayAuthors(item), item.year].filter(Boolean).join(" · ") || "来源论文" : `${labels.kind[item.kind]} · ${labels.status[item.status]}`;
+  const institution = kind === "paper" ? paperInstitution(item) : "";
+  const titleY = institution ? y + 33 : y + 26;
+  return `<g class="graph-node ${kind}-node" data-action="select-${kind}" data-id="${esc(item.id)}" role="button" tabindex="0" aria-label="查看${kind === "paper" ? "论文" : "思想"} ${esc(item.title)}"><title data-user-content>${esc([item.title, institution, kind === "paper" ? item.authors : ""].filter(Boolean).join(" · "))}</title><rect x="${x}" y="${y}" width="${width}" height="62" rx="17"/>${institution ? `<text x="${x + width - 14}" y="${y + 15}" text-anchor="end" class="graph-node-institution" data-user-content>${esc(truncate(institution.replace(/\s+/g, " "), 26))}</text>` : ""}<text x="${x + 16}" y="${titleY}" class="node-title" data-user-content>${esc(truncate(item.title, kind === "paper" ? 25 : 20))}</text><text x="${x + 16}" y="${institution ? y + 50 : y + 47}" class="node-sub" ${kind === "paper" && (item.authors || item.year) ? "data-user-content" : ""}>${esc(truncate(secondary, 30))}</text></g>`;
 }
 
 function renderOutline(current) {
@@ -421,7 +454,7 @@ function searchResult({ kind, item }) {
   }
   if (kind === "paper") {
     const ideaCount = new Set(state.edges.filter((connection) => connection.fromType === "paper" && connection.fromId === item.id).map((connection) => connection.toId)).size;
-    return `<button type="button" class="search-result paper" ${open}><div class="search-result-top"><strong data-user-content>${esc(item.title)}</strong><span class="type-tag paper">论文</span></div><small ${item.authors || item.year ? "data-user-content" : ""}>${esc([item.authors, item.year].filter(Boolean).join(" · ") || "手动添加")}</small><span>${ideaCount} 个思想</span></button>`;
+    return `<button type="button" class="search-result paper" ${open}><div class="search-result-top"><strong data-user-content>${esc(item.title)}</strong><span class="type-tag paper">论文</span></div><small ${item.authors || item.year ? "data-user-content" : ""}>${esc([displayAuthors(item), item.year].filter(Boolean).join(" · ") || "手动添加")}</small><span>${ideaCount} 个思想</span></button>`;
   }
   return `<button type="button" class="search-result idea" ${open}><div class="search-result-top"><strong data-user-content>${esc(item.title)}</strong><span class="tag-row"><span class="type-tag idea">思想卡</span><span class="status-pill ${item.status}">${labels.status[item.status]}</span></span></div>${item.aliases?.length ? `<small data-user-content>${esc(item.aliases.join(" · "))}</small>` : ""}<p ${item.summary ? "data-user-content" : ""}>${esc(truncate(item.summary || "等待写下一句话理解", 150))}</p><span>${paperCountFor(item.id)} 篇论文</span></button>`;
 }
@@ -460,7 +493,247 @@ async function reuseIdea(id) {
 
 function searchPapers(query) {
   const terms = normalized(query).split(/\s+/).filter(Boolean);
-  return state.papers.filter((item) => terms.every((term) => normalized([item.title, item.authors, item.year, item.doi].join(" ")).includes(term)));
+  return state.papers.filter((item) => terms.every((term) => normalized([item.title, item.authors, item.year, item.doi, paperInstitution(item)].join(" ")).includes(term)));
+}
+function paperReadStatus(item) { return item.readStatus === "read" ? "read" : "unread"; }
+function paperReadLabel(item) { return paperReadStatus(item) === "read" ? "已读" : "未读"; }
+function mapPapers() { return searchPapers(ui.mapQuery).filter((item) => !ui.mapStatus || paperReadStatus(item) === ui.mapStatus); }
+function validCitations() {
+  const ids = new Set(state.papers.map((item) => item.id));
+  return (state.citations || []).filter((item) => item.fromId !== item.toId && ids.has(item.fromId) && ids.has(item.toId));
+}
+function referenceStatus(item) {
+  const names = { complete: "已分析参考文献", partial: "参考文献分析不完整", analyzed: "已分析参考文献", no_pdf: "没有 PDF", missing_pdf: "PDF 尚未下载", unavailable: "PDF 暂不可用", no_text: "PDF 无可提取文字", no_references: "未识别参考文献", error: "参考文献分析失败", pending: "尚未分析参考文献", skipped: "尚未分析参考文献" };
+  return names[item.referenceAnalysis?.status] || "尚未分析参考文献";
+}
+function orderedMapPapers() {
+  const counts = libraryCitationCounts();
+  return mapPapers().sort((a, b) => (ui.mapSort === "year"
+    ? (Number(a.year) || Infinity) - (Number(b.year) || Infinity)
+    : (counts.get(b.id) || 0) - (counts.get(a.id) || 0))
+    || String(a.title).localeCompare(String(b.title)) || String(a.id).localeCompare(String(b.id)));
+}
+function paperMapLayout() {
+  const counts = libraryCitationCounts();
+  const nodes = [], headings = [];
+  const cellWidth = 330, cellHeight = 148;
+  const add = (item, x, row, side = "overview") => {
+    const node = { item, x, y: 64 + row * cellHeight, width: 276 + Math.min(24, (counts.get(item.id) || 0) * 4), key: `${side}:${item.id}`, side };
+    nodes.push(node);
+    return node;
+  };
+  const selected = paper(ui.selectedPaperId);
+  let width, rows;
+  const connections = validCitations();
+  if (selected) {
+    const citedIds = new Set(), citingIds = new Set();
+    for (const connection of connections) {
+      if (connection.toId === selected.id) citedIds.add(connection.fromId);
+      if (connection.fromId === selected.id) citingIds.add(connection.toId);
+    }
+    const byYear = (a, b) => (Number(a.year) || Infinity) - (Number(b.year) || Infinity)
+      || String(a.title).localeCompare(String(b.title)) || String(a.id).localeCompare(String(b.id));
+    const cited = state.papers.filter((item) => citedIds.has(item.id)).sort(byYear);
+    const citing = state.papers.filter((item) => citingIds.has(item.id)).sort(byYear);
+    cited.forEach((item, row) => add(item, 30, row, "cited"));
+    add(selected, 30 + cellWidth, 0, "current");
+    citing.forEach((item, row) => add(item, 30 + 2 * cellWidth, row, "citing"));
+    headings.push({ x: 30, label: "它引用的论文" }, { x: 30 + cellWidth, label: "当前论文" }, { x: 30 + 2 * cellWidth, label: "引用它的论文" });
+    width = 3 * cellWidth + 30;
+    rows = Math.max(1, cited.length, citing.length);
+  } else if (ui.mapSort === "year") {
+    const groups = new Map();
+    for (const item of orderedMapPapers()) {
+      const year = Number(item.year) > 0 ? String(item.year) : "年份未知";
+      if (!groups.has(year)) groups.set(year, []);
+      groups.get(year).push(item);
+    }
+    let column = 0;
+    rows = 1;
+    for (const [year, items] of groups) {
+      for (let part = 0; part < Math.ceil(items.length / 6); part += 1) headings.push({ x: 30 + (column + part) * cellWidth, label: year });
+      // Crowded years wrap after six papers while keeping a single clear year band.
+      items.forEach((item, index) => add(item, 30 + (column + Math.floor(index / 6)) * cellWidth, index % 6));
+      rows = Math.max(rows, Math.min(6, items.length));
+      column += Math.ceil(items.length / 6);
+    }
+    width = Math.max(660, column * cellWidth + 30);
+  } else {
+    const results = orderedMapPapers();
+    results.forEach((item, index) => add(item, 30 + (index % 4) * cellWidth, Math.floor(index / 4)));
+    headings.push({ x: 30, label: "库内被引较多的论文排在上方" });
+    width = Math.max(660, Math.min(4, results.length) * cellWidth + 30);
+    rows = Math.ceil(results.length / 4);
+  }
+  const positions = new Map(nodes.map((node) => [node.key, node]));
+  const showOverviewLines = ui.mapSort === "year" ? ui.mapTimelineConnections : ui.mapAllConnections;
+  const links = connections.flatMap((connection) => {
+    const fromKey = selected ? connection.toId === selected.id ? `cited:${connection.fromId}` : `current:${connection.fromId}` : `overview:${connection.fromId}`;
+    const toKey = selected ? connection.fromId === selected.id ? `citing:${connection.toId}` : `current:${connection.toId}` : `overview:${connection.toId}`;
+    const from = positions.get(fromKey), to = positions.get(toKey);
+    return from && to && (selected || showOverviewLines) ? [{ connection, from, to }] : [];
+  });
+  return { nodes, links, headings, width, height: Math.max(420, rows * cellHeight + 80), focused: Boolean(selected) };
+}
+function syncMapConnectionsButton() {
+  const button = $("[data-action='map-connections']");
+  if (!button) return;
+  const focused = Boolean(paper(ui.selectedPaperId));
+  const shown = ui.mapSort === "year" ? ui.mapTimelineConnections : ui.mapAllConnections;
+  button.disabled = focused;
+  button.textContent = tr(focused ? "局部引用连线" : shown ? "隐藏全部连线" : "显示全部连线");
+  button.setAttribute?.("aria-pressed", String(focused || shown));
+}
+function updatePaperSelection(id) {
+  if (!["map", "recommendations"].includes(ui.view)) {
+    ui.selectedPaperId = id;
+    if (ui.view === "papers") ui.selectedIdeaId = "";
+    render();
+    return;
+  }
+  // Keep the page and its controls in place; replacing main would invalidate focus
+  // and let the browser anchor the document to a displaced SVG node or inspector.
+  const left = window.scrollX || 0, top = window.scrollY || 0;
+  const changed = ui.selectedPaperId !== id;
+  const restoreFocus = document.activeElement?.matches?.(".map-node, .citation-row [data-action='select-paper']");
+  if (ui.view === "map") {
+    if (id && !ui.selectedPaperId) {
+      ui.mapOverviewZoom = ui.mapZoom;
+      const available = $(".paper-map-scroll")?.clientWidth;
+      if (available) ui.mapZoom = Math.max(.15, Math.min(1, available / 1020));
+    } else if (!id && ui.selectedPaperId) ui.mapZoom = ui.mapOverviewZoom;
+  }
+  ui.selectedPaperId = id;
+  ui.selectedIdeaId = "";
+  ui.inspectorOpen = Boolean(id);
+  if (ui.view === "map") renderPaperMapResults();
+  renderInspector();
+  if (changed) $("#inspector").scrollTop = 0;
+  localize($("#inspector"));
+  if (restoreFocus) {
+    const target = [...document.querySelectorAll(".map-node")].find((node) => node.dataset.id === id);
+    (target || $("#main-view"))?.focus({ preventScroll: true });
+  }
+  const scroller = $(".paper-map-scroll");
+  if (ui.view === "map" && scroller) { scroller.scrollLeft = 0; scroller.scrollTop = 0; }
+  window.scrollTo?.({ left, top, behavior: "instant" });
+}
+function syncInspectorLayout() {
+  const inspector = $("#inspector");
+  const mapView = ["map", "recommendations"].includes(ui.view);
+  inspector.classList.toggle("paper-inspector", mapView);
+  inspector.classList.toggle("is-open", mapView && Boolean(ui.selectedPaperId) && ui.inspectorOpen);
+}
+function renderPaperMap() {
+  const header = pageHeader("PAPER MAP / 论文地图", "沿着引用，看见阅读全貌", "如果 A 引用了 B，箭头从 B 指向 A。阅读标注独立保存，重新同步后仍然保留。", "", false);
+  const read = state.papers.filter((item) => paperReadStatus(item) === "read").length;
+  $("#main-view").innerHTML = header + `<section id="paper-map-sync" class="paper-map-sync" aria-live="polite"></section>
+    <div class="map-summary"><span><b>${state.papers.length}</b> 篇论文</span><span><i class="read-dot unread"></i><b>${state.papers.length - read}</b> 未读</span><span><i class="read-dot read"></i><b>${read}</b> 已读</span><span><b>${validCitations().length}</b> 条库内引用</span></div>
+    <label class="idea-search-label">搜索地图中的论文<input id="map-search" type="search" placeholder="搜索标题、作者、年份或 DOI" value="${esc(ui.mapQuery)}"></label>
+    <div class="map-controls"><div class="filter-bar">${[["", "全部论文"], ["unread", "未读"], ["read", "已读"]].map(([status, label]) => `<button type="button" class="filter-button ${ui.mapStatus === status ? "active" : ""}" data-action="filter-paper-read" data-status="${status}" aria-pressed="${ui.mapStatus === status}">${label}</button>`).join("")}</div><div class="map-zoom"><label class="map-sort">排序<select id="map-sort"><option value="citations" ${ui.mapSort === "citations" ? "selected" : ""}>库内被引（多到少）</option><option value="year" ${ui.mapSort === "year" ? "selected" : ""}>年份（早到晚）</option></select></label><button type="button" class="button quiet" data-action="map-connections" aria-pressed="${ui.mapAllConnections}">${ui.mapAllConnections ? "隐藏全部连线" : "显示全部连线"}</button><button type="button" class="button quiet" data-action="map-fit">全图</button><button type="button" class="button quiet" data-action="map-zoom" data-step="-0.2" aria-label="缩小地图">−</button><button type="button" class="button quiet" data-action="map-zoom" data-step="0" aria-label="重置地图缩放">${Math.round(ui.mapZoom * 100)}%</button><button type="button" class="button quiet" data-action="map-zoom" data-step="0.2" aria-label="放大地图">＋</button></div></div>
+    <div id="paper-map-results"></div>`;
+  renderZoteroSync();
+  renderPaperMapResults();
+}
+function renderPaperMapResults() {
+  const layout = paperMapLayout();
+  const { nodes: mapNodes, links, width, height, focused } = layout;
+  syncMapConnectionsButton();
+  const zoomButton = $("[data-action='map-zoom'][data-step='0']");
+  if (zoomButton) zoomButton.textContent = `${Math.round(ui.mapZoom * 100)}%`;
+  if (!mapNodes.length) {
+    $("#paper-map-results").innerHTML = `<div class="empty-main"><div class="empty-orbit">↗</div><h2>${state.papers.length ? "没有符合筛选条件的论文" : "把 Zotero 文献库变成论文地图"}</h2><p>${state.papers.length ? "试试其他关键词或阅读状态。" : "点击上方同步按钮，导入论文并分析本机 PDF 的参考文献。"}</p></div>`;
+    localize($("#paper-map-results"));
+    return;
+  }
+  const counts = libraryCitationCounts();
+  const selected = focused ? ui.selectedPaperId : "";
+  const orderingLabel = focused ? "局部引用图" : ui.mapSort === "year" ? "按年份从早到晚排序" : "库内被引较多的论文排在上方";
+  const headings = layout.headings.map((heading) => `<text x="${heading.x}" y="34" class="map-year">${esc(tr(heading.label))}</text>`).join("");
+  const paths = links.map(({ connection: item, from, to }) => {
+    const forward = from.x < to.x;
+    const x1 = from.x + (forward ? from.width : 0), x2 = to.x + (forward ? 0 : to.width);
+    const y1 = from.y + 47, y2 = to.y + 47;
+    const bend = from.x === to.x ? 66 : Math.max(focused ? 12 : 40, Math.abs(x2 - x1) * .35);
+    const path = from.x === to.x ? `M ${from.x + from.width} ${y1} C ${from.x + from.width + bend} ${y1}, ${to.x + to.width + bend} ${y2}, ${to.x + to.width + 2} ${y2}` : `M ${x1} ${y1} C ${x1 + (forward ? bend : -bend)} ${y1}, ${x2 + (forward ? -bend : bend)} ${y2}, ${x2 + (forward ? -2 : 2)} ${y2}`;
+    return `<path class="citation-link ${selected && item.fromId !== selected && item.toId !== selected ? "muted" : ""}" data-from-id="${esc(item.fromId)}" data-to-id="${esc(item.toId)}" d="${path}" marker-end="url(#citation-arrow)"><title data-user-content>${esc(paper(item.fromId).title)} → ${esc(paper(item.toId).title)}</title></path>`;
+  }).join("");
+  const nodes = mapNodes.map(({ item, x, y, width: nodeWidth, key, side }) => {
+    const title = String(item.title || "");
+    const status = paperReadStatus(item), count = counts.get(item.id) || 0;
+    const institution = paperInstitution(item);
+    return `<g class="map-node ${status} ${count > 2 ? "highly-cited" : count ? "cited" : "uncited"} ${selected === item.id ? "selected" : ""}" data-map-key="${esc(key)}" data-map-side="${side}" data-citation-count="${count}" data-action="select-paper" data-id="${esc(item.id)}" role="button" tabindex="0" aria-label="${esc(`${tr(paperReadLabel(item))}: ${title}`)}"><title data-user-content>${esc([title, institution, item.authors].filter(Boolean).join(" · "))}</title><rect x="${x}" y="${y}" width="${nodeWidth}" height="116" rx="14"/><circle cx="${x + 17}" cy="${y + 18}" r="4"/><text x="${x + 28}" y="${y + 22}" class="map-node-status">${paperReadLabel(item)}</text>${institution ? `<text x="${x + nodeWidth - 12}" y="${y + 22}" text-anchor="end" class="map-node-institution" data-user-content>${esc(truncate(institution.replace(/\s+/g, " "), 16))}</text>` : ""}<text x="${x + 14}" y="${y + 46}" class="node-title" data-user-content>${esc(truncate(title, 33))}</text><text x="${x + 14}" y="${y + 65}" class="node-sub" data-user-content>${esc(truncate([displayAuthors(item), item.year].filter(Boolean).join(" · "), 42))}</text><text x="${x + 14}" y="${y + 86}" class="map-node-count">${tr("库内被引")} ${count}</text><text x="${x + 14}" y="${y + 103}" class="map-node-analysis">${item.zoteroMissing ? "Zotero 中已移除" : referenceStatus(item)}</text></g>`;
+  }).join("");
+  $("#paper-map-results").innerHTML = `<section class="graph-panel"><div class="map-caption"><span>${new Set(mapNodes.map((node) => node.item.id)).size} 篇可见论文 · ${links.length} 条可见引用</span><span>${tr(orderingLabel)} · ${tr("可滚动和缩放")}</span>${focused ? `<button type="button" class="button quiet" data-action="map-overview">返回全库排序</button>` : ""}</div><div class="paper-map-scroll" tabindex="0" aria-label="论文引用地图"><svg class="paper-map" width="${width * ui.mapZoom}" height="${height * ui.mapZoom}" viewBox="0 0 ${width} ${height}" role="group" aria-label="被引用论文指向引用它的论文"><defs><marker id="citation-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#658e77"/></marker><pattern id="map-dots" width="24" height="24" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="1" fill="var(--graph-dot)"/></pattern></defs><rect width="${width}" height="${height}" fill="url(#map-dots)"/>${headings}${paths}${nodes}</svg></div>${focused ? `<p class="map-footnote">局部图展示当前论文与全部直接邻居；搜索和阅读筛选仅作用于全库视图。</p>` : ""}<p class="map-footnote">仅连接库内已识别的引用；没有连线不代表没有引用。选中论文显示相关连线；可查看引用依据与分析状态。</p></section>`;
+  localize($("#paper-map-results"));
+}
+function renderZoteroSync() {
+  const target = $("#paper-map-sync");
+  if (!target || ui.view !== "map") return;
+  const job = ui.zoteroSync;
+  const running = job?.status === "running";
+  const last = state.zoteroSync?.syncedAt;
+  const message = ui.zoteroSyncError || job?.error || job?.message || (last ? `${tr("上次同步：")}${stampText(last)}` : tr("保持 Zotero 开启；同步当前个人文献库，新增论文后可再次同步。"));
+  const stats = job?.result?.stats || state.zoteroSync?.stats;
+  const coverage = stats ? `<p class="sync-coverage">${tr("完整分析")} ${Number(stats.complete || 0)} · ${tr("部分分析")} ${Number(stats.partial || 0)} · ${tr("没有 PDF")} ${Number(stats.no_pdf || 0)} · ${tr("PDF 无可提取文字")} ${Number(stats.no_text || 0)} · ${tr("未识别参考文献")} ${Number(stats.no_references || 0)}</p><p class="field-help">仅连接库内已识别的引用；没有连线不代表没有引用。</p>` : "";
+  target.innerHTML = `<div><strong>${running ? "正在同步 Zotero" : "Zotero 文献库"}</strong><p class="${ui.zoteroSyncError || job?.status === "error" ? "field-error" : "field-help"}" data-user-content>${esc(message)}</p>${running && job.total ? `<progress max="${Number(job.total)}" value="${Number(job.processed || 0)}" aria-label="Zotero 同步进度"></progress><small>${Number(job.processed || 0)} / ${Number(job.total)}</small>` : ""}${running && job.title ? `<p class="sync-current" data-user-content>${esc(job.title)}</p>` : ""}${coverage}</div><button type="button" class="button primary" data-action="sync-zotero-library" ${running ? "disabled" : ""}>${running ? "同步中…" : "一键同步 Zotero"}</button>`;
+  localize(target);
+}
+async function applyZoteroSync(job) {
+  ui.zoteroSync = job;
+  ui.zoteroSyncError = "";
+  clearTimeout(ui.zoteroSyncTimer);
+  if (job.status === "complete") {
+    state = await api("/api/state");
+    render();
+  } else renderZoteroSync();
+  if (job.status === "running") ui.zoteroSyncTimer = setTimeout(refreshZoteroSync, 1200);
+}
+async function refreshZoteroSync() {
+  try { await applyZoteroSync(await api("/api/zotero/sync")); }
+  catch (error) {
+    ui.zoteroSyncError = `${tr("无法更新同步状态：")}${error.message}`;
+    renderZoteroSync();
+    clearTimeout(ui.zoteroSyncTimer);
+    if (["running", "complete"].includes(ui.zoteroSync?.status)) ui.zoteroSyncTimer = setTimeout(refreshZoteroSync, 3000);
+  }
+}
+async function startZoteroSync() {
+  if (ui.zoteroSync?.status === "running") return;
+  ui.zoteroSync = { status: "running", message: tr("正在连接 Zotero…") };
+  ui.zoteroSyncError = "";
+  renderZoteroSync();
+  try { await applyZoteroSync(await postJson("/api/zotero/sync", {})); }
+  catch (error) {
+    ui.zoteroSync = { status: "error", error: error.message };
+    renderZoteroSync();
+    toast(error.message, true);
+  }
+}
+async function markPaper(id, readStatus) {
+  await act("paper.mark", { id, readStatus });
+  toast("阅读状态已保存。");
+}
+function renderRecommendations() {
+  const items = rankedRecommendations().filter((item) => { return ui.recommendationAll || !paper(item.matchedPaperId) || paperReadStatus(paper(item.matchedPaperId)) !== "read"; });
+  $("#main-view").innerHTML = pageHeader("RECOMMENDATIONS / 推荐论文", "从共同引用中发现下一篇", "按不同库内论文的引用数排序。库内被引是阅读线索，不等同于论文质量。", "", false) + `<div class="filter-bar"><button type="button" class="filter-button ${!ui.recommendationAll ? "active" : ""}" data-action="recommendation-filter" data-all="false" aria-pressed="${!ui.recommendationAll}">未读与尚未入库</button><button type="button" class="filter-button ${ui.recommendationAll ? "active" : ""}" data-action="recommendation-filter" data-all="true" aria-pressed="${ui.recommendationAll}">所有候选</button></div><p class="field-help">基于当前库已解析参考文献，非全网引用量。</p>` + (items.length ? `<div class="recommendation-list">${items.map((item) => {
+    const matched = paper(item.matchedPaperId);
+    const pendingTitle = item.verification === "identifier_only";
+    const displayTitle = pendingTitle ? truncate(item.referenceText || item.evidence?.[0]?.text || item.doi || item.arxivId, 180) : item.title || truncate(item.referenceText, 180);
+    const url = item.url || (item.doi ? `https://doi.org/${encodeURIComponent(item.doi)}` : item.arxivId ? `https://arxiv.org/abs/${encodeURIComponent(item.arxivId)}` : "");
+    return `<article class="recommendation-card"><div class="recommendation-top"><h2 data-user-content>${esc(displayTitle)}</h2><span class="paper-read-badge ${matched ? paperReadStatus(matched) : "unread"}">${matched ? paperReadLabel(matched) : "尚未入库"}</span></div>${pendingTitle ? `<p class="field-help">已识别论文编号，标题尚未核实；以下保留引用原文。</p>` : ""}<p class="recommendation-reason">${tr("被")} ${item.citationCount} ${tr("篇库内论文共同引用")}</p>${matched ? `<button type="button" class="button secondary" data-action="select-paper" data-id="${esc(matched.id)}">查看库内论文</button>` : url && safeUrl(url) !== "#" ? `<a class="button secondary" href="${safeHref(url)}" target="_blank" rel="noopener noreferrer">打开论文来源 ↗</a>` : `<p class="field-help">暂无可验证的论文链接，请查看引用原文。</p>`}<details><summary>查看引用来源与依据</summary>${item.citingIds.map((id) => `<div class="citation-row"><button type="button" class="relation-main" data-action="select-paper" data-id="${esc(id)}"><strong data-user-content>${esc(paper(id).title)}</strong></button>${(item.evidence || []).filter((evidence) => evidence.citingId === id).map((evidence) => `<p class="citation-evidence" data-user-content>${esc(evidence.text)}</p>${evidence.attachmentKey ? `<a href="zotero://open-pdf/library/items/${encodeURIComponent(evidence.attachmentKey)}">打开引用论文 PDF ↗</a>` : ""}`).join("")}</div>`).join("")}</details></article>`;
+  }).join("")}</div>` : `<div class="empty-main compact"><h2>还没有可推荐的论文</h2><p>同步并分析 PDF 参考文献后，这里会展示可核查的共同引用。</p></div>`);
+  localize($("#main-view"));
+}
+function openPaperLineDialog(id) {
+  $("#paper-line-paper").value = id;
+  $("#paper-line-choice").innerHTML = state.lines.map((item) => `<option value="${esc(item.id)}" data-user-content>${esc(item.title)}</option>`).join("");
+  $("#paper-line-choice").value = state.lines.some((item) => item.id === ui.selectedLineId) ? ui.selectedLineId : state.lines[0]?.id || "";
+  const related = new Set(state.edges.filter((connection) => connection.fromType === "paper" && connection.fromId === id).map((connection) => connection.toId));
+  $("#paper-line-idea").innerHTML = `<option value="">从论文创建思想卡</option>` + state.ideas.filter((item) => related.has(item.id)).map((item) => `<option value="${esc(item.id)}" data-user-content>${esc(item.title)}</option>`).join("");
+  $("#paper-line-submit").disabled = !state.lines.length;
+  $("#paper-line-empty").hidden = Boolean(state.lines.length);
+  openDialog("#paper-line-dialog");
 }
 function renderPapers() {
   const header = pageHeader("SOURCE LIBRARY / 论文库", "让论文回到思想上", "从 Zotero 导入论文，记录它提出、使用或改进了哪些思想。", `<button type="button" class="button secondary" data-action="new-paper">＋ 添加论文</button>`, false);
@@ -476,13 +749,15 @@ function renderPaperResults() {
   const results = searchPapers(ui.paperQuery);
   $("#paper-search-results").innerHTML = `<p class="field-help result-count">${results.length} 篇论文</p>` + (results.length ? `<div class="paper-list">${results.map((item) => {
     const count = new Set(state.edges.filter((connection) => connection.fromType === "paper" && connection.fromId === item.id).map((connection) => connection.toId)).size;
-    return `<button type="button" class="paper-list-item ${ui.selectedPaperId === item.id ? "selected" : ""}" data-action="select-paper" data-id="${esc(item.id)}"><span class="paper-icon">▤</span><span><strong data-user-content>${esc(item.title)}</strong><small ${item.authors || item.year ? "data-user-content" : ""}>${esc([item.authors, item.year].filter(Boolean).join(" · ") || "手动添加")}</small></span><em>${count} 个思想</em></button>`;
+    return `<button type="button" class="paper-list-item ${ui.selectedPaperId === item.id ? "selected" : ""}" data-action="select-paper" data-id="${esc(item.id)}"><span class="paper-icon">▤</span><span><strong data-user-content>${esc(item.title)}</strong><small ${item.authors || item.year ? "data-user-content" : ""}>${esc([displayAuthors(item), item.year].filter(Boolean).join(" · ") || "手动添加")}</small></span><span class="paper-list-meta">${paperInstitution(item) ? `<strong class="paper-institution" data-user-content>${esc(paperInstitution(item))}</strong>` : ""}<em>${count} 个思想</em></span></button>`;
   }).join("")}</div>` : `<div class="empty-main compact"><h2>没有找到论文</h2><p>换个关键词，或添加新的论文来源。</p><button type="button" class="button primary" data-action="new-paper">添加论文</button></div>`);
   localize($("#paper-search-results"));
 }
 
 function renderInspector() {
+  syncInspectorLayout();
   if (ui.selectedPaperId) return renderPaperInspector(paper(ui.selectedPaperId));
+  if (["map", "recommendations"].includes(ui.view)) { $("#inspector").innerHTML = `<div class="inspector-empty"><span class="eyebrow">PAPER MAP</span><h2>选中一篇论文</h2><p>在这里标记阅读状态，查看引用依据与 PDF 分析结果。</p></div>`; return; }
   if (ui.selectedIdeaId) return renderIdeaInspector(idea(ui.selectedIdeaId));
   $("#inspector").innerHTML = `<div class="inspector-empty"><span class="eyebrow">DETAILS</span><h2>选中一张卡</h2><p>卡片的理解、来源和引申会出现在这里。</p></div>`;
 }
@@ -532,12 +807,29 @@ function relationRow(connection, kind, node) {
   const label = labels[connection.fromType][connection.relation] || connection.relation;
   return `<div class="relation-row"><button type="button" class="relation-main" data-action="select-${kind}" data-id="${esc(node.id)}"><span class="relation-type">${label}</span><strong data-user-content>${esc(truncate(node.title, 46))}</strong>${connection.note ? `<small data-user-content>${esc(truncate(connection.note, 90))}</small>` : ""}</button>${connection.sourceUrl ? `<a class="relation-source" href="${safeHref(connection.sourceUrl)}" aria-label="打开原文位置">↗</a>` : ""}<button type="button" class="relation-edit" data-action="edit-edge" data-id="${esc(connection.id)}" aria-label="编辑关系">···</button></div>`;
 }
+function citationRows(connections, nodeKey) {
+  return connections.map((connection) => {
+    const other = paper(connection[nodeKey]);
+    const pdfUrl = connection.attachmentKey ? `zotero://open-pdf/library/items/${encodeURIComponent(connection.attachmentKey)}` : "";
+    return `<div class="citation-row"><button type="button" class="relation-main" data-action="select-paper" data-id="${esc(other.id)}"><strong data-user-content>${esc(other.title)}</strong><small data-user-content>${esc([other.year, displayAuthors(other)].filter(Boolean).join(" · "))}</small></button><details><summary>查看引用依据</summary><p class="citation-evidence" data-user-content>${esc(connection.evidence || "")}</p>${pdfUrl ? `<a href="${safeHref(pdfUrl)}">打开引用论文 PDF ↗</a>` : ""}</details></div>`;
+  }).join("");
+}
+function renderMapInspector(item) {
+  const connections = validCitations();
+  const references = connections.filter((connection) => connection.toId === item.id);
+  const citing = connections.filter((connection) => connection.fromId === item.id);
+  const status = paperReadStatus(item);
+  const analysis = item.referenceAnalysis;
+  const related = state.edges.filter((connection) => connection.fromType === "paper" && connection.fromId === item.id && idea(connection.toId));
+  $("#inspector").innerHTML = `<button type="button" class="button quiet paper-inspector-close" data-action="close-paper-inspector" aria-label="关闭论文详情">关闭详情 ×</button><div class="inspector-top"><span class="eyebrow">PAPER MAP</span><span class="paper-read-badge ${status}">${paperReadLabel(item)}</span></div><h2 class="inspector-title" data-user-content>${esc(item.title)}</h2><p class="inspector-sub" data-user-content>${esc([displayAuthors(item), item.year].filter(Boolean).join(" · "))}</p>${fullAuthorsDetail(item)}<button type="button" class="button primary full" data-action="mark-paper" data-id="${esc(item.id)}" data-status="${status === "read" ? "unread" : "read"}">${status === "read" ? "标记为未读" : "标记为已读"}</button>${paperInstitution(item) ? `<p class="paper-institution" data-user-content>${esc(paperInstitution(item))}</p>` : ""}<div class="paper-bridge"><button type="button" class="button secondary full" data-action="paper-add-line" data-id="${esc(item.id)}">加入阅读线</button><button type="button" class="button quiet full" data-action="link-paper-to-idea">关联思想卡</button>${related.length ? related.map((connection) => `<button type="button" class="button quiet full" data-action="paper-view-idea" data-id="${esc(connection.toId)}">查看思想图 · <span data-user-content>${esc(idea(connection.toId).title)}</span></button>`).join("") : ""}</div>${item.zoteroUrl ? `<a class="button quiet full" href="${safeHref(item.zoteroUrl)}">在 Zotero 打开 ↗</a>` : ""}<div class="inspector-section"><h3>参考文献分析</h3><p class="analysis-status">${referenceStatus(item)}</p>${analysis?.message ? `<p class="field-help" data-user-content>${esc(analysis.message)}</p>` : ""}${item.zoteroMissing ? `<p class="field-help">Zotero 中已移除；保留阅读标注。</p>` : ""}<p class="field-help">仅连接库内已识别的引用；没有连线不代表没有引用。</p></div><div class="inspector-section"><h3>引用的论文 <span>${references.length}</span></h3><p class="field-help">这些论文 → 当前论文</p>${references.length ? citationRows(references, "fromId") : `<p class="empty-small">尚未识别库内引用。</p>`}</div><div class="inspector-section"><h3>引用它的论文 <span>${citing.length}</span></h3><p class="field-help">当前论文 → 这些论文</p>${citing.length ? citationRows(citing, "toId") : `<p class="empty-small">尚未识别库内被引。</p>`}</div>`;
+}
 function renderPaperInspector(item) {
   if (!item) return;
+  if (["map", "recommendations"].includes(ui.view)) return renderMapInspector(item);
   const related = state.edges.filter((connection) => connection.fromType === "paper" && connection.fromId === item.id);
   const annotations = ui.annotationPaperId === item.id ? ui.annotations : null;
-  $("#inspector").innerHTML = `<div class="inspector-top"><span class="eyebrow">PAPER SOURCE</span><span class="paper-tag">论文</span></div><h2 class="inspector-title" data-user-content>${esc(item.title)}</h2><p class="inspector-sub" ${item.authors || item.year ? "data-user-content" : ""}>${esc([item.authors, item.year].filter(Boolean).join(" · ") || "手动添加")}</p>
-    <div class="paper-meta">${item.doi ? `<div><span>DOI</span><strong data-user-content>${esc(item.doi)}</strong></div>` : ""}${item.zoteroKey ? `<div><span>ZOTERO KEY</span><strong data-user-content>${esc(item.zoteroKey)}</strong></div>` : ""}</div>
+  $("#inspector").innerHTML = `<div class="inspector-top"><span class="eyebrow">PAPER SOURCE</span><span class="paper-tag">论文</span></div><h2 class="inspector-title" data-user-content>${esc(item.title)}</h2><p class="inspector-sub" ${item.authors || item.year ? "data-user-content" : ""}>${esc([displayAuthors(item), item.year].filter(Boolean).join(" · ") || "手动添加")}</p>
+    ${fullAuthorsDetail(item)}${paperInstitution(item) ? `<p class="paper-institution" data-user-content>${esc(paperInstitution(item))}</p>` : ""}<div class="paper-meta">${item.doi ? `<div><span>DOI</span><strong data-user-content>${esc(item.doi)}</strong></div>` : ""}${item.zoteroKey ? `<div><span>ZOTERO KEY</span><strong data-user-content>${esc(item.zoteroKey)}</strong></div>` : ""}</div>
     ${item.zoteroUrl ? `<a class="button primary full" href="${safeHref(item.zoteroUrl)}">在 Zotero 打开 ↗</a>` : ""}
     <div class="inspector-section"><div class="inspector-section-head"><h3>蕴含的思想 <span>${related.length}</span></h3><div><button type="button" data-action="new-idea-from-paper" aria-label="从论文创建思想卡">新建</button><button type="button" data-action="link-paper-to-idea" aria-label="关联已有思想卡">＋</button></div></div>${related.length ? related.map((connection) => relationRow(connection, "idea", idea(connection.toId))).join("") : `<p class="empty-small">把这篇论文连到已有思想，或从批注建一张新卡。</p>`}</div>
     <button type="button" class="button danger full inspector-delete" data-action="delete-paper" data-id="${esc(item.id)}">删除这篇论文</button>
@@ -739,7 +1031,7 @@ async function searchZotero() {
   try {
     const result = await api(`/api/zotero/search?q=${encodeURIComponent(query)}`);
     ui.zoteroResults = result.items;
-    $("#zotero-results").innerHTML = result.items.length ? result.items.map((item, index) => `<div class="zotero-result"><div><strong data-user-content>${esc(item.title)}</strong><small ${item.authors || item.year ? "data-user-content" : ""}>${esc([item.authors, item.year].filter(Boolean).join(" · ") || "Zotero 条目")}</small></div><button type="button" class="button quiet" data-action="import-zotero" data-index="${index}">导入</button></div>`).join("") : `<p class="field-help">没有找到符合条件的条目。</p>`;
+    $("#zotero-results").innerHTML = result.items.length ? result.items.map((item, index) => `<div class="zotero-result"><div><strong data-user-content>${esc(item.title)}</strong><small ${item.authors || item.year ? "data-user-content" : ""}>${esc([displayAuthors(item), item.year].filter(Boolean).join(" · ") || "Zotero 条目")}</small></div><button type="button" class="button quiet" data-action="import-zotero" data-index="${index}">导入</button></div>`).join("") : `<p class="field-help">没有找到符合条件的条目。</p>`;
     localize($("#zotero-results"));
   } catch (error) { $("#zotero-results").innerHTML = `<p class="field-error">${esc(tr(error.message))}</p>`; }
 }
@@ -764,9 +1056,20 @@ document.addEventListener("click", async (event) => {
   const id = button.dataset.id;
   try {
     if (action.startsWith("view-")) { ui.view = action.slice(5); ui.selectedPaperId = ""; render(); }
+    else if (action === "sync-zotero-library") await startZoteroSync();
+    else if (action === "mark-paper") await markPaper(id, button.dataset.status);
+    else if (action === "recommendation-filter") { ui.recommendationAll = button.dataset.all === "true"; renderRecommendations(); }
+    else if (action === "map-connections") { if (ui.mapSort === "year") ui.mapTimelineConnections = !ui.mapTimelineConnections; else ui.mapAllConnections = !ui.mapAllConnections; renderPaperMapResults(); }
+    else if (action === "paper-add-line") openPaperLineDialog(id);
+    else if (action === "paper-view-idea") { ui.view = "graph"; selectIdea(id); }
+    else if (action === "filter-paper-read") { ui.mapStatus = button.dataset.status; renderPaperMap(); localize($("#main-view")); }
+    else if (action === "map-fit") { const svg = $(".paper-map"), scroller = $(".paper-map-scroll"); if (svg && scroller) { const box = svg.viewBox.baseVal; ui.mapZoom = Math.max(.15, Math.min(1, scroller.clientWidth / box.width, scroller.clientHeight / box.height)); renderPaperMap(); localize($("#main-view")); } }
+    else if (action === "map-zoom") { const scroller = $(".paper-map-scroll"); const left = scroller?.scrollLeft || 0, top = scroller?.scrollTop || 0; const previous = ui.mapZoom; ui.mapZoom = Number(button.dataset.step) ? Math.max(.15, Math.min(2, ui.mapZoom + Number(button.dataset.step))) : 1; renderPaperMap(); const next = $(".paper-map-scroll"); if (next) { next.scrollLeft = left * ui.mapZoom / previous; next.scrollTop = top * ui.mapZoom / previous; } localize($("#main-view")); }
     else if (action === "select-line") { ui.selectedLineId = id; ui.selectedIdeaId = line(id)?.activeIdeaId || line(id)?.ideaIds[0] || ""; ui.selectedPaperId = ""; render(); }
     else if (action === "select-idea") selectIdea(id);
-    else if (action === "select-paper") { ui.selectedPaperId = id; if (ui.view === "papers") ui.selectedIdeaId = ""; render(); }
+    else if (action === "select-paper") updatePaperSelection(id);
+    else if (action === "map-overview") updatePaperSelection("");
+    else if (action === "close-paper-inspector") { ui.inspectorOpen = false; syncInspectorLayout(); }
     else if (action === "search-open") {
       const kind = button.dataset.kind;
       if (kind === "idea") selectIdea(id);
@@ -785,7 +1088,7 @@ document.addEventListener("click", async (event) => {
     }
     else if (action === "filter-status") { ui.ideaStatus = button.dataset.status || ""; markMainAnimation(false); renderIdeas(); localize($("#main-view")); }
     else if (action === "delete-idea") {
-      if (!window.confirm(tr("删除这张思想卡？它的关系和阅读记录会一并删除，已导出的 Obsidian 笔记需要手动清理。"))) return;
+      if (!window.confirm(tr("删除这张思想卡？它的关系和阅读记录会一并删除；下次导出时，关联笔记将移至 Obsidian 库的 .trash/PaperLine，可恢复。"))) return;
       ui.selectedIdeaId = "";
       await act("idea.delete", { id });
       toast("思想卡已删除。");
@@ -931,18 +1234,18 @@ document.addEventListener("click", async (event) => {
     else if (action === "export") {
       if (!state.settings.vaultPath) { openSettings(); toast("先设置 Obsidian 库路径。"); return; }
       const result = await api("/api/export", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
-      toast(result.skipped ? `已导出 ${result.count} 篇笔记到 Obsidian，${result.skipped} 篇无变化。` : `已导出 ${result.count} 篇笔记到 Obsidian。`);
+      toast(`已导出 ${result.count} 篇笔记到 Obsidian，${result.skipped || 0} 篇无变化，${result.removed || 0} 篇已移至 .trash/PaperLine。`);
     }
     else if (action === "close-dialog") closeDialog(button.closest("dialog"));
   } catch (error) { toast(error.message, true); }
 });
 
 document.addEventListener("keydown", (event) => {
-  if ((event.key === "Enter" || event.key === " ") && event.target.matches(".graph-node")) {
+  if ((event.key === "Enter" || event.key === " ") && event.target.matches(".graph-node, .map-node")) {
     event.preventDefault(); event.target.click();
   }
 });
-const viewKeys = { 1: "graph", 2: "outline", 3: "ideas", 4: "papers" };
+const viewKeys = { 1: "graph", 2: "outline", 3: "ideas", 4: "papers", 5: "map" };
 document.addEventListener("keydown", (event) => {
   if (event.metaKey || event.ctrlKey || event.altKey || !state) return;
   if (document.querySelector("dialog[open]")) return;
@@ -960,10 +1263,12 @@ document.addEventListener("input", (event) => {
   if (event.target.form?.id === "idea-edit-form" && !["kind", "status"].includes(event.target.name)) captureIdeaDraft(event.target.form);
   if (["session-note", "session-next-question"].includes(event.target.id)) checkpointSession();
   if (event.target.id === "idea-search") { ui.ideaQuery = event.target.value; renderSearchResults(); }
+  if (event.target.id === "map-search") { ui.mapQuery = event.target.value; renderPaperMapResults(); }
   if (event.target.id === "paper-search") { ui.paperQuery = event.target.value; renderPaperResults(); }
   if (["idea-title", "idea-aliases"].includes(event.target.id)) scheduleIdeaMatches();
 });
 document.addEventListener("change", (event) => {
+  if (event.target.id === "map-sort") { ui.mapSort = event.target.value === "year" ? "year" : "citations"; renderPaperMapResults(); const scroller = $(".paper-map-scroll"); if (scroller) { scroller.scrollTop = 0; scroller.scrollLeft = 0; } return; }
   const form = event.target.form;
   if (form?.id !== "idea-edit-form") return;
   // 类型和状态点一次就写入；正文仍然是草稿，等“保存卡片”。
@@ -1020,6 +1325,17 @@ $("#idea-form").addEventListener("submit", async (event) => {
     await act("idea.create", payload);
     closeDialog($("#idea-dialog"));
     toast("思想卡已创建。");
+  } catch (error) { toast(error.message, true); }
+});
+$("#paper-line-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    const payload = { id: $("#paper-line-paper").value, lineId: $("#paper-line-choice").value };
+    if (!payload.lineId) { toast("请先创建阅读线。", true); return; }
+    if ($("#paper-line-idea").value) payload.ideaId = $("#paper-line-idea").value;
+    await act("paper.add_to_line", payload);
+    closeDialog($("#paper-line-dialog"));
+    toast("已加入阅读线。");
   } catch (error) { toast(error.message, true); }
 });
 $("#paper-form").addEventListener("submit", async (event) => {
@@ -1111,7 +1427,7 @@ document.addEventListener("submit", async (event) => {
   }
 });
 
-api("/api/state").then((data) => { state = data; render(); checkReminder(); setInterval(checkReminder, 30_000); refreshWebdav(); setInterval(refreshWebdav, 30_000); }).catch((error) => {
+api("/api/state").then((data) => { state = data; render(); checkReminder(); setInterval(checkReminder, 30_000); refreshWebdav(); setInterval(refreshWebdav, 30_000); refreshZoteroSync(); }).catch((error) => {
   $("#main-view").innerHTML = `<div class="welcome"><h1>无法读取应用数据</h1><p>${esc(error.message)}</p></div>`;
   localize($("#main-view"));
 });

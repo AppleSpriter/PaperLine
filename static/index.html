@@ -21,6 +21,8 @@
         <button type="button" class="nav-button" data-action="view-outline">阅读线</button>
         <button type="button" class="nav-button" data-action="view-ideas">搜索</button>
         <button type="button" class="nav-button" data-action="view-papers">论文库</button>
+        <button type="button" class="nav-button" data-action="view-map">论文地图</button>
+        <button type="button" class="nav-button" data-action="view-recommendations">推荐论文</button>
       </nav>
       <div class="top-actions">
         <button type="button" id="sync-badge" class="sync-badge" data-action="open-settings" hidden></button>
@@ -71,6 +73,18 @@
       <label>一句话理解 <span class="optional">可选</span><textarea id="idea-summary" rows="3" maxlength="4000" placeholder="先写粗略理解，之后可以继续修正。"></textarea></label>
       <label id="idea-source-relation-wrap" hidden>这篇论文与思想的关系<select id="idea-source-relation"><option value="uses">使用</option><option value="proposes">提出</option><option value="improves">改进</option><option value="questions">质疑</option></select></label>
       <div class="modal-actions"><button type="button" class="button quiet" data-action="close-dialog">取消</button><button type="submit" class="button primary">创建卡片</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="paper-line-dialog" class="modal">
+    <form id="paper-line-form" method="dialog">
+      <div class="modal-top"><h2>加入阅读线</h2><button type="button" class="close-button" data-action="close-dialog" aria-label="关闭">×</button></div>
+      <input id="paper-line-paper" type="hidden">
+      <p class="field-help">阅读线由思想卡组成。选择已有的论文关联卡，或从这篇论文创建卡片。</p>
+      <p id="paper-line-empty" class="field-help" hidden>请先创建阅读线。</p>
+      <label>阅读线<select id="paper-line-choice" required></select></label>
+      <label>思想卡<select id="paper-line-idea"></select></label>
+      <div class="modal-actions"><button type="button" class="button quiet" data-action="close-dialog">取消</button><button id="paper-line-submit" type="submit" class="button primary">加入阅读线</button></div>
     </form>
   </dialog>
 
@@ -194,7 +208,7 @@
           <li>设置里的“从备份恢复”可以选一个备份文件替换当前数据，替换前会把当前数据另存一份。</li>
           <li>同时开着两个页面时，切回页面会自动载入最新数据；如果一张卡已在别处改过，保存会先提醒你。</li>
           <li>删除思想卡会连带它的关系和阅读记录；删除论文只删关系；删除阅读线会保留卡片。</li>
-          <li>已经导出到 Obsidian 的笔记不会被自动删除，需要时自己清理。</li>
+          <li>下次导出时，已删除卡片对应的 PaperLine 笔记将移至 Obsidian 库的 .trash/PaperLine，可恢复；其他笔记不受影响。</li>
           <li>在设置里填好 WebDAV 后，改动会自动上传到云端，并每天保留一份历史版本；右上角会显示同步状态。</li>
           <li>上传前会比较本机和云端的保存时间：云端更新时自动上传会暂停，右上角显示“云端更新”，可以在设置里从云端恢复，或确认后用本机覆盖。</li>
         </ul>

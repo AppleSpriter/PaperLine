@@ -39,12 +39,14 @@ In the reading path view, use ↑ and ↓ on each row to set the learning order.
 
 With two pages open, switching back loads the latest data. If a card was changed elsewhere, saving warns you and loads the newer version while keeping your text as a draft; save again to overwrite.
 
+The paper map’s year mode groups papers into year columns and connects them into a citation timeline; another mode sorts by citations from library papers. Selecting a paper shows three columns: its references on the left, the selected paper in the middle, and its citers on the right. **Back to library** restores the previous sort. Details stay in the side panel on desktop and open in a drawer on narrow screens. Recommendations require reference evidence from at least two library papers. Older data rebuilds recommendations from saved citation links and reference text without another Zotero sync.
+
 ## Deleting and shortcuts
 
 - Idea card: **Delete this idea card** at the bottom of the details panel. Its paper connections, idea connections, and reading sessions go with it.
 - Paper: **Delete this paper** at the bottom of the details panel. Only its connections are removed; the idea cards stay.
 - Reading path: **Delete reading path** inside the **Edit reading path** dialog. Idea cards, papers, and reading sessions are kept.
-- Deleting only touches app data. Notes already exported to Obsidian are left alone; remove them yourself when you want.
+- After deletion, the next export moves the corresponding previously owned Obsidian note into the vault’s `.trash/PaperLine/`. Its full text, including manual additions, remains recoverable. Unrelated handwritten notes are left intact.
 - Shortcuts (no dialog open, focus outside a text field): `1`–`4` switch between idea graph, reading path, search, and papers; `n` new idea card; `p` add paper; `l` new reading path; `s` start reading the current card; `/` jump to search; `?` open the in-app guide.
 
 Keep Zotero running and enable **Allow other applications on this computer to communicate with Zotero** under Zotero's advanced settings. PaperLine only reads Zotero's local API and does not modify your Zotero library.
@@ -70,7 +72,7 @@ Keep Zotero running and enable **Allow other applications on this computer to co
 - Cloud files uploaded by older versions have no `savedAt` and are compared by the server's modification time. If the two computers' clocks differ a lot, the comparison can be wrong.
 - Changes from both sides are never merged: when both computers changed, keep one side, and the other stays as a copy in `history/` or `data/`. Prefer https; http sends the password unencrypted.
 - Notes are exported to `PaperLine/` inside your chosen Obsidian vault. It contains folders for reading paths, idea cards, and papers. Folder names stay in Chinese so links remain stable when you switch languages.
-- On later exports, only content between `PAPERLINE:START/END` markers is updated. Your notes outside the markers stay intact. If a same-named file has no markers, export stops and names that file instead of overwriting it.
+- Exported notes contain no HTML ownership markers. `PaperLine/.paperline-export.json` records generated content; later exports replace its exact, unique previous text and preserve handwritten additions before and after it. Legacy marked notes migrate automatically. If generated text was edited, duplicated, or ownership of a same-named file is unknown, the entire export stops before writing and identifies the conflict. Keep the hidden record file.
 - Notes whose content did not change are skipped instead of rewritten, so Obsidian sync does not re-upload the whole vault. The result reports how many notes were written and how many were skipped.
 - A note file name is derived from the title when the item is created and stays fixed when you rename it, so existing Obsidian links keep working. The title inside the note is updated.
 - A newly exported paper note includes sections for a one-sentence summary, problem, core mechanism, thoughts, techniques, relationship to other methods, limitations, and the paper/report. New section headings follow your selected language. Existing handwritten sections are preserved when you switch languages.
