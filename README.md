@@ -21,6 +21,8 @@ npm run desktop:package
 
 输出：`dist/macos/0.2.1/PaperLine.app` 与 `PaperLine_0.2.1_aarch64-apple-darwin.dmg`。DMG 通过 `hdiutil` 无界面生成，包含应用与“应用程序”快捷方式，不需要 Finder 或解锁桌面。构建不会覆盖 `dist/macos/PaperLine.app` 的预览版。`npm run desktop:dev` 启动开发版。构建只打包 `static/` 与独立后端，不包含 `data/`、WebDAV 凭据或本地日志。首次构建会下载 Cargo 依赖与 PyInstaller。打包前会检查 Python 可执行文件与动态库的最低 macOS 版本；若高于 13.0 会终止构建。可以通过 `PAPERLINE_PYTHON=/path/to/python3.13 npm run desktop:package` 指定兼容的 Python；已有构建环境使用其他解释器时，须先重建 `.desktop-tools/venv`。当前默认使用本机 ad-hoc 签名并保留 Hardened Runtime；由于打包的 Python 动态库没有 Team ID，应用仅添加 `disable-library-validation` 例外（Tauri 对主程序与侧车共用同一 entitlement 文件）。打包脚本会再次运行已签名应用内的后端，检查启动、API 与退出；对外分发前需要 Developer ID 签名与 Apple 公证。
 
+macOS 构建会把 Rust 二进制中的本机构建路径匿名化为通用 `/build` 前缀。
+
 ## Windows 桌面版（0.2.1，CI 验证通过）
 
 目标为 Windows 10/11 x64。安装器采用 NSIS，为当前用户安装，无需单独安装 Python 或 Node.js；可选择简体中文或英文。缺少 WebView2 时，安装器会下载微软官方 bootstrapper，因此首次安装可能需要联网。应用数据存放在 `%APPDATA%\io.github.applespriter.paperline\`，与安装目录分开。旧版 JSON 数据可以从“设置”导入。

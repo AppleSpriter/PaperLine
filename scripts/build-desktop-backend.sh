@@ -6,6 +6,7 @@ if [[ "$(uname -s)" != Darwin ]]; then
   exit 1
 fi
 export PATH="$PWD/.desktop-tools/cargo/bin:$PATH"
+export PYINSTALLER_CONFIG_DIR="$PWD/.desktop-build/pyinstaller-config"
 if [[ -d .desktop-tools/rustup ]]; then
   export CARGO_HOME="$PWD/.desktop-tools/cargo"
   export RUSTUP_HOME="$PWD/.desktop-tools/rustup"
@@ -28,9 +29,15 @@ fi
 "$venv/bin/python" scripts/check-desktop-python.py
 target="$(rustc -vV | sed -n 's/^host: //p')"
 mkdir -p src-tauri/binaries
-"$venv/bin/python" -m PyInstaller --noconfirm --clean --onefile \
+"$venv/bin/pyi-makespec" --onefile \
   --name "paperline-backend-$target" \
   --osx-entitlements-file src-tauri/Entitlements.plist \
-  --distpath src-tauri/binaries --workpath .desktop-build/pyinstaller \
   --specpath .desktop-build --paths . desktop_backend.py
+"$venv/bin/python" scripts/desktop-build-privacy.py prepare \
+  --spec ".desktop-build/paperline-backend-$target.spec" \
+  --output ".desktop-build/paperline-backend-$target.privacy.spec"
+"$venv/bin/python" -m PyInstaller --noconfirm --clean \
+  --distpath src-tauri/binaries --workpath .desktop-build/pyinstaller \
+  ".desktop-build/paperline-backend-$target.privacy.spec"
+"$venv/bin/python" scripts/desktop-build-privacy.py audit "src-tauri/binaries/paperline-backend-$target"
 chmod +x "src-tauri/binaries/paperline-backend-$target"
