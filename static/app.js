@@ -13,13 +13,13 @@ let state = null;
 const i18n = globalThis.PaperLineI18n;
 function language() { return state?.settings?.language === "en" ? "en" : "zh"; }
 function tr(value) { return language() === "en" ? i18n.translate(value) : value; }
-function localize(root = document.body) { i18n.apply(root, language()); }
+function localize(root = document.body) { i18n.apply(root, language()); updateHeaderLayout(); }
 const ui = {
   view: "graph", selectedLineId: "", selectedIdeaId: "", selectedPaperId: "",
   graphExpanded: false, annotations: null, annotationPaperId: "", pendingSource: null,
   zoteroResults: [], relationFocus: null, editingEdgeId: "", session: null, timer: null,
   ideaQuery: "", ideaStatus: "", paperQuery: "", pendingParentId: "",
-  mapQuery: "", mapStatus: "", mapSort: "citations", inspectorOpen: false, mapAllConnections: false, mapTimelineConnections: true, recommendationAll: false, mapZoom: 1, mapOverviewZoom: 1, zoteroSync: null, zoteroSyncTimer: null, zoteroSyncError: "",
+  mapQuery: "", mapStatus: "", mapSort: "citations", inspectorOpen: false, mapAllConnections: false, mapTimelineConnections: true, recommendationAll: false, mapZoom: 1, mapOverviewZoom: 1, ideaGraphZoom: 1, pageZoom: 1, zoteroSync: null, zoteroSyncTimer: null, zoteroSyncError: "",
 };
 const draftCache = new Map();
 function readDraft(key) {
@@ -141,7 +141,7 @@ function toast(message, bad = false) {
   }, 4400);
 }
 async function api(path, options = {}) {
-  const response = await fetch(path, options);
+  const response = await (globalThis.PaperLineDesktop?.request ? globalThis.PaperLineDesktop.request(path, options) : fetch(path, options));
   const data = await response.json();
   if (!response.ok) {
     const error = new Error(data.error || "请求失败，请重试。");
@@ -150,6 +150,9 @@ async function api(path, options = {}) {
     throw error;
   }
   return data;
+}
+function confirmAction(message) {
+  return globalThis.PaperLineDesktop?.confirm ? globalThis.PaperLineDesktop.confirm(message) : window.confirm(message);
 }
 function postJson(path, body) {
   return api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -312,6 +315,74 @@ function centerGraph() {
   }
 }
 window.addEventListener("resize", centerGraph);
+function updateHeaderLayout() {
+  const bar = $(".topbar"), nav = $(".top-nav"), actions = $(".top-actions"), brand = $(".brand");
+  if (!bar?.clientWidth || !nav?.children || !actions?.children || typeof getComputedStyle !== "function") return;
+  const rowWidth = (element) => {
+    const style = getComputedStyle(element), widths = [...element.children].map((child) => child.offsetWidth).filter(Boolean);
+    return widths.reduce((sum, width) => sum + width, 0) + (parseFloat(style.columnGap) || 0) * Math.max(0, widths.length - 1) + (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0) + (parseFloat(style.borderLeftWidth) || 0) + (parseFloat(style.borderRightWidth) || 0);
+  };
+  const style = getComputedStyle(bar);
+  const available = bar.clientWidth - (parseFloat(style.paddingLeft) || 0) - (parseFloat(style.paddingRight) || 0);
+  bar.classList.toggle("header-wrap", brand.offsetWidth + rowWidth(nav) + rowWidth(actions) + (parseFloat(style.columnGap) || 0) * 2 > available);
+}
+window.addEventListener("resize", updateHeaderLayout);
+function setPageZoom(value, persist = true) {
+  if (!Number.isFinite(value)) value = 1;
+  ui.pageZoom = Math.round(Math.max(.7, Math.min(1.5, value)) * 10) / 10;
+  if (document.documentElement?.style) {
+    document.documentElement.style.zoom = String(ui.pageZoom);
+    document.documentElement.style.setProperty?.("--page-scale", String(ui.pageZoom));
+  }
+  const control = $("[data-page-zoom-percent]");
+  if (control) control.textContent = `${Math.round(ui.pageZoom * 100)}%`;
+  if (persist) { try { localStorage.setItem("paperline-page-zoom", String(ui.pageZoom)); } catch { /* Zoom still works without local storage. */ } }
+  updateHeaderLayout();
+  syncInspectorLayout();
+}
+try { setPageZoom(Number(localStorage.getItem("paperline-page-zoom") || 1), false); }
+catch { setPageZoom(1, false); }
+function zoomGraph(scroller, requested, anchor = null) {
+  const svg = scroller?.querySelector("svg");
+  if (!svg || !Number.isFinite(requested)) return false;
+  const map = scroller.classList.contains("paper-map-scroll");
+  const previous = map ? ui.mapZoom : ui.ideaGraphZoom;
+  const zoom = Math.max(.15, Math.min(2, requested));
+  if (zoom === previous) return true;
+  const x = anchor?.x ?? scroller.clientWidth / 2;
+  const y = anchor?.y ?? scroller.clientHeight / 2;
+  const left = (scroller.scrollLeft + x) * zoom / previous - x;
+  const top = (scroller.scrollTop + y) * zoom / previous - y;
+  const box = svg.viewBox.baseVal;
+  svg.setAttribute("width", box.width * zoom);
+  svg.setAttribute("height", box.height * zoom);
+  scroller.scrollLeft = Math.max(0, left);
+  scroller.scrollTop = Math.max(0, top);
+  if (map) { ui.mapZoom = zoom; if (!ui.selectedPaperId) ui.mapOverviewZoom = zoom; }
+  else ui.ideaGraphZoom = zoom;
+  const control = $(map ? "[data-action='map-zoom'][data-step='0']" : "[data-action='idea-zoom'][data-step='0']");
+  if (control) control.textContent = `${Math.round(zoom * 100)}%`;
+  return true;
+}
+function graphZoomModifier() {
+  const platform = globalThis.navigator?.userAgentData?.platform || globalThis.navigator?.platform || "";
+  return /Windows|Win32|Win64/i.test(platform) ? "ctrlKey" : "metaKey";
+}
+function graphZoomHint() { return graphZoomModifier() === "ctrlKey" ? "按住 Ctrl + 滚轮缩放" : "按住 Command + 滚轮缩放"; }
+function zoomGraphWheel(event) {
+  if (!event[graphZoomModifier()] || !event.cancelable || !Number.isFinite(event.deltaY) || !event.deltaY) return;
+  const scroller = event.target.closest?.(".paper-map-scroll, .graph-scroll");
+  if (!scroller) return;
+  const delta = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? scroller.clientHeight : 1);
+  const previous = scroller.classList.contains("paper-map-scroll") ? ui.mapZoom : ui.ideaGraphZoom;
+  const rect = scroller.getBoundingClientRect();
+  const scaleX = scroller.offsetWidth ? rect.width / scroller.offsetWidth : ui.pageZoom;
+  const scaleY = scroller.offsetHeight ? rect.height / scroller.offsetHeight : ui.pageZoom;
+  const anchor = { x: (event.clientX - rect.left) / scaleX - scroller.clientLeft, y: (event.clientY - rect.top) / scaleY - scroller.clientTop };
+  if (zoomGraph(scroller, previous * Math.exp(-Math.max(-400, Math.min(400, delta)) * .002), anchor)) event.preventDefault();
+}
+document.addEventListener("wheel", zoomGraphWheel, { passive: false });
+
 function renderNav() {
   document.querySelectorAll(".nav-button").forEach((button) => {
     button.classList.toggle("active", button.dataset.action === `view-${ui.view}`);
@@ -350,7 +421,7 @@ function renderMain() {
       $("#main-view").innerHTML = pageHeader("IDEA GRAPH / 思想图", selected.title, "这张思想卡还没有加入阅读线。", `<button type="button" class="button secondary" data-action="new-line">＋ 创建阅读线</button>`) + graphMarkup(selected);
       return;
     }
-    $("#main-view").innerHTML = `<div class="welcome"><div class="welcome-symbol">↗</div><span class="eyebrow">START HERE</span><h1>把好奇心接成一条线。</h1><p>创建一条研究问题线。读到新思想时，把它做成卡片；之后每篇论文都能连回同一张卡。</p><button type="button" class="button primary" data-action="new-line">创建第一条阅读线</button></div>`;
+    $("#main-view").innerHTML = `<div class="welcome"><div class="welcome-symbol">↗</div><span class="eyebrow">START HERE</span><h1>把好奇心接成一条线。</h1><p>创建一条研究问题线。读到新思想时，把它做成卡片；之后每篇论文都能连回同一张卡。</p><button type="button" class="button primary" data-action="new-line">创建第一条阅读线</button>${globalThis.PaperLineDesktop?.enabled ? `<p>已有浏览器版数据？导入原来的备份或包含草稿的迁移包。</p><button type="button" class="button secondary" data-action="restore-backup">导入备份或迁移包</button>` : ""}</div>`;
     return;
   }
   if (ui.view === "outline") return renderOutline(current);
@@ -398,7 +469,8 @@ function graphMarkup(focus) {
   const paperCount = new Set(paperEdges.map((item) => item.fromId)).size;
   const parent = ideaEdges.find((connection) => connection.toId === focus.id && connection.relation === "extends");
   return `${parent ? `<button type="button" class="button quiet parent-return" data-action="select-idea" data-id="${esc(parent.fromId)}"><span>↖ 返回来源</span> <span data-user-content>${esc(idea(parent.fromId)?.title)}</span></button>` : ""}<section class="graph-panel"><div class="graph-toolbar"><div class="graph-stats"><span><b>${paperCount}</b> ${countUnit(paperCount, "篇论文", "paper", "papers")}</span><span><b>${ideaEdges.length}</b> ${countUnit(ideaEdges.length, "条思想关联", "idea connection", "idea connections")}</span></div><div class="graph-legend"><span><i class="legend-paper"></i>论文</span><span><i class="legend-idea"></i>思想</span></div></div>
-    <div class="graph-scroll"><svg class="idea-graph" viewBox="0 0 1000 ${height}" role="group" aria-label="${esc(focus.title)} 与 ${paperCount} 篇论文及 ${ideaEdges.length} 条思想关系的图谱"><defs><pattern id="dot-grid" width="24" height="24" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="1" fill="var(--graph-dot)"/></pattern></defs><rect width="1000" height="${height}" fill="url(#dot-grid)"/>${paths}${nodes}${center}</svg></div>
+    <div class="graph-zoom"><span>${esc(tr(graphZoomHint()))}</span><button type="button" class="button quiet" data-action="idea-zoom" data-step="-0.2" aria-label="缩小思想图">−</button><button type="button" class="button quiet" data-action="idea-zoom" data-step="0" aria-label="重置思想图缩放">${Math.round(ui.ideaGraphZoom * 100)}%</button><button type="button" class="button quiet" data-action="idea-zoom" data-step="0.2" aria-label="放大思想图">＋</button></div>
+    <div class="graph-scroll" tabindex="0"><svg class="idea-graph" width="${1000 * ui.ideaGraphZoom}" height="${height * ui.ideaGraphZoom}" viewBox="0 0 1000 ${height}" role="group" aria-label="${esc(focus.title)} 与 ${paperCount} 篇论文及 ${ideaEdges.length} 条思想关系的图谱"><defs><pattern id="dot-grid" width="24" height="24" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="1" fill="var(--graph-dot)"/></pattern></defs><rect width="1000" height="${height}" fill="url(#dot-grid)"/>${paths}${nodes}${center}</svg></div>
     ${more ? `<button type="button" class="graph-more" data-action="expand-graph">${ui.graphExpanded ? "收起部分节点" : `展开全部关联（${paperEdges.length + ideaEdges.length}）`}</button>` : ""}
     <div class="graph-bottom"><p>${paperCount ? "同一个思想卡可以汇集多篇论文；每条连线记录具体用法。" : "从论文库导入来源，再建立“论文 → 思想”的关联。"}</p><div><button type="button" class="button quiet" data-action="link-paper">＋ 关联论文</button><button type="button" class="button quiet" data-action="derive-idea">＋ 引申新卡</button><button type="button" class="button quiet" data-action="link-idea">关联已有思想</button></div></div></section>`;
 }
@@ -664,7 +736,7 @@ function renderPaperMapResults() {
     const institution = paperInstitution(item);
     return `<g class="map-node ${status} ${count > 2 ? "highly-cited" : count ? "cited" : "uncited"} ${selected === item.id ? "selected" : ""}" data-map-key="${esc(key)}" data-map-side="${side}" data-citation-count="${count}" data-action="select-paper" data-id="${esc(item.id)}" role="button" tabindex="0" aria-label="${esc(`${tr(paperReadLabel(item))}: ${title}`)}"><title data-user-content>${esc([title, institution, item.authors].filter(Boolean).join(" · "))}</title><rect x="${x}" y="${y}" width="${nodeWidth}" height="116" rx="14"/><circle cx="${x + 17}" cy="${y + 18}" r="4"/><text x="${x + 28}" y="${y + 22}" class="map-node-status">${paperReadLabel(item)}</text>${institution ? `<text x="${x + nodeWidth - 12}" y="${y + 22}" text-anchor="end" class="map-node-institution" data-user-content>${esc(truncate(institution.replace(/\s+/g, " "), 16))}</text>` : ""}<text x="${x + 14}" y="${y + 46}" class="node-title" data-user-content>${esc(truncate(title, 33))}</text><text x="${x + 14}" y="${y + 65}" class="node-sub" data-user-content>${esc(truncate([displayAuthors(item), item.year].filter(Boolean).join(" · "), 42))}</text><text x="${x + 14}" y="${y + 86}" class="map-node-count">${tr("库内被引")} ${count}</text><text x="${x + 14}" y="${y + 103}" class="map-node-analysis">${item.zoteroMissing ? "Zotero 中已移除" : referenceStatus(item)}</text></g>`;
   }).join("");
-  $("#paper-map-results").innerHTML = `<section class="graph-panel"><div class="map-caption"><span>${new Set(mapNodes.map((node) => node.item.id)).size} 篇可见论文 · ${links.length} 条可见引用</span><span>${tr(orderingLabel)} · ${tr("可滚动和缩放")}</span>${focused ? `<button type="button" class="button quiet" data-action="map-overview">返回全库排序</button>` : ""}</div><div class="paper-map-scroll" tabindex="0" aria-label="论文引用地图"><svg class="paper-map" width="${width * ui.mapZoom}" height="${height * ui.mapZoom}" viewBox="0 0 ${width} ${height}" role="group" aria-label="被引用论文指向引用它的论文"><defs><marker id="citation-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#658e77"/></marker><pattern id="map-dots" width="24" height="24" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="1" fill="var(--graph-dot)"/></pattern></defs><rect width="${width}" height="${height}" fill="url(#map-dots)"/>${headings}${paths}${nodes}</svg></div>${focused ? `<p class="map-footnote">局部图展示当前论文与全部直接邻居；搜索和阅读筛选仅作用于全库视图。</p>` : ""}<p class="map-footnote">仅连接库内已识别的引用；没有连线不代表没有引用。选中论文显示相关连线；可查看引用依据与分析状态。</p></section>`;
+  $("#paper-map-results").innerHTML = `<section class="graph-panel"><div class="map-caption"><span>${new Set(mapNodes.map((node) => node.item.id)).size} 篇可见论文 · ${links.length} 条可见引用</span><span>${tr(orderingLabel)} · ${tr(graphZoomHint())}</span>${focused ? `<button type="button" class="button quiet" data-action="map-overview">返回全库排序</button>` : ""}</div><div class="paper-map-scroll" tabindex="0" aria-label="论文引用地图"><svg class="paper-map" width="${width * ui.mapZoom}" height="${height * ui.mapZoom}" viewBox="0 0 ${width} ${height}" role="group" aria-label="被引用论文指向引用它的论文"><defs><marker id="citation-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#658e77"/></marker><pattern id="map-dots" width="24" height="24" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="1" fill="var(--graph-dot)"/></pattern></defs><rect width="${width}" height="${height}" fill="url(#map-dots)"/>${headings}${paths}${nodes}</svg></div>${focused ? `<p class="map-footnote">局部图展示当前论文与全部直接邻居；搜索和阅读筛选仅作用于全库视图。</p>` : ""}<p class="map-footnote">仅连接库内已识别的引用；没有连线不代表没有引用。选中论文显示相关连线；可查看引用依据与分析状态。</p></section>`;
   localize($("#paper-map-results"));
 }
 function renderZoteroSync() {
@@ -1055,7 +1127,8 @@ document.addEventListener("click", async (event) => {
   const action = button.dataset.action;
   const id = button.dataset.id;
   try {
-    if (action.startsWith("view-")) { ui.view = action.slice(5); ui.selectedPaperId = ""; render(); }
+    if (action === "page-zoom") setPageZoom(Number(button.dataset.step) ? ui.pageZoom + Number(button.dataset.step) : 1);
+    else if (action.startsWith("view-")) { ui.view = action.slice(5); ui.selectedPaperId = ""; render(); }
     else if (action === "sync-zotero-library") await startZoteroSync();
     else if (action === "mark-paper") await markPaper(id, button.dataset.status);
     else if (action === "recommendation-filter") { ui.recommendationAll = button.dataset.all === "true"; renderRecommendations(); }
@@ -1063,8 +1136,14 @@ document.addEventListener("click", async (event) => {
     else if (action === "paper-add-line") openPaperLineDialog(id);
     else if (action === "paper-view-idea") { ui.view = "graph"; selectIdea(id); }
     else if (action === "filter-paper-read") { ui.mapStatus = button.dataset.status; renderPaperMap(); localize($("#main-view")); }
-    else if (action === "map-fit") { const svg = $(".paper-map"), scroller = $(".paper-map-scroll"); if (svg && scroller) { const box = svg.viewBox.baseVal; ui.mapZoom = Math.max(.15, Math.min(1, scroller.clientWidth / box.width, scroller.clientHeight / box.height)); renderPaperMap(); localize($("#main-view")); } }
-    else if (action === "map-zoom") { const scroller = $(".paper-map-scroll"); const left = scroller?.scrollLeft || 0, top = scroller?.scrollTop || 0; const previous = ui.mapZoom; ui.mapZoom = Number(button.dataset.step) ? Math.max(.15, Math.min(2, ui.mapZoom + Number(button.dataset.step))) : 1; renderPaperMap(); const next = $(".paper-map-scroll"); if (next) { next.scrollLeft = left * ui.mapZoom / previous; next.scrollTop = top * ui.mapZoom / previous; } localize($("#main-view")); }
+    else if (action === "map-fit") {
+      const scroller = $(".paper-map-scroll"), svg = scroller?.querySelector("svg");
+      if (svg) { const box = svg.viewBox.baseVal; zoomGraph(scroller, Math.min(1, scroller.clientWidth / box.width, scroller.clientHeight / box.height)); }
+    }
+    else if (action === "map-zoom" || action === "idea-zoom") {
+      const map = action === "map-zoom", previous = map ? ui.mapZoom : ui.ideaGraphZoom;
+      zoomGraph($(map ? ".paper-map-scroll" : ".graph-scroll"), Number(button.dataset.step) ? previous + Number(button.dataset.step) : 1);
+    }
     else if (action === "select-line") { ui.selectedLineId = id; ui.selectedIdeaId = line(id)?.activeIdeaId || line(id)?.ideaIds[0] || ""; ui.selectedPaperId = ""; render(); }
     else if (action === "select-idea") selectIdea(id);
     else if (action === "select-paper") updatePaperSelection(id);
@@ -1088,20 +1167,20 @@ document.addEventListener("click", async (event) => {
     }
     else if (action === "filter-status") { ui.ideaStatus = button.dataset.status || ""; markMainAnimation(false); renderIdeas(); localize($("#main-view")); }
     else if (action === "delete-idea") {
-      if (!window.confirm(tr("删除这张思想卡？它的关系和阅读记录会一并删除；下次导出时，关联笔记将移至 Obsidian 库的 .trash/PaperLine，可恢复。"))) return;
+      if (!await confirmAction(tr("删除这张思想卡？它的关系和阅读记录会一并删除；下次导出时，关联笔记将移至 Obsidian 库的 .trash/PaperLine，可恢复。"))) return;
       ui.selectedIdeaId = "";
       await act("idea.delete", { id });
       toast("思想卡已删除。");
     }
     else if (action === "delete-paper") {
-      if (!window.confirm(tr("删除这篇论文？它与思想卡的关系会一并删除，思想卡本身保留。"))) return;
+      if (!await confirmAction(tr("删除这篇论文？它与思想卡的关系会一并删除，思想卡本身保留。"))) return;
       ui.selectedPaperId = "";
       await act("paper.delete", { id });
       toast("论文已删除。");
     }
     else if (action === "delete-line") {
       const current = line(ui.selectedLineId);
-      if (!current || !window.confirm(tr("删除这条阅读线？思想卡、论文和阅读记录都会保留。"))) return;
+      if (!current || !await confirmAction(tr("删除这条阅读线？思想卡、论文和阅读记录都会保留。"))) return;
       ui.selectedLineId = "";
       await act("line.delete", { id: current.id });
       closeDialog($("#line-dialog"));
@@ -1119,7 +1198,7 @@ document.addEventListener("click", async (event) => {
     else if (action === "link-paper-to-idea") openRelation("paper", "paper");
     else if (action === "edit-edge") editRelation(id);
     else if (action === "delete-edge") {
-      if (!ui.editingEdgeId || !window.confirm(tr("删除这条关系？思想卡和论文会保留。"))) return;
+      if (!ui.editingEdgeId || !await confirmAction(tr("删除这条关系？思想卡和论文会保留。"))) return;
       await act("edge.delete", { id: ui.editingEdgeId });
       closeDialog($("#relation-dialog"));
       toast("关系已删除。");
@@ -1165,7 +1244,7 @@ document.addEventListener("click", async (event) => {
     }
     else if (action === "detach-idea") {
       const current = line(ui.selectedLineId);
-      if (!window.confirm(tr("将这张卡从当前阅读线移出？卡片及论文关联会保留。"))) return;
+      if (!await confirmAction(tr("将这张卡从当前阅读线移出？卡片及论文关联会保留。"))) return;
       await act("line.detach", { lineId: current.id, ideaId: id });
       if (ui.selectedIdeaId === id) ui.selectedIdeaId = line(ui.selectedLineId)?.activeIdeaId || "";
       render();
@@ -1196,7 +1275,7 @@ document.addEventListener("click", async (event) => {
         info.newer === "local" ? tr("本机的数据比云端新，恢复会用较旧的云端数据替换它。") : "",
         tr("当前数据会先另存一份。"),
       ].filter(Boolean).join("\n");
-      if (!window.confirm(question)) return;
+      if (!await confirmAction(question)) return;
       const data = await postJson("/api/webdav/restore", { expectSavedAt: info.cloud.savedAt || "" });
       state = data.state;
       Object.assign(ui, { selectedLineId: "", selectedIdeaId: "", selectedPaperId: "", view: "graph" });
@@ -1204,6 +1283,16 @@ document.addEventListener("click", async (event) => {
       render();
       await refreshWebdav();
       toast(`已从云端恢复。原来的数据另存为 ${data.result.kept}。`);
+    }
+    else if (action === "choose-vault") {
+      const path = await globalThis.PaperLineDesktop?.chooseDirectory?.();
+      if (path) $("#vault-path").value = path;
+    }
+    else if (action === "export-migration") {
+      if (ui.session) checkpointSession();
+      const backup = await api("/api/backup");
+      const saved = await globalThis.PaperLineDesktop.saveJson(globalThis.PaperLineDesktop.migration(backup), "paperline-desktop-migration.json");
+      if (saved) toast("迁移包已导出，包含数据和有效草稿。");
     }
     else if (action === "restore-backup") { $("#restore-file").value = ""; $("#restore-file").click(); }
     else if (action === "webdav-test") {
@@ -1220,7 +1309,7 @@ document.addEventListener("click", async (event) => {
       } catch (error) {
         if (!error.conflict) throw error;
         await refreshWebdav();
-        if (!window.confirm(tr("云端的数据比本机新。仍然用本机数据覆盖云端吗？云端那份会先存进 history 文件夹。"))) { toast(error.message, true); return; }
+        if (!await confirmAction(tr("云端的数据比本机新。仍然用本机数据覆盖云端吗？云端那份会先存进 history 文件夹。"))) { toast(error.message, true); return; }
         showWebdav(await postJson("/api/webdav/sync", { force: true }));
       }
       api("/api/webdav/cloud").then(showCloudCompare).catch(() => {});
@@ -1287,16 +1376,27 @@ $("#restore-file").addEventListener("change", async (event) => {
     if (file.size > 20_000_000) throw new Error("备份文件太大，无法恢复。");
     let backup;
     try { backup = JSON.parse(await file.text()); } catch { throw new Error("这不是可以恢复的 PaperLine 备份文件。"); }
+    const packageData = globalThis.PaperLineDesktop?.unpack(backup) || { backup, drafts: null };
+    backup = packageData.backup;
     const count = (key) => (Array.isArray(backup?.[key]) ? backup[key].length : 0);
-    const question = `用这份备份替换当前数据？备份里有 ${count("lines")} 条阅读线、${count("ideas")} 张思想卡、${count("papers")} 篇论文。当前数据会先另存一份。`;
-    if (!window.confirm(tr(question))) return;
+    const question = tr(`用这份备份替换当前数据？备份里有 ${count("lines")} 条阅读线、${count("ideas")} 张思想卡、${count("papers")} 篇论文。当前数据会先另存一份。`) + (packageData.drafts !== null ? "\n" + tr(`将恢复 ${Object.keys(packageData.drafts).length} 份有效草稿，并替换本机草稿。`) : "");
+    if (!await confirmAction(tr(question))) return;
     const data = await postJson("/api/restore", { backup });
+    stopTimer();
+    closeDialog($("#session-dialog"));
     state = data.state;
+    let draftsFailed = false;
+    if (packageData.drafts !== null) {
+      draftCache.clear();
+      try { globalThis.PaperLineDesktop.installDrafts(packageData.drafts, state); }
+      catch { draftsFailed = true; }
+    }
     Object.assign(ui, { selectedLineId: "", selectedIdeaId: "", selectedPaperId: "", view: "graph" });
     closeDialog($("#settings-dialog"));
     render();
     noteLocalChange();
-    toast(`已从备份恢复。原来的数据另存为 ${data.result.kept}。`);
+    if (draftsFailed) toast("数据已恢复，但草稿存储不可用。请保留迁移包并重试。", true);
+    else toast(`已从备份恢复。原来的数据另存为 ${data.result.kept}。`);
   } catch (error) { toast(error.message, true); }
 });
 document.querySelectorAll("dialog").forEach((dialog) => dialog.addEventListener("close", () => { if (dialog.id === "session-dialog" && !dialog.open) stopTimer(); }));

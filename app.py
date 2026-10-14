@@ -23,7 +23,7 @@ import urllib.request
 import webbrowser
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from paper_map import ARXIV, RECOMMENDATIONS_VERSION, collect_snapshot, doi_key, reference_recommendations
@@ -40,6 +40,7 @@ STATIC = {
     "/": (ROOT / "static" / "index.html", "text/html; charset=utf-8"),
     "/i18n.js": (ROOT / "static" / "i18n.js", "text/javascript; charset=utf-8"),
     "/app.js": (ROOT / "static" / "app.js", "text/javascript; charset=utf-8"),
+    "/desktop.js": (ROOT / "static" / "desktop.js", "text/javascript; charset=utf-8"),
     "/style.css": (ROOT / "static" / "style.css", "text/css; charset=utf-8"),
 }
 LOCK = threading.RLock()
@@ -1018,7 +1019,15 @@ def export_obsidian(state: dict[str, Any]) -> dict[str, Any]:
                    for kind, collection in (("line", "lines"), ("idea", "ideas"), ("paper", "papers"))}
     for kind, collection in (("line", "lines"), ("idea", "ideas"), ("paper", "papers")):
         for item in state[collection]:
-            if Path(note_name(item)).name != note_name(item):
+            name = note_name(item)
+            # Backups move between macOS and Windows. Reject incompatible filenames
+            # before writing any export, including Windows device names and ADS paths.
+            if (Path(name).name != name or PureWindowsPath(name).name != name
+                    or any(char in '<>:"/\\|?*' or ord(char) < 32 for char in name)
+                    or name.endswith((".", " "))
+                    or name.split(".", 1)[0].rstrip(" ").upper() in
+                    {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in "123456789¹²³"),
+                     *(f"LPT{i}" for i in "123456789¹²³")}):
                 raise ValueError("导出笔记路径无效，未修改任何文件。")
             relative = f"{folders[kind]}/{note_name(item)}"
             if relative in next_owned:
@@ -1140,7 +1149,10 @@ def save_webdav(config: dict[str, Any]) -> None:
     WEBDAV_FILE.parent.mkdir(parents=True, exist_ok=True)
     handle, temp_name = tempfile.mkstemp(dir=WEBDAV_FILE.parent, prefix=".webdav-")
     try:
-        os.fchmod(handle, 0o600)  # 里面有密码，只允许当前用户读写。
+        if callable(getattr(os, "fchmod", None)):
+            os.fchmod(handle, 0o600)  # POSIX: current user only. Windows uses app-data ACLs.
+        else:
+            os.chmod(temp_name, 0o600)
         with os.fdopen(handle, "w", encoding="utf-8") as stream:
             json.dump(config, stream, ensure_ascii=False, indent=2)
         os.replace(temp_name, WEBDAV_FILE)
@@ -1511,6 +1523,77 @@ def public_webdav() -> dict[str, Any]:
     }
 
 
+def api_request(method: str, path: str, request: dict[str, Any] | None = None) -> tuple[int, Any]:
+    """Shared API transport boundary for HTTP and the desktop stdin sidecar."""
+    if method == "GET":
+        parsed = urllib.parse.urlparse(path)
+        query = urllib.parse.parse_qs(parsed.query)
+        if parsed.path in {"/api/state", "/api/backup"}:
+            with LOCK:
+                return 200, load_state()
+        if parsed.path == "/api/zotero/search":
+            return 200, {"items": zotero_search(query.get("q", [""])[0])}
+        if parsed.path == "/api/zotero/annotations":
+            return 200, {"annotations": zotero_annotations(query.get("key", [""])[0])}
+        if parsed.path == "/api/zotero/sync":
+            return 200, ZOTERO_SYNC.public()
+        if parsed.path == "/api/webdav":
+            return 200, public_webdav()
+        if parsed.path == "/api/webdav/cloud":
+            return 200, compare_with_cloud()
+        return 404, {"error": "页面不存在。"}
+    if method != "POST":
+        raise ValueError("请求方法无效。")
+    if not isinstance(request, dict):
+        raise ValueError("请求内容无效。")
+    if path == "/api/action":
+        action = request.get("action")
+        payload = request.get("payload", {})
+        if not isinstance(action, str) or not isinstance(payload, dict):
+            raise ValueError("操作内容无效。")
+        with LOCK:
+            state = load_state()
+            result = apply_action(state, action, payload)
+            save_state(state)
+        SYNC.mark_dirty()
+        return 200, {"state": state, "result": result}
+    elif path == "/api/restore":
+        with LOCK:
+            result = restore_state(request.get("backup"))
+            state = load_state()
+        SYNC.mark_dirty()
+        return 200, {"state": state, "result": result}
+    elif path == "/api/zotero/sync":
+        return 202, ZOTERO_SYNC.start()
+    elif path == "/api/export":
+        with LOCK:
+            result = export_obsidian(load_state())
+        return 200, result
+    elif path == "/api/webdav/config":
+        config = clean_webdav(request, load_webdav())
+        save_webdav(config)
+        SYNC.clear_conflict()  # 可能换了服务器，旧的冲突判断作废
+        SYNC.mark_dirty()
+        return 200, public_webdav()
+    elif path == "/api/webdav/test":
+        config = clean_webdav(request, load_webdav())
+        webdav_check(config)
+        return 200, {"ok": True, "insecure": config["url"].startswith("http://")}
+    elif path == "/api/webdav/sync":
+        SYNC.sync_now(force=request.get("force") is True)
+        return 200, public_webdav()
+    elif path == "/api/webdav/restore":
+        expect = request.get("expectSavedAt", "")
+        if not isinstance(expect, str):
+            raise ValueError("恢复请求无效。")
+        result = restore_from_cloud(expect)
+        with LOCK:
+            state = load_state()
+        return 200, {"state": state, "result": result}
+    else:
+        return 404, {"error": "页面不存在。"}
+
+
 class Handler(BaseHTTPRequestHandler):
     server: ThreadingHTTPServer
 
@@ -1546,27 +1629,13 @@ class Handler(BaseHTTPRequestHandler):
             if parsed.path in STATIC:
                 path, content_type = STATIC[parsed.path]
                 self._send(200, path.read_bytes(), content_type)
-            elif parsed.path == "/api/state":
-                with LOCK:
-                    self._json(200, load_state())
-            elif parsed.path == "/api/zotero/search":
-                query = urllib.parse.parse_qs(parsed.query).get("q", [""])[0]
-                self._json(200, {"items": zotero_search(query)})
-            elif parsed.path == "/api/zotero/annotations":
-                key = urllib.parse.parse_qs(parsed.query).get("key", [""])[0]
-                self._json(200, {"annotations": zotero_annotations(key)})
-            elif parsed.path == "/api/zotero/sync":
-                self._json(200, ZOTERO_SYNC.public())
-            elif parsed.path == "/api/webdav":
-                self._json(200, public_webdav())
-            elif parsed.path == "/api/webdav/cloud":
-                self._json(200, compare_with_cloud())
-            elif parsed.path == "/api/backup":
-                with LOCK:
-                    body = json.dumps(load_state(), ensure_ascii=False, indent=2).encode("utf-8")
-                self._send(200, body, "application/json; charset=utf-8")
             else:
-                self._json(404, {"error": "页面不存在。"})
+                status, data = api_request("GET", self.path)
+                if parsed.path == "/api/backup" and status == 200:
+                    self._send(status, json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8"),
+                               "application/json; charset=utf-8")
+                else:
+                    self._json(status, data)
         except (ValueError, ConnectionError) as error:
             self._json(400 if isinstance(error, ValueError) else 503, {"error": str(error)})
 
@@ -1583,52 +1652,8 @@ class Handler(BaseHTTPRequestHandler):
             request = json.loads(self.rfile.read(length))
             if not isinstance(request, dict):
                 raise ValueError("请求内容无效。")
-            if self.path == "/api/action":
-                action = request.get("action")
-                payload = request.get("payload", {})
-                if not isinstance(action, str) or not isinstance(payload, dict):
-                    raise ValueError("操作内容无效。")
-                with LOCK:
-                    state = load_state()
-                    result = apply_action(state, action, payload)
-                    save_state(state)
-                SYNC.mark_dirty()
-                self._json(200, {"state": state, "result": result})
-            elif self.path == "/api/restore":
-                with LOCK:
-                    result = restore_state(request.get("backup"))
-                    state = load_state()
-                SYNC.mark_dirty()
-                self._json(200, {"state": state, "result": result})
-            elif self.path == "/api/zotero/sync":
-                self._json(202, ZOTERO_SYNC.start())
-            elif self.path == "/api/export":
-                with LOCK:
-                    result = export_obsidian(load_state())
-                self._json(200, result)
-            elif self.path == "/api/webdav/config":
-                config = clean_webdav(request, load_webdav())
-                save_webdav(config)
-                SYNC.clear_conflict()  # 可能换了服务器，旧的冲突判断作废
-                SYNC.mark_dirty()
-                self._json(200, public_webdav())
-            elif self.path == "/api/webdav/test":
-                config = clean_webdav(request, load_webdav())
-                webdav_check(config)
-                self._json(200, {"ok": True, "insecure": config["url"].startswith("http://")})
-            elif self.path == "/api/webdav/sync":
-                SYNC.sync_now(force=request.get("force") is True)
-                self._json(200, public_webdav())
-            elif self.path == "/api/webdav/restore":
-                expect = request.get("expectSavedAt", "")
-                if not isinstance(expect, str):
-                    raise ValueError("恢复请求无效。")
-                result = restore_from_cloud(expect)
-                with LOCK:
-                    state = load_state()
-                self._json(200, {"state": state, "result": result})
-            else:
-                self._json(404, {"error": "页面不存在。"})
+            status, data = api_request("POST", self.path, request)
+            self._json(status, data)
         except (ValueError, json.JSONDecodeError) as error:
             self._json(400, {"error": str(error)})
         except SyncConflict as error:

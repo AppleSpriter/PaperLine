@@ -22,6 +22,7 @@ function fixture() {
 // Small fixtures for application logic; these tests do not run a browser or check layout.
 function createApp(storage = new Map(), clock = { now: 0 }) {
   const nodes = new Map();
+  const documentListeners = new Map();
   function node(selector) {
     if (!nodes.has(selector)) nodes.set(selector, {
       id: selector.slice(1), value: "", innerHTML: "", textContent: "", dataset: {}, open: false,
@@ -34,9 +35,10 @@ function createApp(storage = new Map(), clock = { now: 0 }) {
   }
   const context = vm.createContext({
     document: {
+      documentElement: { style: { setProperty(key, value) { this[key] = value; } } },
       querySelector: node,
       querySelectorAll: (selector) => selector === "dialog" ? [node("#session-dialog")] : [],
-      addEventListener() {},
+      addEventListener(type, callback, options) { documentListeners.set(type, { callback, options }); },
     },
     window: { addEventListener() {} },
     localStorage: {
@@ -52,10 +54,10 @@ function createApp(storage = new Map(), clock = { now: 0 }) {
   });
   vm.runInContext(appSource, context);
   const app = vm.runInContext(`({ ui, openSession, closeDialog, stopTimer, sessionSeconds, captureIdeaDraft, searchIdeas, selectIdea, latestSession, readingRecap,
-    orderedMapPapers, paperMapLayout, updatePaperSelection, syncInspectorLayout, syncSelection, graphNode, displayAuthors, paperInstitution, libraryCitationCounts, rankedRecommendations, renderRecommendations, openPaperLineDialog, paperReadStatus, mapPapers, validCitations, renderPaperMap, renderPaperMapResults, renderMapInspector, renderZoteroSync, applyZoteroSync, refreshZoteroSync, startZoteroSync, markPaper, renderIdeaInspector, renderInspector, renderIdeas, renderPaperResults, searchPapers, searchLines, searchEverything, markIdea, toast, readDraft, act, refreshState, formatDuration, readingTotal, renderOutline, setState(value) { state = value; } })`, context);
+    graphZoomHint, setPageZoom, zoomGraph, zoomGraphWheel, graphMarkup, orderedMapPapers, paperMapLayout, updatePaperSelection, syncInspectorLayout, syncSelection, graphNode, displayAuthors, paperInstitution, libraryCitationCounts, rankedRecommendations, renderRecommendations, openPaperLineDialog, paperReadStatus, mapPapers, validCitations, renderPaperMap, renderPaperMapResults, renderMapInspector, renderZoteroSync, applyZoteroSync, refreshZoteroSync, startZoteroSync, markPaper, renderIdeaInspector, renderInspector, renderIdeas, renderPaperResults, searchPapers, searchLines, searchEverything, markIdea, toast, readDraft, act, refreshState, formatDuration, readingTotal, renderOutline, setState(value) { state = value; } })`, context);
   app.setState(fixture());
   app.ui.selectedLineId = "l1";
-  return { app, node, context, storage, clock };
+  return { app, node, context, storage, clock, documentListeners };
 }
 
 test("Continue later and a page reload preserve notes and elapsed time without counting the break", () => {
@@ -633,4 +635,128 @@ test("map selection preserves the document and controls while moving only the gr
   assert.equal(classes.get("is-open"), false);
   assert.equal(app.ui.selectedPaperId, "");
   assert.equal(app.ui.mapZoom, 1.4);
+});
+
+function zoomFixture(map = true) {
+  const harness = createApp();
+  const attributes = {};
+  const svg = { viewBox: { baseVal: { width: 1000, height: 800 } }, setAttribute(key, value) { attributes[key] = value; } };
+  const scroller = { clientWidth: 500, clientHeight: 400, clientLeft: 2, clientTop: 3, scrollLeft: 300, scrollTop: 200,
+    classList: { contains: (name) => map && name === "paper-map-scroll" }, querySelector: () => svg,
+    getBoundingClientRect: () => ({ left: 20, top: 30 }) };
+  const event = (deltaY, extra = {}) => ({ metaKey: true, cancelable: true, deltaY, deltaMode: 0, clientX: 172, clientY: 133,
+    target: { closest: () => scroller }, preventDefault() { this.prevented = true; }, ...extra });
+  return { ...harness, scroller, attributes, event };
+}
+test("Command-wheel zooms each graph around the pointer without rebuilding either view", () => {
+  for (const map of [true, false]) {
+    const h = zoomFixture(map), key = map ? "mapZoom" : "ideaGraphZoom";
+    const before = h.node("#main-view").innerHTML;
+    const input = h.event(-100);
+    h.app.zoomGraphWheel(input);
+    const ratio = Math.exp(.2);
+    assert.equal(input.prevented, true);
+    assert.ok(Math.abs(h.app.ui[key] - ratio) < 1e-12);
+    assert.ok(Math.abs((h.scroller.scrollLeft + 150) / ratio - 450) < 1e-10);
+    assert.ok(Math.abs((h.scroller.scrollTop + 100) / ratio - 300) < 1e-10);
+    assert.equal(h.attributes.width, 1000 * ratio);
+    assert.equal(h.node(map ? "[data-action='map-zoom'][data-step='0']" : "[data-action='idea-zoom'][data-step='0']").textContent, "122%");
+    assert.equal(h.node("#main-view").innerHTML, before);
+    h.app.zoomGraphWheel(h.event(100));
+    assert.ok(Math.abs(h.app.ui[key] - 1) < 1e-12);
+  }
+});
+test("graph zoom handles line/page wheel units, frequent fractional trackpad deltas and clamps", () => {
+  const h = zoomFixture();
+  h.app.zoomGraphWheel(h.event(-1, { deltaMode: 1 }));
+  assert.ok(Math.abs(h.app.ui.mapZoom - Math.exp(.032)) < 1e-12);
+  h.app.zoomGraph(h.scroller, 1);
+  for (let index = 0; index < 20; index++) h.app.zoomGraphWheel(h.event(-.25));
+  assert.ok(Math.abs(h.app.ui.mapZoom - Math.exp(.01)) < 1e-12);
+  h.app.zoomGraph(h.scroller, 1);
+  h.app.zoomGraphWheel(h.event(-1, { deltaMode: 2 }));
+  assert.equal(h.app.ui.mapZoom, 2);
+  h.app.zoomGraph(h.scroller, -100);
+  assert.equal(h.app.ui.mapZoom, .15);
+  assert.equal(h.scroller.scrollLeft >= 0 && h.scroller.scrollTop >= 0, true);
+  h.app.zoomGraphWheel(h.event(1000));
+  assert.equal(h.app.ui.mapZoom, .15);
+  assert.equal(h.app.ui.mapOverviewZoom, .15);
+});
+test("ordinary wheel, graph-external Command-wheel and uncancelable input keep normal behavior", () => {
+  const h = zoomFixture();
+  assert.deepEqual(h.documentListeners.get("wheel").options.passive, false);
+  for (const input of [h.event(100, { metaKey: false }), h.event(100, { target: { closest: () => null } }), h.event(100, { cancelable: false }), h.event(0), h.event(NaN)]) {
+    h.app.zoomGraphWheel(input);
+    assert.equal(input.prevented, undefined);
+  }
+  assert.equal(h.app.ui.mapZoom, 1);
+  assert.deepEqual(h.attributes, {});
+});
+test("zoom button helper uses the same clamp, center anchor and percentage as wheel input", () => {
+  const h = zoomFixture();
+  h.app.zoomGraph(h.scroller, 1.2);
+  assert.equal(h.scroller.scrollLeft, 410);
+  assert.equal(h.scroller.scrollTop, 280);
+  assert.equal(h.node("[data-action='map-zoom'][data-step='0']").textContent, "120%");
+  h.app.zoomGraph(h.scroller, 1);
+  assert.equal(h.scroller.scrollLeft, 300);
+  assert.equal(h.scroller.scrollTop, 200);
+  assert.equal(h.node("[data-action='map-zoom'][data-step='0']").textContent, "100%");
+});
+
+test("whole-page zoom clamps, resets and survives reload without changing graph zoom or drafts", () => {
+  const h = createApp();
+  h.storage.set("paperline-draft:idea:i1", '{"title":"Unsaved"}');
+  const view = h.app.ui.view, content = h.node("#main-view").innerHTML;
+  h.app.setPageZoom(99);
+  assert.equal(h.app.ui.pageZoom, 1.5);
+  assert.equal(h.context.document.documentElement.style.zoom, "1.5");
+  assert.equal(h.node("[data-page-zoom-percent]").textContent, "150%");
+  assert.equal(createApp(h.storage).app.ui.pageZoom, 1.5);
+  h.app.setPageZoom(.1);
+  assert.equal(h.app.ui.pageZoom, .7);
+  h.app.setPageZoom(1);
+  assert.equal(h.app.ui.pageZoom, 1);
+  assert.equal(h.storage.get("paperline-page-zoom"), "1");
+  assert.equal(h.app.ui.mapZoom, 1);
+  assert.equal(h.app.ui.ideaGraphZoom, 1);
+  assert.equal(h.app.ui.view, view);
+  assert.equal(h.node("#main-view").innerHTML, content);
+  assert.equal(h.storage.get("paperline-draft:idea:i1"), '{"title":"Unsaved"}');
+});
+test("Command-wheel preserves the graph point under a scaled whole-page pointer", () => {
+  for (const scale of [.7, 1.5]) {
+    const h = zoomFixture();
+    h.app.setPageZoom(scale);
+    h.scroller.offsetWidth = 504; h.scroller.offsetHeight = 406;
+    h.scroller.getBoundingClientRect = () => ({ left: 20, top: 30, width: 504 * scale, height: 406 * scale });
+    const input = h.event(-100, { clientX: 20 + 152 * scale, clientY: 30 + 103 * scale });
+    h.app.zoomGraphWheel(input);
+    const ratio = h.app.ui.mapZoom;
+    assert.ok(Math.abs((h.scroller.scrollLeft + 150) / ratio - 450) < 1e-10);
+    assert.ok(Math.abs((h.scroller.scrollTop + 100) / ratio - 300) < 1e-10);
+  }
+});
+
+test("Windows uses Ctrl-wheel only inside graphs and renders the corresponding hint", () => {
+  for (const map of [true, false]) {
+    const h = zoomFixture(map);
+    h.context.navigator = { platform: "Win32" };
+    const input = h.event(-100, { metaKey: false, ctrlKey: true });
+    h.app.zoomGraphWheel(input);
+    assert.equal(input.prevented, true);
+    assert.ok((map ? h.app.ui.mapZoom : h.app.ui.ideaGraphZoom) > 1);
+    assert.equal(h.app.graphZoomHint(), "按住 Ctrl + 滚轮缩放");
+    assert.match(h.app.graphMarkup({ id: "i1", title: "Card", kind: "concept", status: "inbox" }), /按住 Ctrl \+ 滚轮缩放/);
+    for (const ignored of [h.event(-100), h.event(-100, { metaKey: false, ctrlKey: true, target: { closest: () => null } }), h.event(-100, { metaKey: false, ctrlKey: true, cancelable: false })]) {
+      h.app.zoomGraphWheel(ignored);
+      assert.equal(ignored.prevented, undefined);
+    }
+    h.context.navigator = { platform: "MacIntel" };
+    assert.equal(h.app.graphZoomHint(), "按住 Command + 滚轮缩放");
+    const macCtrl = h.event(-100, { metaKey: false, ctrlKey: true });
+    h.app.zoomGraphWheel(macCtrl);
+    assert.equal(macCtrl.prevented, undefined);
+  }
 });

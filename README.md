@@ -4,7 +4,41 @@
 
 一个本地运行的轻量论文阅读应用。用**阅读线**安排下一步，用**思想卡**汇集来自多篇论文的同一想法，用关系图查看论文如何提出、使用、改进或质疑它。
 
-## 运行
+## macOS 原生桌面版（0.2.1）
+
+原生版使用 Tauri 2 与 macOS 自带 WebView，Python 后端随应用一起打包，通过标准输入输出通信，不启动本地 HTTP 端口。安装后不需要 Python、Node.js 或项目源码。重复打开会聚焦已有窗口，关闭窗口即退出后台进程。
+
+在 macOS 13 或更新版本上，把 `dist/macos/0.2.1/PaperLine.app` 拖入“应用程序”后双击打开。项目根目录原有的 `PaperLine.app` 是旧版浏览器启动器；原生构建产物按版本保存在 `dist/macos/<version>/`，两者不要混淆。
+
+原生数据目录为 `~/Library/Application Support/io.github.applespriter.paperline/`；升级、移动应用不会改变这个路径。首次使用可在“设置”导入旧版 `data/state.json` 或通过旧版导出的 JSON 备份。应用不会在启动时自动覆盖现有数据。备份、Obsidian 目录选择与确认操作使用系统对话框；论文网址与 Zotero 链接交给浏览器或 Zotero 打开。
+
+构建需要 Apple Silicon Mac、Xcode Command Line Tools、Node.js/npm、Rust stable 与 Python 3.10+。仓库内 `.desktop-tools/cargo/bin`、`.desktop-tools/rustup`、`.desktop-tools/venv` 若已安装，会自动复用；否则使用 PATH 上的 Rust 与 Python，并在 `.desktop-tools/venv` 创建打包环境。
+
+```bash
+npm ci
+npm run desktop:package
+```
+
+输出：`dist/macos/0.2.1/PaperLine.app` 与 `PaperLine_0.2.1_aarch64-apple-darwin.dmg`。DMG 通过 `hdiutil` 无界面生成，包含应用与“应用程序”快捷方式，不需要 Finder 或解锁桌面。构建不会覆盖 `dist/macos/PaperLine.app` 的预览版。`npm run desktop:dev` 启动开发版。构建只打包 `static/` 与独立后端，不包含 `data/`、WebDAV 凭据或本地日志。首次构建会下载 Cargo 依赖与 PyInstaller。打包前会检查 Python 可执行文件与动态库的最低 macOS 版本；若高于 13.0 会终止构建。可以通过 `PAPERLINE_PYTHON=/path/to/python3.13 npm run desktop:package` 指定兼容的 Python；已有构建环境使用其他解释器时，须先重建 `.desktop-tools/venv`。当前默认使用本机 ad-hoc 签名并保留 Hardened Runtime；由于打包的 Python 动态库没有 Team ID，应用仅添加 `disable-library-validation` 例外（Tauri 对主程序与侧车共用同一 entitlement 文件）。打包脚本会再次运行已签名应用内的后端，检查启动、API 与退出；对外分发前需要 Developer ID 签名与 Apple 公证。
+
+## Windows 桌面版（0.2.1，待 Windows 验证）
+
+目标为 Windows 10/11 x64。安装器采用 NSIS，为当前用户安装，无需单独安装 Python 或 Node.js；可选择简体中文或英文。缺少 WebView2 时，安装器会下载微软官方 bootstrapper，因此首次安装可能需要联网。应用数据存放在 `%APPDATA%\io.github.applespriter.paperline\`，与安装目录分开。旧版 JSON 数据可以从“设置”导入。
+
+在 Windows 本机安装 Python 3.13 x64、Node.js/npm、Rust stable MSVC，以及 Visual Studio Build Tools 的“使用 C++ 的桌面开发”和 Windows SDK，然后在项目目录的 PowerShell 执行：
+
+```powershell
+npm ci
+npm run desktop:windows:package
+```
+
+需要指定解释器时，先设置 `$env:PAPERLINE_PYTHON = "C:\path\to\python.exe"`。打包脚本使用独立的 `.desktop-tools/venv-windows`，生成 `paperline-backend-x86_64-pc-windows-msvc.exe` 并通过标准输入输出测试；不会打包真实 `data/`、账户信息或日志。输出为 `dist/windows/0.2.1/PaperLine_0.2.1_x64-setup.exe` 与 `SHA256SUMS.txt`。`npm run desktop:windows:dev` 启动开发版。Windows 后端必须在 Windows 编译，不能用 macOS 的 PyInstaller 产物替代。
+
+`.github/workflows/windows-desktop.yml` 提供 Windows CI：运行 Node、Python、Rust 测试，构建安装器，静默安装到临时目录，使用 `--smoke-test` 的空临时数据目录创建真实窗口、正常退出并检查本次启动的进程是否残留。测试模式不会读取默认用户数据，也不会使用真实 Zotero/WebDAV 凭据。通过后上传安装器和校验和作为 GitHub Actions artifact，不发布 Release。
+
+当前已编写 Windows 构建与验证流程，但尚未在 Windows 执行，也尚未生成经验证的 Windows 安装包。CI 成功也只覆盖安装、窗口启动、协议与生命周期；Zotero、目录选择、备份保存及完整界面仍需 Windows 实机验收。现阶段没有 Windows 代码签名证书；未签名安装器可能触发 SmartScreen。设计依据：[Tauri 官方 Windows installer 文档](https://v2.tauri.app/distribute/windows-installer/)。
+
+## 浏览器版运行
 
 需要 Python 3.10 或更新版本，无需安装依赖。
 
@@ -41,6 +75,10 @@ python3 app.py
 
 论文地图的年份模式按年份分列，并用连线显示引用时间轴；也可切换为库内被引次数排序。选中论文后显示三栏：左侧是它引用的论文，中间是当前论文，右侧是引用它的论文；“返回全库”恢复之前的排序。桌面端详情固定在侧栏，窄屏端使用详情抽屉。推荐论文来自至少两篇库内论文的参考文献证据。旧版数据会直接用已保存的引用关系与参考文献重建推荐，无需再次同步 Zotero。
 
+论文地图和思想图内可按住 macOS 的 Command 或 Windows 的 Ctrl 并滚动鼠标滚轮缩放（15%–200%）；普通滚轮仍用于滚动，缩放以鼠标位置为中心。
+
+右上角“整页”按钮可调整整个界面至 70%–150%，点击百分比恢复 100%；比例在本机保存，与图谱独立缩放互不影响。
+
 ## 删除与快捷键
 
 - 思想卡：右侧详情底部的“删除这张思想卡”。它的论文关系、思想关联和阅读记录会一并删除。
@@ -53,7 +91,7 @@ Zotero 须保持开启，并在 **设置 → 高级**中启用“允许本机其
 
 ## 数据与导出
 
-- 应用数据存放在 `data/state.json`；该目录已被 Git 忽略。
+- 浏览器版数据存放在 `data/state.json`；该目录已被 Git 忽略。
 - 每次写入前会把上一份数据复制到 `data/state.backup.json`。主文件损坏时应用不会改动任何数据，并在错误提示里给出这份备份的位置。
 - “设置 → 备份数据”可下载完整 JSON 备份；“从备份恢复”可以选一个备份文件替换当前数据。恢复前会检查文件格式和引用是否完整，并把当前数据另存为 `data/state.before-restore-时间.json`。Obsidian 路径、语言和提醒时间沿用本机设置，不从备份带过来。WebDAV 云端 `history/` 里的文件也可以直接拿来恢复。
 

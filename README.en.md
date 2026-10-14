@@ -4,7 +4,41 @@ English · [简体中文](README.md)
 
 PaperLine is a lightweight, local app for reading research papers. **Reading paths** give you a next step, **idea cards** collect the same idea across multiple papers, and a graph shows which papers propose, use, improve, or question an idea.
 
-## Run
+## Native macOS desktop app (0.2.1)
+
+The native app uses Tauri 2 and the macOS WebView. Its bundled Python backend communicates over standard input/output and opens no local HTTP port. Installed users need no Python, Node.js, or source checkout. Reopening focuses the existing window; closing the window exits the backend.
+
+On macOS 13 or later, drag `dist/macos/0.2.1/PaperLine.app` into Applications and open it. The existing `PaperLine.app` at the repository root is the older browser launcher; native artifacts are stored by version in `dist/macos/<version>/`.
+
+Native data lives in `~/Library/Application Support/io.github.applespriter.paperline/`, independently of the application location. Use Settings to import the old `data/state.json` or a JSON backup exported by the browser version. Startup does not automatically overwrite existing data. Backup saving, vault selection, and confirmations use system dialogs. Paper and Zotero links open in the browser or Zotero.
+
+Building requires an Apple Silicon Mac, Xcode Command Line Tools, Node.js/npm, stable Rust, and Python 3.10+. Scripts reuse `.desktop-tools/cargo/bin`, `.desktop-tools/rustup`, and `.desktop-tools/venv` when available. Otherwise they use Rust/Python from PATH and create the packaging environment in `.desktop-tools/venv`.
+
+```bash
+npm ci
+npm run desktop:package
+```
+
+Artifacts: `dist/macos/0.2.1/PaperLine.app` and `PaperLine_0.2.1_aarch64-apple-darwin.dmg`. The DMG is created headlessly with `hdiutil` and contains the app plus an Applications shortcut; Finder and an unlocked desktop are not required. Packaging preserves the preview app at `dist/macos/PaperLine.app`. Use `npm run desktop:dev` for development. Only `static/` and the standalone backend are bundled; local `data/`, WebDAV credentials, and logs are excluded. The first build downloads Cargo dependencies and PyInstaller. A prebuild gate checks the Python executable and shared library deployment targets against macOS 13.0. Select a compatible interpreter with `PAPERLINE_PYTHON=/path/to/python3.13 npm run desktop:package`; recreate `.desktop-tools/venv` first if it uses a different interpreter. Builds use local ad-hoc signing with Hardened Runtime enabled. Because the bundled Python libraries have no Team ID, the sole runtime exception is `disable-library-validation`; Tauri applies one entitlement file to the main executable and sidecar. Packaging verifies startup, API responses, and shutdown of the signed backend inside the completed app. Public distribution requires Developer ID signing and Apple notarization.
+
+## Windows desktop (0.2.1, awaiting Windows validation)
+
+Targets Windows 10/11 x64. The NSIS installer installs for the current user and offers English or Simplified Chinese. Installed users need no Python or Node.js. If WebView2 is missing, the installer downloads Microsoft's bootstrapper, so initial installation may need an internet connection. Data lives in `%APPDATA%\io.github.applespriter.paperline\`, separate from the installation directory. Import an existing JSON backup through Settings.
+
+On Windows, install Python 3.13 x64, Node.js/npm, stable Rust MSVC, and Visual Studio Build Tools with Desktop development with C++ and a Windows SDK. Run in PowerShell from the repository:
+
+```powershell
+npm ci
+npm run desktop:windows:package
+```
+
+To select Python, set `$env:PAPERLINE_PYTHON = "C:\path\to\python.exe"` first. The scripts use `.desktop-tools/venv-windows`, build `paperline-backend-x86_64-pc-windows-msvc.exe`, and exercise its stdin/stdout protocol with temporary data. Real `data/`, account settings, and logs are excluded. Outputs are `dist/windows/0.2.1/PaperLine_0.2.1_x64-setup.exe` and `SHA256SUMS.txt`. Use `npm run desktop:windows:dev` for development. Build the backend on Windows; macOS PyInstaller output cannot substitute for a Windows executable.
+
+`.github/workflows/windows-desktop.yml` runs Node, Python, and Rust tests, builds NSIS, silently installs into a temporary directory, and uses `--smoke-test` with an empty temporary data directory to create a real window and exit normally. It verifies cleanup of processes belonging to this launch. The test does not read default user data or use real Zotero/WebDAV credentials. Passing installers and checksums are uploaded as GitHub Actions artifacts; the workflow does not publish a Release.
+
+The Windows build and validation flow is prepared but has not run on Windows; no verified Windows installer has been produced yet. CI covers installation, window creation, protocol, and lifecycle. Zotero, directory selection, backup saving, and full UI behavior still require Windows device checks. No Windows code-signing certificate is configured, so an unsigned installer may trigger SmartScreen. Reference: [Tauri's Windows installer guide](https://v2.tauri.app/distribute/windows-installer/).
+
+## Browser version
 
 Requires Python 3.10 or newer. No packages need to be installed.
 
@@ -40,6 +74,10 @@ In the reading path view, use ↑ and ↓ on each row to set the learning order.
 With two pages open, switching back loads the latest data. If a card was changed elsewhere, saving warns you and loads the newer version while keeping your text as a draft; save again to overwrite.
 
 The paper map’s year mode groups papers into year columns and connects them into a citation timeline; another mode sorts by citations from library papers. Selecting a paper shows three columns: its references on the left, the selected paper in the middle, and its citers on the right. **Back to library** restores the previous sort. Details stay in the side panel on desktop and open in a drawer on narrow screens. Recommendations require reference evidence from at least two library papers. Older data rebuilds recommendations from saved citation links and reference text without another Zotero sync.
+
+Inside the paper map or idea graph, hold Command on macOS or Ctrl on Windows and use the mouse wheel to zoom (15%–200%) around the pointer. Ordinary wheel input still scrolls.
+
+The top-right Page controls zoom the whole interface from 70% to 150%; click the percentage to reset to 100%. The setting is saved on this device and remains independent of graph zoom.
 
 ## Deleting and shortcuts
 

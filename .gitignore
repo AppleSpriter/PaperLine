@@ -2,3 +2,11 @@ data/
 __pycache__/
 *.pyc
 .DS_Store
+node_modules/
+.desktop-venv/
+.desktop-build/
+src-tauri/target/
+src-tauri/gen/
+src-tauri/binaries/paperline-backend-*
+dist/
+.desktop-tools/

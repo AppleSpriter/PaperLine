@@ -1,0 +1,18 @@
+{
+  "name": "paperline-desktop",
+  "version": "0.2.1",
+  "private": true,
+  "scripts": {
+    "desktop:backend": "bash scripts/build-desktop-backend.sh",
+    "desktop:dev": "bash scripts/desktop-tauri.sh dev",
+    "desktop:build": "bash scripts/desktop-tauri.sh build",
+    "desktop:package": "bash scripts/package-desktop.sh",
+    "desktop:windows:backend": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-desktop-backend.ps1",
+    "desktop:windows:dev": "tauri dev",
+    "desktop:windows:build": "tauri build --target x86_64-pc-windows-msvc --bundles nsis",
+    "desktop:windows:package": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-desktop.ps1"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.8.0"
+  }
+}

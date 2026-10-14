@@ -1,6 +1,24 @@
 /* The original Chinese UI strings remain the source of truth. */
 (() => {
   const en = {
+    "按住 Ctrl + 滚轮缩放": "Hold Ctrl and scroll to zoom",
+    "整页": "Page",
+    "整页缩放": "Page zoom",
+    "缩小整页": "Zoom out page",
+    "放大整页": "Zoom in page",
+    "恢复整页至 100%": "Reset page zoom to 100%",
+    "按住 Command + 滚轮缩放": "Hold Command and scroll to zoom",
+    "缩小思想图": "Zoom out of the idea graph",
+    "放大思想图": "Zoom into the idea graph",
+    "重置思想图缩放": "Reset idea graph zoom",
+    "应用保持打开时，会在应用内提醒你当前阅读线的下一张卡。": "Keep the app open to receive in-app reminders about the next card on your current reading path.",
+    "选择 Obsidian 库文件夹": "Choose Obsidian vault folder",
+    "导出桌面迁移包（含草稿）": "Export desktop migration package (with drafts)",
+    "迁移到桌面版时，先在原浏览器导出迁移包，再在桌面版恢复。迁移包包含数据和未保存的卡片、阅读草稿；普通备份也可恢复。": "To move to the desktop app, export a migration package from your original browser, then restore it in the desktop app. It includes data and unsaved card and reading drafts. Regular backups can also be restored.",
+    "已有浏览器版数据？导入原来的备份或包含草稿的迁移包。": "Already have browser data? Import your backup or a migration package with drafts.",
+    "导入备份或迁移包": "Import backup or migration package",
+    "迁移包已导出，包含数据和有效草稿。": "Migration package exported with data and valid drafts.",
+    "数据已恢复，但草稿存储不可用。请保留迁移包并重试。": "Data restored, but draft storage is unavailable. Keep the migration package and try again.",
     "排序": "Sort",
     "它引用的论文": "Papers it cites",
     "当前论文": "Selected paper",
@@ -217,7 +235,7 @@
     "稍后继续会保留本次计时和感想。重新打开这张卡即可接着读。": "Continue later keeps your reading time and notes. Open this card again to pick up where you left off.",
     "草稿已保留，点击保存卡片可写入笔记。": "Draft kept. Choose Save card to save it to your notes.",
     "Obsidian 导出": "Obsidian export",
-    "填写 Obsidian 库的完整路径。应用会在库中创建 PaperLine 文件夹；再次导出时仅更新标记区域，保留你的手写补充。": "Enter the full path to your Obsidian vault. The app creates a PaperLine folder and updates only marked sections on later exports, preserving your own notes.",
+    "填写 Obsidian 库的完整路径。应用会在库中创建 PaperLine 文件夹；再次导出时仅更新生成内容，保留你的手写补充。": "Enter the full path to your Obsidian vault. The app creates a PaperLine folder and updates only generated content on later exports, preserving your own notes.",
     "Obsidian 库路径": "Obsidian vault path",
     "/Users/你/Documents/我的笔记库": "/Users/you/Documents/MyVault",
     "界面语言": "Interface language",
@@ -516,6 +534,7 @@
   };
 
   const patterns = [
+    [/^将恢复 (\d+) 份有效草稿，并替换本机草稿。$/, (_, count) => `Restore ${count} valid drafts and replace this device’s drafts.`],
     [/^已导出 (\d+) 篇笔记到 Obsidian，(\d+) 篇无变化，(\d+) 篇已移至 \.trash\/PaperLine。$/, (_, count, skipped, removed) => `Exported ${count} notes to Obsidian; ${skipped} unchanged; ${removed} moved to .trash/PaperLine.`],
     [/^(\d+) 篇可见论文 · (\d+) 条可见引用$/, (_, papers, links) => `${papers} visible papers · ${links} visible citations`],
     [/^(\d+) 条阅读线、(\d+) 张思想卡、(\d+) 篇论文$/, (_, l, i, p) => `${l} reading path${l === "1" ? "" : "s"}, ${i} idea card${i === "1" ? "" : "s"}, ${p} paper${p === "1" ? "" : "s"}`],

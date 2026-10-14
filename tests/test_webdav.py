@@ -134,7 +134,8 @@ class WebDavTests(unittest.TestCase):
     def test_credentials_stay_private_on_disk_and_in_responses(self):
         app.save_webdav(self.config())
         mode = stat.S_IMODE(os.stat(app.WEBDAV_FILE).st_mode)
-        self.assertEqual(mode, 0o600)
+        if os.name != "nt":  # Windows protection comes from the app-data directory ACL.
+            self.assertEqual(mode, 0o600)
         public = app.public_webdav()
         self.assertNotIn("password", public)
         self.assertTrue(public["hasPassword"])

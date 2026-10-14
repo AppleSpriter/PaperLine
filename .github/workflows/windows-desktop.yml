@@ -1,0 +1,88 @@
+name: Windows desktop validation
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'app.py'
+      - 'desktop_backend.py'
+      - 'paper_map.py'
+      - 'static/**'
+      - 'src-tauri/**'
+      - 'scripts/**'
+      - 'tests/**'
+      - 'package*.json'
+      - '.github/workflows/windows-desktop.yml'
+
+  push:
+    branches: ['codex/desktop-windows']
+    paths:
+      - 'app.py'
+      - 'desktop_backend.py'
+      - 'paper_map.py'
+      - 'static/**'
+      - 'src-tauri/**'
+      - 'scripts/**'
+      - 'tests/**'
+      - 'package*.json'
+      - '.github/workflows/windows-desktop.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  windows-x64:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          architecture: x64
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - name: Install JavaScript build dependencies
+        run: npm ci
+      - name: Test browser and desktop bridge logic
+        shell: pwsh
+        run: |
+          $testFiles = @(Get-ChildItem tests -Filter '*.test.js' | ForEach-Object FullName)
+          node --test @testFiles
+          if ($LASTEXITCODE -ne 0) { throw 'JavaScript tests failed.' }
+      - name: Test Python logic and backend protocol
+        run: python -m unittest discover -s tests -p 'test_*.py'
+      - name: Build Windows sidecar
+        shell: pwsh
+        env:
+          PAPERLINE_PYTHON: ${{ env.pythonLocation }}\python.exe
+        run: ./scripts/build-desktop-backend.ps1
+      - name: Test Rust permissions and Windows process cleanup
+        shell: pwsh
+        run: |
+          cargo test --locked --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { throw 'Rust tests failed.' }
+      - name: Package NSIS installer
+        shell: pwsh
+        env:
+          PAPERLINE_PYTHON: ${{ env.pythonLocation }}\python.exe
+        run: ./scripts/package-desktop.ps1
+      - name: Verify installation and native app lifecycle
+        shell: pwsh
+        run: |
+          $version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          ./scripts/verify-windows-installer.ps1 -Installer "dist/windows/$version/PaperLine_${version}_x64-setup.exe"
+      - name: Upload verified installer and checksum
+        uses: actions/upload-artifact@v4
+        with:
+          name: PaperLine-windows-x64
+          path: dist/windows/**
+          if-no-files-found: error
+          retention-days: 14
