@@ -21,7 +21,7 @@ npm run desktop:package
 
 输出：`dist/macos/0.2.1/PaperLine.app` 与 `PaperLine_0.2.1_aarch64-apple-darwin.dmg`。DMG 通过 `hdiutil` 无界面生成，包含应用与“应用程序”快捷方式，不需要 Finder 或解锁桌面。构建不会覆盖 `dist/macos/PaperLine.app` 的预览版。`npm run desktop:dev` 启动开发版。构建只打包 `static/` 与独立后端，不包含 `data/`、WebDAV 凭据或本地日志。首次构建会下载 Cargo 依赖与 PyInstaller。打包前会检查 Python 可执行文件与动态库的最低 macOS 版本；若高于 13.0 会终止构建。可以通过 `PAPERLINE_PYTHON=/path/to/python3.13 npm run desktop:package` 指定兼容的 Python；已有构建环境使用其他解释器时，须先重建 `.desktop-tools/venv`。当前默认使用本机 ad-hoc 签名并保留 Hardened Runtime；由于打包的 Python 动态库没有 Team ID，应用仅添加 `disable-library-validation` 例外（Tauri 对主程序与侧车共用同一 entitlement 文件）。打包脚本会再次运行已签名应用内的后端，检查启动、API 与退出；对外分发前需要 Developer ID 签名与 Apple 公证。
 
-## Windows 桌面版（0.2.1，待 Windows 验证）
+## Windows 桌面版（0.2.1，CI 验证通过）
 
 目标为 Windows 10/11 x64。安装器采用 NSIS，为当前用户安装，无需单独安装 Python 或 Node.js；可选择简体中文或英文。缺少 WebView2 时，安装器会下载微软官方 bootstrapper，因此首次安装可能需要联网。应用数据存放在 `%APPDATA%\io.github.applespriter.paperline\`，与安装目录分开。旧版 JSON 数据可以从“设置”导入。
 
@@ -36,7 +36,7 @@ npm run desktop:windows:package
 
 `.github/workflows/windows-desktop.yml` 提供 Windows CI：运行 Node、Python、Rust 测试，构建安装器，静默安装到临时目录，使用 `--smoke-test` 的空临时数据目录创建真实窗口、正常退出并检查本次启动的进程是否残留。测试模式不会读取默认用户数据，也不会使用真实 Zotero/WebDAV 凭据。通过后上传安装器和校验和作为 GitHub Actions artifact，不发布 Release。
 
-当前已编写 Windows 构建与验证流程，但尚未在 Windows 执行，也尚未生成经验证的 Windows 安装包。CI 成功也只覆盖安装、窗口启动、协议与生命周期；Zotero、目录选择、备份保存及完整界面仍需 Windows 实机验收。现阶段没有 Windows 代码签名证书；未签名安装器可能触发 SmartScreen。设计依据：[Tauri 官方 Windows installer 文档](https://v2.tauri.app/distribute/windows-installer/)。
+[本次 Windows CI](https://github.com/AppleSpriter/PaperLine/actions/runs/38501863099) 已通过 Node、Python、Rust 测试、NSIS 打包、临时目录静默安装、独立数据 API、窗口启动、正常退出、子进程清理与卸载验证，并上传安装器 artifact。这些验证覆盖安装、窗口启动、协议与生命周期；Zotero、目录选择、备份保存及完整界面仍需 Windows 实机验收。现阶段没有 Windows 代码签名证书；未签名安装器可能触发 SmartScreen。设计依据：[Tauri 官方 Windows installer 文档](https://v2.tauri.app/distribute/windows-installer/)。
 
 ## 浏览器版运行
 
