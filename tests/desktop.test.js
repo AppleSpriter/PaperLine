@@ -119,3 +119,82 @@ test("native backup save failures retain the filesystem error for application fe
   assert.equal(call.command, 'save_backup');
   assert.deepEqual(JSON.parse(call.args.contents), data());
 });
+
+test("schema2 migration keeps stage, annotation, and creation drafts alongside legacy drafts", () => {
+  const h = harness();
+  const backup = { ...data(), version: 2, stages: [{ id: 's1' }], papers: [{ id: 'p1' }], edges: [{ id: 'e1' }], lines: [{ id: 'l1', kind: 'model_family', stageIds: ['s1'], ideaIds: ['i1'] }] };
+  const drafts = {
+    'paperline-draft:idea:i1': { title: 'Legacy card', entityType: 'method' },
+    'paperline-draft:session:l1:i1': { elapsed: 12, note: '', nextQuestion: '' },
+    'paperline-draft:stage:s1': { title: 'Stage', date: '2026-10-16', summary: 'Draft' },
+    'paperline-draft:session:stage:s1:l1': { elapsed: 18, note: 'Read', nextQuestion: '' },
+    'paperline-draft:session:stage:s1:': { elapsed: 9, note: '', nextQuestion: '' },
+    'paperline-draft:paper-method:p1': { title: 'Method', note: 'Annotation', sourceUrl: '' },
+    'paperline-draft:paper-stage:p1': { lineId: '', lineTitle: 'New family', stageId: '', stageTitle: 'First', date: '', summary: '' },
+    'paperline-draft:stage-new:l1': { title: 'Next', date: '', summary: '' },
+    'paperline-draft:line:l1': { title: 'Edited', kind: 'model_family', question: '' },
+    'paperline-draft:edge:e1': { note: 'New annotation', sourceUrl: '' },
+    'paperline-draft:line-new': { title: 'New line', kind: 'topic', question: '' },
+    'paperline-draft:idea-new': { title: 'New method', entityType: 'method', summary: '', lineId: '', relation: '' },
+  };
+  for (const [key, value] of Object.entries(drafts)) h.stored.set(key, JSON.stringify(value));
+  const transferred = h.bridge.unpack(h.bridge.migration(backup));
+  assert.deepEqual(json(transferred.drafts), drafts);
+  h.bridge.installDrafts(transferred.drafts, backup);
+  assert.deepEqual(Object.keys(h.bridge.migration(backup).drafts).sort(), Object.keys(drafts).sort());
+});
+
+test("schema2 draft migration discards orphan references and invalid dates without losing valid drafts", () => {
+  const h = harness();
+  const backup = { ...data(), version: 2, stages: [{ id: 's1' }], papers: [{ id: 'p1' }] };
+  const drafts = {
+    'paperline-draft:stage:s1': { title: 'Valid', date: '' },
+    'paperline-draft:stage:missing': { title: 'Orphan' },
+    'paperline-draft:session:stage:s1:l1': { elapsed: 1, note: '', nextQuestion: '' },
+    'paperline-draft:paper-stage:p1': { date: '2026-13-01', stageId: '', lineId: '' },
+    'paperline-draft:paper-method:p1': { title: 'Too long', note: 'x'.repeat(3001) },
+    'paperline-draft:edge:missing': { note: 'Orphan' },
+  };
+  const result = h.bridge.unpack({ format: 'paperline-desktop-migration', version: 1, backup, drafts });
+  assert.deepEqual(Object.keys(result.drafts), ['paperline-draft:stage:s1']);
+});
+
+test("timeline method drafts keep global and stage contexts separate and require membership", () => {
+  const h = harness();
+  const backup = { ...data(), version: 2, papers: [{ id: 'p1' }, { id: 'p2' }], stages: [{ id: 's1' }, { id: 's2' }], edges: [{ id: 'membership', fromType: 'paper', fromId: 'p1', toType: 'stage', toId: 's1', relation: 'documents' }] };
+  const drafts = {
+    'paperline-draft:paper-method:p1': { title: 'Global unsaved title', ideaId: '', note: '', sourceUrl: '' },
+    'paperline-draft:paper-method:p1:s1': { title: '', ideaId: 'i1', note: 'Stage contribution', sourceUrl: '' },
+    'paperline-draft:paper-method:p2:s1': { title: 'Not a stage member' },
+    'paperline-draft:paper-method:p1:s2': { title: 'Different stage' },
+    'paperline-draft:paper-method:p1:missing': { title: 'Missing stage' },
+    'paperline-draft:paper-method:p2': { title: '', ideaId: 'missing' },
+  };
+  for (const [key, value] of Object.entries(drafts)) h.stored.set(key, JSON.stringify(value));
+  const result = h.bridge.unpack(h.bridge.migration(backup));
+  assert.deepEqual(Object.keys(result.drafts), ['paperline-draft:paper-method:p1', 'paperline-draft:paper-method:p1:s1']);
+  assert.equal(result.drafts['paperline-draft:paper-method:p1'].title, 'Global unsaved title');
+  assert.equal(result.drafts['paperline-draft:paper-method:p1:s1'].note, 'Stage contribution');
+});
+
+test("method draft migration preserves explicit legacy edges and rejects inconsistent endpoints", () => {
+  const h = harness();
+  const backup = { ...data(), version: 2, ideas: [{ id: 'i1' }, { id: 'i2' }], papers: [{ id: 'p1' }, { id: 'p2' }], stages: [{ id: 's1' }], edges: [
+    { id: 'legacy', fromType: 'paper', fromId: 'p1', toId: 'i1' },
+    { id: 'other-paper', fromType: 'paper', fromId: 'p2', toType: 'idea', toId: 'i1' },
+    { id: 'missing-idea', fromType: 'paper', fromId: 'p1', toType: 'idea', toId: 'missing' },
+    { id: 'membership', fromType: 'paper', fromId: 'p1', toType: 'stage', toId: 's1', relation: 'documents' },
+  ] };
+  const unpackDraft = (draft, key = 'paperline-draft:paper-method:p1') => h.bridge.unpack({ format: 'paperline-desktop-migration', version: 1, backup, drafts: { [key]: draft } }).drafts;
+  for (const edgeId of ['', 'legacy']) {
+    const draft = { title: '', ideaId: 'i1', edgeId, note: 'Unsaved relation', sourceUrl: '' };
+    assert.deepEqual(json(unpackDraft(draft)), { 'paperline-draft:paper-method:p1': draft });
+    assert.deepEqual(json(unpackDraft(draft, 'paperline-draft:paper-method:p1:s1')), { 'paperline-draft:paper-method:p1:s1': draft });
+  }
+  assert.equal(Object.keys(unpackDraft({ title: '', edgeId: 'legacy' })).length, 1);
+  for (const draft of [
+    { title: '', edgeId: 'missing' }, { title: '', edgeId: 'other-paper' },
+    { title: '', edgeId: 'membership' }, { title: '', edgeId: 'missing-idea' },
+    { title: '', edgeId: 'legacy', ideaId: 'i2' }, { title: '', edgeId: 'x'.repeat(41) },
+  ]) assert.equal(Object.keys(unpackDraft(draft)).length, 0);
+});

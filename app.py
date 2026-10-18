@@ -13,6 +13,7 @@ import re
 import secrets
 import shutil
 import signal
+import sys
 import tempfile
 import threading
 import time
@@ -26,12 +27,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
+import learning
+
 from paper_map import ARXIV, RECOMMENDATIONS_VERSION, collect_snapshot, doi_key, reference_recommendations
 
 
 ROOT = Path(__file__).resolve().parent
-DATA_FILE = ROOT / "data" / "state.json"
-BACKUP_FILE = ROOT / "data" / "state.backup.json"
+LEGACY_DATA_FILE = ROOT / "data" / "state.json"
+DATA_FILE = ROOT / "data" / "state-v2.json"
+BACKUP_FILE = ROOT / "data" / "state-v2.backup.json"
 # WebDAV 账号单独存放：不进 state.json、不进备份下载、不返回给浏览器。
 WEBDAV_FILE = ROOT / "data" / "webdav.json"
 WEBDAV_INTERVAL_SECONDS = 300  # 有改动时每 5 分钟最多上传一次
@@ -67,7 +71,8 @@ def fresh_id(prefix: str) -> str:
 
 def default_state() -> dict[str, Any]:
     return {
-        "version": 1,
+        "version": 2,
+        "stages": [],
         "settings": {"vaultPath": "", "reminderTime": "", "language": "zh"},
         "lines": [],
         "ideas": [],
@@ -82,32 +87,47 @@ def default_state() -> dict[str, Any]:
 
 
 def load_state() -> dict[str, Any]:
-    if not DATA_FILE.exists():
-        return default_state()
+    source = DATA_FILE
+    migrating = False
+    if not source.exists():
+        # Keep tests/custom data directories isolated from the default live legacy file.
+        legacy_file = LEGACY_DATA_FILE if LEGACY_DATA_FILE.parent == DATA_FILE.parent else DATA_FILE.parent / "state.json"
+        if legacy_file != DATA_FILE and legacy_file.exists():
+            source, migrating = legacy_file, True
+        else:
+            return default_state()
     try:
-        with DATA_FILE.open("r", encoding="utf-8") as handle:
-            state = json.load(handle)
+        with source.open("r", encoding="utf-8") as handle:
+            raw = json.load(handle)
             stat = os.fstat(handle.fileno())
-            cache_key = (str(DATA_FILE), stat.st_ino, stat.st_mtime_ns, stat.st_size)
+            cache_key = (str(source), stat.st_ino, stat.st_mtime_ns, stat.st_size)
     except json.JSONDecodeError as error:
         raise ValueError(f"数据文件已损坏，未修改任何内容；上一份备份：{BACKUP_FILE}") from error
-    if state.get("version") != 1:
-        raise ValueError("数据版本不受支持。")
+    if not isinstance(raw, dict) or raw.get("version") != (1 if migrating else 2):
+        raise ValueError("数据版本不受支持，未修改任何内容。")
+    state = validate_backup(raw)
     state.setdefault("citations", [])
     state.setdefault("recommendations", [])
     state.setdefault("zoteroSync", {})
     for paper in state["papers"]:
         paper.setdefault("readStatus", "unread")
     ensure_recommendations(state, cache_key)
+    if migrating:
+        # Preserve the source content timestamp, never make a migrated copy appear newer.
+        if not state.get("savedAt"):
+            state["savedAt"] = datetime.fromtimestamp(source.stat().st_mtime, timezone.utc).isoformat(timespec="milliseconds")
+        state["_migration"] = {"fromVersion": 1, "pendingCloudConfirmation": True}
+        save_state(state, stamp=False)
     return state
 
 
-RESTORE_COLLECTIONS = ("lines", "ideas", "papers", "edges", "sessions")
+RESTORE_COLLECTIONS = ("lines", "ideas", "papers", "edges", "sessions", "stages")
 
 
 def validate_backup(data: Any) -> dict[str, Any]:
-    if not isinstance(data, dict) or data.get("version") != 1:
+    if not isinstance(data, dict) or type(data.get("version")) is not int or data["version"] not in (1, 2):
         raise ValueError("这不是可以恢复的 PaperLine 备份文件。")
+    data = learning.upgrade_v1(data) if data["version"] == 1 else copy.deepcopy(data)
     for key in RESTORE_COLLECTIONS:
         items = data.get(key)
         if not isinstance(items, list) or not all(isinstance(item, dict) and isinstance(item.get("id"), str) for item in items):
@@ -116,6 +136,7 @@ def validate_backup(data: Any) -> dict[str, Any]:
         raise ValueError("备份文件内容不完整，无法恢复。")
     ideas = {item["id"] for item in data["ideas"]}
     papers = {item["id"] for item in data["papers"]}
+    stages = {item["id"] for item in data["stages"]}
     for line in data["lines"]:
         if (not isinstance(line.get("ideaIds"), list)
                 or not all(isinstance(item, str) for item in line["ideaIds"])
@@ -123,8 +144,15 @@ def validate_backup(data: Any) -> dict[str, Any]:
             raise ValueError("备份文件里的阅读线引用了不存在的思想卡。")
     for edge in data["edges"]:
         source = papers if edge.get("fromType") == "paper" else ideas
-        if (not isinstance(edge.get("fromId"), str) or not isinstance(edge.get("toId"), str)
-                or edge["fromId"] not in source or edge["toId"] not in ideas):
+        target_type = edge.get("toType", "idea")
+        targets = stages if target_type == "stage" else ideas
+        relations = {"documents"} if target_type == "stage" else PAPER_RELATIONS if edge.get("fromType") == "paper" else IDEA_RELATIONS
+        if (not isinstance(edge.get("fromType"), str) or not isinstance(target_type, str)
+                or not isinstance(edge.get("relation"), str)
+                or edge.get("fromType") not in {"paper", "idea"} or target_type not in {"stage", "idea"}
+                or edge.get("relation") not in relations
+                or not isinstance(edge.get("fromId"), str) or not isinstance(edge.get("toId"), str)
+                or edge["fromId"] not in source or edge["toId"] not in targets):
             raise ValueError("备份文件里有关系指向不存在的内容。")
     citations = data.get("citations", [])
     if not isinstance(citations, list) or any(
@@ -167,16 +195,20 @@ def validate_backup(data: Any) -> dict[str, Any]:
             or ("syncedAt" in sync and not isinstance(sync["syncedAt"], str))
             or ("stats" in sync and not isinstance(sync["stats"], dict))):
         raise ValueError("备份文件里的 Zotero 同步信息无效。")
+    learning.validate(data)
     return data
 
 
 def restore_state(data: Any, keep_stamp: bool = False, label: str = "before-restore") -> dict[str, Any]:
+    importing_v1 = isinstance(data, dict) and data.get("version") == 1
     backup = validate_backup(data)
+    if importing_v1:
+        backup["_migration"] = {"fromVersion": 1, "pendingCloudConfirmation": True}
     current = load_state()
     DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     # 覆盖前单独留一份恢复前的数据，恢复错了还能退回去。
-    keep = DATA_FILE.parent / f"state.{label}-{stamp}.json"
+    keep = DATA_FILE.parent / f"state-v2.{label}-{stamp}-{secrets.token_hex(3)}.json"
     keep.write_text(json.dumps(current, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     os.chmod(keep, 0o600)
     # 设备相关的设置沿用本机，不从别的电脑的备份里带过来。
@@ -187,6 +219,8 @@ def restore_state(data: Any, keep_stamp: bool = False, label: str = "before-rest
 
 
 def save_state(state: dict[str, Any], stamp: bool = True) -> None:
+    if not isinstance(state, dict) or state.get("version") != 2:
+        raise ValueError("只允许写入版本 2 数据；旧数据保持只读。")
     if stamp or not state.get("savedAt"):
         state["savedAt"] = stamp_now()
     DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -277,11 +311,17 @@ def add_edge(
 
 
 def apply_action(state: dict[str, Any], action: str, payload: dict[str, Any]) -> dict[str, str]:
+    if action in learning.ACTIONS:
+        return learning.apply_action(state, action, payload, sys.modules[__name__])
     result: dict[str, str] = {}
     if action == "line.create":
         line_id = fresh_id("l")
         title = field(payload, "title", 120, True)
+        kind = field(payload, "kind", 20) or "research"
+        if kind not in {"research", "model_family"}:
+            raise ValueError("阅读线类型无效。")
         state["lines"].append({
+            "kind": kind, "stageIds": [], "activeStageId": "",
             "id": line_id, "title": title, "fileName": f"{slug(title)}-{line_id}.md",
             "question": field(payload, "question", 800), "ideaIds": [],
             "activeIdeaId": "", "createdAt": utc_now(), "updatedAt": utc_now(),
@@ -289,9 +329,23 @@ def apply_action(state: dict[str, Any], action: str, payload: dict[str, Any]) ->
         result["lineId"] = line_id
     elif action == "line.update":
         line = find(state, "lines", field(payload, "id", 40, True))
-        line["title"] = field(payload, "title", 120, True)
-        line["question"] = field(payload, "question", 800)
-        active = field(payload, "activeIdeaId", 40)
+        if "title" in payload:
+            line["title"] = field(payload, "title", 120, True)
+        if "question" in payload:
+            line["question"] = field(payload, "question", 800)
+        if "kind" in payload:
+            kind = field(payload, "kind", 20)
+            if kind not in {"research", "model_family"}:
+                raise ValueError("阅读线类型无效。")
+            if kind == "research" and line["stageIds"]:
+                raise ValueError("请先移出阶段，再改为研究线；共享阶段和论文不会删除。")
+            line["kind"] = kind
+        if "activeStageId" in payload:
+            active_stage = field(payload, "activeStageId", 40)
+            if active_stage and active_stage not in line["stageIds"]:
+                raise ValueError("当前阶段不在这条阅读线中。")
+            line["activeStageId"] = active_stage
+        active = field(payload, "activeIdeaId", 40) if "activeIdeaId" in payload else line["activeIdeaId"]
         if active and active not in line["ideaIds"]:
             raise ValueError("下一张卡必须属于这条阅读线。")
         line["activeIdeaId"] = active
@@ -324,6 +378,9 @@ def apply_action(state: dict[str, Any], action: str, payload: dict[str, Any]) ->
         kind = field(payload, "kind", 20) or "concept"
         if kind not in IDEA_KINDS:
             raise ValueError("思想卡类型无效。")
+        entity_type = field(payload, "entityType", 20) or ("question" if kind == "question" else "unclassified")
+        if entity_type not in learning.ENTITY_TYPES:
+            raise ValueError("知识实体类型无效。")
         parent_id = field(payload, "fromIdeaId", 40)
         if parent_id:
             find(state, "ideas", parent_id)
@@ -331,7 +388,7 @@ def apply_action(state: dict[str, Any], action: str, payload: dict[str, Any]) ->
         title = field(payload, "title", 120, True)
         idea = {
             "id": idea_id, "title": title, "fileName": f"{slug(title)}-{idea_id}.md",
-            "kind": kind, "summary": field(payload, "summary", 4000),
+            "kind": kind, "entityType": entity_type, "summary": field(payload, "summary", 4000),
             "aliases": idea_aliases(payload),
             "mechanism": field(payload, "mechanism", 6000),
             "thoughts": field(payload, "thoughts", 6000), "status": "inbox",
@@ -380,12 +437,18 @@ def apply_action(state: dict[str, Any], action: str, payload: dict[str, Any]) ->
         seen = field(payload, "baseUpdatedAt", 40)
         if seen and seen != idea.get("updatedAt", ""):
             raise ValueError("这张卡已在别的页面改过。刷新后再保存，你写的内容会作为草稿保留。")
-        status = field(payload, "status", 20)
-        kind = field(payload, "kind", 20)
+        status = field(payload, "status", 20) if "status" in payload else idea["status"]
+        kind = field(payload, "kind", 20) if "kind" in payload else idea["kind"]
+        if "entityType" in payload:
+            entity_type = field(payload, "entityType", 20)
+            if entity_type not in learning.ENTITY_TYPES:
+                raise ValueError("知识实体类型无效。")
+            idea["entityType"] = entity_type
         if status not in IDEA_STATUSES or kind not in IDEA_KINDS:
             raise ValueError("卡片类型或状态无效。")
         for name, limit in (("title", 120), ("summary", 4000), ("mechanism", 6000), ("thoughts", 6000)):
-            idea[name] = field(payload, name, limit, name == "title")
+            if name in payload:
+                idea[name] = field(payload, name, limit, name == "title")
         idea["kind"] = kind
         idea["status"] = status
         if "aliases" in payload:
@@ -421,7 +484,8 @@ def apply_action(state: dict[str, Any], action: str, payload: dict[str, Any]) ->
             edge for edge in state["edges"]
             if edge["toId"] != idea_id and not (edge["fromType"] == "idea" and edge["fromId"] == idea_id)
         ]
-        state["sessions"] = [session for session in state["sessions"] if session["ideaId"] != idea_id]
+        learning.retain_sessions(state, "idea", find(state, "ideas", idea_id))
+        learning.clean_refs(state)
         state["ideas"] = [item for item in state["ideas"] if item["id"] != idea_id]
     elif action == "paper.delete":
         paper_id = find(state, "papers", field(payload, "id", 40, True))["id"]
@@ -429,6 +493,8 @@ def apply_action(state: dict[str, Any], action: str, payload: dict[str, Any]) ->
             edge for edge in state["edges"]
             if not (edge["fromType"] == "paper" and edge["fromId"] == paper_id)
         ]
+        learning.retain_sessions(state, "paper", find(state, "papers", paper_id))
+        learning.clean_refs(state)
         state["papers"] = [item for item in state["papers"] if item["id"] != paper_id]
         state["citations"] = [
             edge for edge in state.get("citations", [])
@@ -512,12 +578,32 @@ def apply_action(state: dict[str, Any], action: str, payload: dict[str, Any]) ->
         result["edgeId"] = edge_id
     elif action == "edge.update":
         edge = find(state, "edges", field(payload, "id", 40, True))
-        edge["note"] = field(payload, "note", 3000)
-        edge["sourceUrl"] = safe_url(field(payload, "sourceUrl", 1500))
+        if any(name in payload for name in ("fromId", "fromType", "toId", "toType")):
+            raise ValueError("普通编辑不能修改关系端点。")
+        if "relation" in payload:
+            relation = field(payload, "relation", 20, True)
+            valid = {"documents"} if edge.get("toType", "idea") == "stage" else PAPER_RELATIONS if edge["fromType"] == "paper" else IDEA_RELATIONS
+            if relation not in valid:
+                raise ValueError("关系类型无效。")
+            if any(other["id"] != edge["id"] and all(other.get(key, "idea" if key == "toType" else None) ==
+                    edge.get(key, "idea" if key == "toType" else None) for key in ("fromType", "fromId", "toType", "toId"))
+                    and other["relation"] == relation for other in state["edges"]):
+                raise ValueError("修改后将与已有关系重复；旧事实已保留。")
+            edge["relation"] = relation
+        for name, limit in (("note", 3000), ("sourceUrl", 1500)):
+            if name in payload:
+                value = field(payload, name, limit)
+                edge[name] = safe_url(value) if name == "sourceUrl" else value
+        if "contributionRefs" in payload:
+            candidate = copy.deepcopy(state)
+            find(candidate, "edges", edge["id"])["contributionRefs"] = payload["contributionRefs"]
+            learning.validate(candidate)
+            edge["contributionRefs"] = copy.deepcopy(payload["contributionRefs"])
         result["edgeId"] = edge["id"]
     elif action == "edge.delete":
         edge = find(state, "edges", field(payload, "id", 40, True))
         state["edges"] = [item for item in state["edges"] if item["id"] != edge["id"]]
+        learning.clean_refs(state)
     elif action == "line.detach":
         target_line = find(state, "lines", field(payload, "lineId", 40, True))
         idea_id = field(payload, "ideaId", 40, True)
@@ -528,25 +614,6 @@ def apply_action(state: dict[str, Any], action: str, payload: dict[str, Any]) ->
             target_line["activeIdeaId"] = target_line["ideaIds"][0] if target_line["ideaIds"] else ""
         target_line["updatedAt"] = utc_now()
         result["lineId"] = target_line["id"]
-    elif action == "session.create":
-        line = find(state, "lines", field(payload, "lineId", 40, True))
-        idea = find(state, "ideas", field(payload, "ideaId", 40, True))
-        if idea["id"] not in line["ideaIds"]:
-            raise ValueError("这张卡不在当前阅读线中。")
-        duration = payload.get("durationSeconds", 0)
-        if not isinstance(duration, int) or not 0 <= duration <= 86400:
-            raise ValueError("阅读时间无效。")
-        state["sessions"].append({
-            "id": fresh_id("s"), "lineId": line["id"], "ideaId": idea["id"],
-            "note": field(payload, "note", 4000, True),
-            "nextQuestion": field(payload, "nextQuestion", 1000),
-            "durationSeconds": duration, "createdAt": utc_now(),
-        })
-        line["activeIdeaId"] = idea["id"]
-        line["updatedAt"] = utc_now()
-        if idea["status"] == "inbox":
-            idea["status"] = "learning"
-        result.update(lineId=line["id"], ideaId=idea["id"])
     elif action == "settings.update":
         path = field(payload, "vaultPath", 1000)
         if path:
@@ -848,7 +915,7 @@ def note_name(item: dict[str, Any]) -> str:
 
 
 def wiki(kind: str, item: dict[str, Any]) -> str:
-    folder = {"idea": "思想卡", "paper": "论文", "line": "阅读线"}[kind]
+    folder = {"idea": "思想卡", "paper": "论文", "line": "阅读线", "stage": "模型阶段"}[kind]
     label = item["title"].replace("|", "｜").replace("[", "［").replace("]", "］")
     return f"[[PaperLine/{folder}/{note_name(item)[:-3]}|{label}]]"
 
@@ -883,6 +950,13 @@ def render_note(state: dict[str, Any], kind: str, item: dict[str, Any]) -> str:
                 lines.append(f"  - {edge['note']}")
         if not sources:
             lines.append(tr("待关联。", "No connections yet."))
+        source_papers = {edge["fromId"] for edge in sources}
+        stage_ids = list(dict.fromkeys(edge["toId"] for edge in state["edges"]
+                         if edge.get("toType") == "stage" and edge["fromId"] in source_papers))
+        if stage_ids:
+            lines += ["", f"## {tr('关联论文涉及的阶段（仅导航）', 'Stages associated with source papers (navigation only)')}", ""]
+            for stage_id in stage_ids:
+                lines.append(f"- {wiki('stage', find(state, 'stages', stage_id))}")
         related = [edge for edge in state["edges"] if edge["fromType"] == "idea" and (edge["fromId"] == item["id"] or edge["toId"] == item["id"])]
         lines += ["", f"## {tr('思想关联', 'Idea connections')}", ""]
         relation_labels = {"extends": tr("引申", "Extends"), "depends": tr("依赖", "Depends on"), "compares": tr("对比", "Compares"), "improves": tr("改进", "Improves")}
@@ -911,14 +985,59 @@ def render_note(state: dict[str, Any], kind: str, item: dict[str, Any]) -> str:
         if item.get("zoteroUrl"):
             lines.append(markdown_link(tr("在 Zotero 打开", "Open in Zotero"), item["zoteroUrl"]))
         lines += ["", f"## {tr('相关思想', 'Related ideas')}", ""]
-        related = [edge for edge in state["edges"] if edge["fromType"] == "paper" and edge["fromId"] == item["id"]]
+        related = [edge for edge in state["edges"] if edge["fromType"] == "paper" and edge["fromId"] == item["id"] and edge.get("toType", "idea") == "idea"]
         rel = {"proposes": tr("提出", "Proposes"), "uses": tr("使用", "Uses"), "improves": tr("改进", "Improves"), "questions": tr("质疑", "Questions")}
         for edge in related:
             idea = find(state, "ideas", edge["toId"])
             lines.append(f"- {rel[edge['relation']]} {wiki('idea', idea)}")
         if not related:
             lines.append(tr("待关联。", "No connections yet."))
+        memberships = [edge for edge in state["edges"] if edge["fromType"] == "paper" and edge["fromId"] == item["id"] and edge.get("toType") == "stage"]
+        lines += ["", f"## {tr('关联模型阶段', 'Associated model stages')}", ""]
+        for membership in memberships:
+            lines.append(f"- {wiki('stage', find(state, 'stages', membership['toId']))}")
+        if not memberships:
+            lines.append(tr("待关联。", "No connections yet."))
+    elif kind == "stage":
+        if item.get("date"):
+            lines += [f"{tr('日期', 'Date')}：{item['date']}", ""]
+        lines += [f"## {tr('阶段概述', 'Stage overview')}", "", item.get("summary") or tr("待补充。", "To be added."), ""]
+        lines += [f"## {tr('所属阅读线', 'Reading lines')}", ""]
+        for line in state["lines"]:
+            if item["id"] in line.get("stageIds", []):
+                lines.append(f"- {wiki('line', line)}")
+        lines += ["", f"## {tr('关联论文', 'Associated papers')}", ""]
+        members = [edge for edge in state["edges"] if edge.get("toType") == "stage" and edge["toId"] == item["id"]]
+        for membership in members:
+            paper = find(state, "papers", membership["fromId"])
+            lines.append(f"- {wiki('paper', paper)}")
+        if not members:
+            lines.append(tr("待关联。", "No connections yet."))
+        lines += ["", f"## {tr('关联论文的方法（仅导航）', 'Methods in associated papers (navigation only)')}", "",
+                  tr("以下关系描述论文的方法标注，不自动表示本阶段采用这些方法。", "These annotations describe the papers; they do not imply adoption by this stage."), ""]
+        for membership in members:
+            paper = find(state, "papers", membership["fromId"])
+            for edge in state["edges"]:
+                if edge["fromType"] == "paper" and edge["fromId"] == paper["id"] and edge.get("toType", "idea") == "idea":
+                    lines.append(f"- {wiki('paper', paper)} · {edge['relation']} · {wiki('idea', find(state, 'ideas', edge['toId']))}")
+        selected = {value for member in members for value in member.get("contributionRefs", [])}
+        if selected:
+            lines += ["", f"## {tr('已标注的论文贡献', 'Selected paper contributions')}", ""]
+            for edge in state["edges"]:
+                if edge["id"] in selected:
+                    lines.append(f"- {wiki('paper', find(state, 'papers', edge['fromId']))} · {edge['relation']} · {wiki('idea', find(state, 'ideas', edge['toId']))}")
+                    if edge.get("note"):
+                        lines.append(f"  - {edge['note']}")
+                    if edge.get("sourceUrl"):
+                        lines.append(f"  - {markdown_link(tr('原文位置', 'Source passage'), edge['sourceUrl'])}")
     elif kind == "line":
+        if item.get("stageIds"):
+            lines += [f"## {tr('模型阶段（展示顺序）', 'Model stages (display order)')}", ""]
+            for index, stage_id in enumerate(item["stageIds"], 1):
+                stage = find(state, "stages", stage_id)
+                marker = f" ← {tr('当前阶段', 'Current stage')}" if stage_id == item.get("activeStageId") else ""
+                lines.append(f"{index}. {wiki('stage', stage)}{marker}")
+            lines += ["", tr("排列不自动表示继承关系。", "Ordering does not imply inheritance."), ""]
         lines += [f"## {tr('研究问题', 'Research question')}", "", item.get("question") or tr("待补充。", "To be added."), "", f"## {tr('阅读顺序', 'Reading order')}", ""]
         for index, idea_id in enumerate(item["ideaIds"], 1):
             idea = find(state, "ideas", idea_id)
@@ -926,6 +1045,14 @@ def render_note(state: dict[str, Any], kind: str, item: dict[str, Any]) -> str:
             lines.append(f"{index}. {wiki('idea', idea)}{marker}")
         if not item["ideaIds"]:
             lines.append(tr("待添加思想卡。", "No idea cards yet."))
+    if kind in {"paper", "stage"}:
+        records = [session for session in state["sessions"] if session.get("targetType") == kind and session.get("targetId") == item["id"]]
+        if records:
+            lines += ["", f"## {tr('阅读记录', 'Reading sessions')}", ""]
+            for session in records:
+                lines.append(f"- {session['createdAt'][:10]} · {session['note']}")
+                if session.get("nextQuestion"):
+                    lines.append(f"  - {session['nextQuestion']}")
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -952,7 +1079,7 @@ def export_obsidian(state: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("Obsidian 库路径已失效，请重新设置。")
     root = vault / "PaperLine"
     manifest_path = root / ".paperline-export.json"
-    folders = {"line": "阅读线", "idea": "思想卡", "paper": "论文"}
+    folders = {"line": "阅读线", "idea": "思想卡", "paper": "论文", "stage": "模型阶段"}
 
     def checked_path(relative: str) -> Path:
         parts = Path(relative).parts
@@ -999,8 +1126,8 @@ def export_obsidian(state: dict[str, Any]) -> dict[str, Any]:
                 if relative in owned:
                     continue
                 text = candidate.read_text(encoding="utf-8")
-                match = re.search(r"<!-- PAPERLINE:START ([lip]_[A-Za-z0-9]+) -->", text)
-                if not match or match[1][0] != {"line": "l", "idea": "i", "paper": "p"}[kind]:
+                match = re.search(r"<!-- PAPERLINE:START ((?:l|i|p|st)_[A-Za-z0-9]+) -->", text)
+                if not match or match[1].split("_", 1)[0] != {"line": "l", "idea": "i", "paper": "p", "stage": "st"}[kind]:
                     continue
                 item_id = match[1]
                 start, end = match[0], f"<!-- PAPERLINE:END {item_id} -->"
@@ -1016,8 +1143,8 @@ def export_obsidian(state: dict[str, Any]) -> dict[str, Any]:
     next_owned = {}
     interim_owned = copy.deepcopy(owned)
     current_ids = {kind: {item["id"] for item in state[collection]}
-                   for kind, collection in (("line", "lines"), ("idea", "ideas"), ("paper", "papers"))}
-    for kind, collection in (("line", "lines"), ("idea", "ideas"), ("paper", "papers")):
+                   for kind, collection in (("line", "lines"), ("idea", "ideas"), ("paper", "papers"), ("stage", "stages"))}
+    for kind, collection in (("line", "lines"), ("idea", "ideas"), ("paper", "papers"), ("stage", "stages")):
         for item in state[collection]:
             name = note_name(item)
             # Backups move between macOS and Windows. Reject incompatible filenames
@@ -1254,12 +1381,23 @@ def webdav_check(config: dict[str, Any]) -> None:
     webdav_ensure_folders(config, config["folder"])
 
 
-def webdav_upload(config: dict[str, Any], body: bytes, when: datetime) -> None:
+def webdav_upload(config: dict[str, Any], body: bytes, when: datetime, expected: dict[str, Any] | None = None) -> None:
     folder = config["folder"]
-    webdav_ensure_folders(config, folder + "/history")
+    webdav_ensure_folders(config, folder + "/history-v2")
     headers = {"Content-Type": "application/json; charset=utf-8"}
-    for name in ("state.json", f"history/state-{when:%Y-%m-%d}.json"):
-        code = webdav_request(config, "PUT", f"{folder}/{name}", body, headers)
+    for name in ("state-v2.json", f"history-v2/state-v2-{when:%Y-%m-%d}.json"):
+        request_headers = dict(headers)
+        if name == "state-v2.json":
+            if expected is None:
+                request_headers["If-None-Match"] = "*"
+            else:
+                etag = expected.get("etag", "")
+                if not etag or etag.startswith("W/"):
+                    raise SyncConflict("云端未提供强 ETag，无法安全覆盖。请从云端恢复，或选择空的同步位置。")
+                request_headers["If-Match"] = etag
+        code = webdav_request(config, "PUT", f"{folder}/{name}", body, request_headers)
+        if code == 412:
+            raise SyncConflict("云端在同步期间有更新，已停止覆盖。请重新比较后再同步。")
         if code not in (200, 201, 204):
             raise ConnectionError(webdav_failure(code))
 
@@ -1286,7 +1424,7 @@ def parse_stamp(value: Any) -> datetime | None:
 
 def comparable(data: dict[str, Any]) -> dict[str, Any]:
     # 设置属于各自的机器，时间戳本身也不算内容。
-    return {key: value for key, value in data.items() if key not in {"savedAt", "settings"}}
+    return {key: value for key, value in data.items() if key not in {"savedAt", "settings", "_migration"}}
 
 
 def local_snapshot() -> dict[str, Any]:
@@ -1300,23 +1438,26 @@ def local_snapshot() -> dict[str, Any]:
 
 
 def cloud_snapshot(config: dict[str, Any], strict: bool = True) -> dict[str, Any] | None:
-    code, body, headers = webdav_exchange(config, "GET", f"{config['folder']}/state.json")
+    code, body, headers = webdav_exchange(config, "GET", f"{config['folder']}/state-v2.json")
     if code == 404:
         return None
     if code != 200:
         raise ConnectionError(webdav_failure(code))
     try:
-        data = validate_backup(json.loads(body))
-    except ValueError:
-        if strict:
-            raise ValueError("云端的 state.json 不是有效的 PaperLine 数据。")
-        return None
+        raw = json.loads(body)
+        if not isinstance(raw, dict) or raw.get("version") != 2:
+            raise ValueError("云端数据版本不受支持。")
+        data = validate_backup(raw)
+    except ValueError as error:
+        # Even automatic sync must never treat an invalid/newer schema as an empty cloud.
+        raise ValueError("云端的 state-v2.json 不是有效的 PaperLine v2 数据，已停止上传。") from error
     stamp = data.get("savedAt") if isinstance(data.get("savedAt"), str) else ""
     if not stamp:
         # 旧版本上传的文件没有时间戳，退回用服务器记录的修改时间。
         moment = parse_stamp(headers.get("Last-Modified", "") if headers else "")
         stamp = moment.isoformat(timespec="seconds") if moment else ""
-    return {"data": data, "savedAt": stamp}
+    etag = next((value for key, value in (headers or {}).items() if key.lower() == "etag"), "")
+    return {"data": data, "savedAt": stamp, "etag": etag}
 
 
 def newer_side(local: dict[str, Any], cloud: dict[str, Any] | None) -> str:
@@ -1337,13 +1478,13 @@ def newer_side(local: dict[str, Any], cloud: dict[str, Any] | None) -> str:
 def snapshot_summary(snapshot: dict[str, Any] | None) -> dict[str, Any] | None:
     if snapshot is None:
         return None
-    return {"savedAt": snapshot["savedAt"], "counts": {key: len(snapshot["data"][key]) for key in ("lines", "ideas", "papers")}}
+    return {"savedAt": snapshot["savedAt"], "counts": {key: len(snapshot["data"][key]) for key in ("lines", "ideas", "papers", "stages")}}
 
 
 def webdav_keep_overwritten(config: dict[str, Any], cloud: dict[str, Any]) -> None:
-    webdav_ensure_folders(config, config["folder"] + "/history")
+    webdav_ensure_folders(config, config["folder"] + "/history-v2")
     body = (json.dumps(cloud["data"], ensure_ascii=False, indent=2) + "\n").encode("utf-8")
-    name = f"history/state-overwritten-{datetime.now():%Y%m%d-%H%M%S}.json"
+    name = f"history-v2/state-v2-overwritten-{datetime.now():%Y%m%d-%H%M%S}-{secrets.token_hex(3)}.json"
     code = webdav_request(config, "PUT", f"{config['folder']}/{name}", body, {"Content-Type": "application/json; charset=utf-8"})
     if code not in (200, 201, 204):
         raise ConnectionError(webdav_failure(code))
@@ -1393,17 +1534,33 @@ class WebDavSync:
             raise ValueError("请先填写 WebDAV 地址。")
         with self.upload_lock:
             local = local_snapshot()
-            body = (json.dumps(local["data"], ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+            upload_data = copy.deepcopy(local["data"])
+            upload_data.pop("_migration", None)
+            body = (json.dumps(upload_data, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
             with self.condition:
                 self.running = True
                 self.dirty_at = None  # 上传期间的新改动会重新标记
             try:
                 cloud = cloud_snapshot(config, strict=False)
-                if newer_side(local, cloud) in ("cloud", "unknown"):
+                same_content = cloud is not None and comparable(local["data"]) == comparable(cloud["data"])
+                if cloud is not None and not same_content and (not cloud.get("etag") or cloud["etag"].startswith("W/")):
+                    raise SyncConflict("云端未提供强 ETag，无法安全覆盖。请从云端恢复，或选择空的同步位置。")
+                needs_confirmation = (local["data"].get("_migration", {}).get("pendingCloudConfirmation") is True
+                                      and cloud is not None and comparable(local["data"]) != comparable(cloud["data"]))
+                if needs_confirmation or newer_side(local, cloud) in ("cloud", "unknown"):
                     if not force:
                         raise SyncConflict(CONFLICT_MESSAGE)
                     webdav_keep_overwritten(config, cloud)  # 覆盖前把云端那份留进 history
-                webdav_upload(config, body, datetime.now())
+                if not same_content:
+                    webdav_upload(config, body, datetime.now(), expected=cloud)
+                if "_migration" in local["data"]:
+                    with LOCK:
+                        latest = load_state()
+                        if (latest.get("_migration") == local["data"].get("_migration")
+                                and latest.get("savedAt") == local["data"].get("savedAt")
+                                and comparable(latest) == comparable(local["data"])):
+                            latest.pop("_migration", None)
+                            save_state(latest, stamp=False)
             except SyncConflict as error:
                 with self.condition:
                     self.running = False

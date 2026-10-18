@@ -34,5 +34,6 @@ with tempfile.TemporaryDirectory(prefix="paperline-bundle-smoke-") as directory:
     for request, reply in zip(requests, replies[1:]):
         assert reply["id"] == request["id"] and reply["status"] == 200, reply
     assert len(replies) == 4, replies
+    assert replies[2]["data"]["version"] == 2, replies[2]
     assert pathlib.Path(replies[1]["data"]["dataDir"]).resolve() == pathlib.Path(directory).resolve(), replies[1]
 print(f"Packaged backend passed startup, API, and graceful shutdown: {bundle}")

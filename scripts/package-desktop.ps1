@@ -2,9 +2,23 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 Set-Location (Split-Path $PSScriptRoot -Parent)
 if ($env:OS -ne 'Windows_NT') { throw 'Windows installers must be packaged on a Windows x64 machine.' }
+# Cargo's encoded form preserves paths containing spaces as one compiler argument.
+$separator = [string][char]31
+$flags = @()
+if (Test-Path Env:CARGO_ENCODED_RUSTFLAGS) {
+    if ($env:CARGO_ENCODED_RUSTFLAGS) { $flags = @($env:CARGO_ENCODED_RUSTFLAGS -split $separator) }
+} elseif ($env:RUSTFLAGS) {
+    $flags = @($env:RUSTFLAGS -split '\s+' | Where-Object { $_ })
+}
+$flags += "--remap-path-prefix=$PWD=/build/paperline"
+$flags += "--remap-path-prefix=$([Environment]::GetFolderPath('UserProfile'))=/build"
+$env:CARGO_ENCODED_RUSTFLAGS = $flags -join $separator
 & npm.cmd run desktop:windows:build
 if ($LASTEXITCODE -ne 0) { throw 'Tauri Windows build failed.' }
-$config = Get-Content 'src-tauri/tauri.conf.json' -Raw | ConvertFrom-Json
+$python = Join-Path $PWD '.desktop-tools/venv-windows/Scripts/python.exe'
+& $python scripts/verify-desktop-paths.py src-tauri/target/x86_64-pc-windows-msvc/release/paperline.exe
+if ($LASTEXITCODE -ne 0) { throw 'Windows executable contains private build paths.' }
+$config = Get-Content 'src-tauri/tauri.windows.conf.json' -Raw | ConvertFrom-Json
 $version = [string]$config.version
 if ($version -notmatch '^[0-9A-Za-z.+-]+$') { throw 'Invalid application version.' }
 $output = Join-Path $PWD "dist/windows/$version"

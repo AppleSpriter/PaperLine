@@ -272,9 +272,9 @@ class LibraryWorkerTests(unittest.TestCase):
     def test_legacy_optional_reference_metadata_can_be_null_or_absent(self):
         state = app.default_state()
         state.pop("recommendationsVersion")
-        state["papers"] = [{"id": "p_null", "referenceAnalysis": None},
-                           {"id": "p_missing"},
-                           {"id": "p_bad", "referenceAnalysis": {"attachments": [None, {}]}}]
+        state["papers"] = [{"id": "p_null", "title": "Null metadata", "referenceAnalysis": None},
+                           {"id": "p_missing", "title": "Missing metadata"},
+                           {"id": "p_bad", "title": "Partial metadata", "referenceAnalysis": {"attachments": [None, {}]}}]
         self.assertEqual(app.validate_backup(state), state)
         app.ensure_recommendations(state)
         self.assertEqual(state["recommendations"], [])

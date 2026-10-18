@@ -315,7 +315,7 @@ fn setup_app(app: &mut tauri::App, smoke_dir: Option<&std::path::Path>) -> Resul
             let mut backend = Backend::start(&data_dir).map_err(std::io::Error::other)?;
             if smoke_dir.is_some() {
                 let reply = backend.request("GET", "/api/state", json!({})).map_err(std::io::Error::other)?;
-                if reply.status != 200 || reply.data.get("version") != Some(&json!(1)) {
+                if reply.status != 200 || reply.data.get("version") != Some(&json!(2)) {
                     return Err(std::io::Error::other("Smoke test backend state validation failed").into());
                 }
             }

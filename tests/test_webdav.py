@@ -1,5 +1,6 @@
 import base64
 import json
+import hashlib
 import os
 import stat
 import tempfile
@@ -21,6 +22,8 @@ class FakeDav:
         self.folders: set[str] = {"/dav/"}
         self.auth = "Basic " + base64.b64encode(f"{username}:{password}".encode()).decode()
         self.fail_put = False
+        self.emit_etag = True
+        self.before_put = None
         dav = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -48,6 +51,8 @@ class FakeDav:
                 self.send_response(200)
                 self.send_header("Content-Length", str(len(body)))
                 self.send_header("Last-Modified", "Tue, 29 Sep 2026 00:00:00 GMT")
+                if dav.emit_etag:
+                    self.send_header("ETag", '"' + hashlib.sha256(body).hexdigest() + '"')
                 self.end_headers()
                 self.wfile.write(body)
 
@@ -72,6 +77,14 @@ class FakeDav:
                 if not self._authorized():
                     return
                 body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+                if dav.before_put:
+                    dav.before_put(self.path)
+                existing = dav.files.get(self.path)
+                etag = '"' + hashlib.sha256(existing).hexdigest() + '"' if existing is not None else None
+                if ((self.headers.get("If-Match") is not None and self.headers["If-Match"] != etag)
+                        or (self.headers.get("If-None-Match") == "*" and existing is not None)):
+                    self._reply(412)
+                    return
                 parent = self.path.rsplit("/", 1)[0] + "/"
                 if dav.fail_put:
                     self._reply(507)
@@ -147,11 +160,11 @@ class WebDavTests(unittest.TestCase):
         config = self.config(folder="Notes/PaperLine")
         app.webdav_check(config)
         self.assertIn("/dav/Notes/PaperLine/", self.dav.folders)
-        body = b'{"version": 1}\n'
+        body = b'{"version": 2}\n'
         from datetime import datetime
         app.webdav_upload(config, body, datetime(2026, 9, 30, 10, 0))
-        self.assertEqual(self.dav.files["/dav/Notes/PaperLine/state.json"], body)
-        self.assertEqual(self.dav.files["/dav/Notes/PaperLine/history/state-2026-09-30.json"], body)
+        self.assertEqual(self.dav.files["/dav/Notes/PaperLine/state-v2.json"], body)
+        self.assertEqual(self.dav.files["/dav/Notes/PaperLine/history-v2/state-v2-2026-09-30.json"], body)
 
     def test_wrong_password_and_unreachable_server_explain_themselves(self):
         with self.assertRaisesRegex(ConnectionError, "拒绝了访问"):
@@ -170,9 +183,11 @@ class WebDavTests(unittest.TestCase):
             deadline = time.monotonic() + 3
             while time.monotonic() < deadline and not sync.status()["lastSuccessAt"]:
                 time.sleep(0.02)
-            uploaded = json.loads(self.dav.files["/dav/PaperLine/state.json"])
+            uploaded = json.loads(self.dav.files["/dav/PaperLine/state-v2.json"])
             self.assertEqual(uploaded["lines"][0]["title"], "云端阅读线")
 
+            app.apply_action(state, "line.update", {"id": state["lines"][0]["id"], "question": "New local edit"})
+            app.save_state(state)
             self.dav.fail_put = True
             with self.assertRaisesRegex(ConnectionError, "空间不足"):
                 sync.sync_now()
@@ -208,7 +223,7 @@ class WebDavTests(unittest.TestCase):
 
     def put_cloud(self, data):
         self.dav.folders.update({"/dav/PaperLine/", "/dav/PaperLine/history/"})
-        self.dav.files["/dav/PaperLine/state.json"] = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        self.dav.files["/dav/PaperLine/state-v2.json"] = json.dumps(data, ensure_ascii=False).encode("utf-8")
 
     def saved_state(self, title, saved_at):
         state = app.default_state()
@@ -257,17 +272,139 @@ class WebDavTests(unittest.TestCase):
         self.assertEqual([line["title"] for line in restored["lines"]], ["云端"])
         self.assertEqual(restored["savedAt"], "2026-09-30T03:00:00.000+00:00")
         self.assertEqual(restored["settings"]["language"], "en")
-        self.assertTrue(result["kept"].startswith("state.before-cloud-restore-"))
+        self.assertTrue(result["kept"].startswith("state-v2.before-cloud-restore-"))
         kept = json.loads((app.DATA_FILE.parent / result["kept"]).read_text(encoding="utf-8"))
         self.assertEqual(kept["lines"][0]["title"], "本机")
         self.assertEqual(app.compare_with_cloud()["newer"], "same")
 
-        self.dav.files["/dav/PaperLine/state.json"] = b"not json"
+        self.dav.files["/dav/PaperLine/state-v2.json"] = b"not json"
         with self.assertRaisesRegex(ValueError, "不是有效的"):
             app.restore_from_cloud("")
-        del self.dav.files["/dav/PaperLine/state.json"]
+        del self.dav.files["/dav/PaperLine/state-v2.json"]
         with self.assertRaisesRegex(ValueError, "还没有"):
             app.restore_from_cloud("")
+
+    def test_v2_sync_never_changes_legacy_cloud_and_uses_independent_history(self):
+        app.save_webdav(self.config())
+        legacy = b'{"version":1,"privateLegacy":"untouched"}'
+        legacy_path = "/dav/PaperLine/state.json"
+        self.dav.files[legacy_path] = legacy
+        app.save_state(self.saved_state("V2 local", "2026-09-30T02:00:00+00:00"), stamp=False)
+        sync = app.WebDavSync()
+        sync.sync_now()
+        self.assertEqual(self.dav.files[legacy_path], legacy)
+        self.assertEqual(json.loads(self.dav.files["/dav/PaperLine/state-v2.json"])["version"], 2)
+        self.assertTrue(any("/history-v2/state-v2-" in key for key in self.dav.files))
+        self.assertFalse(any("/history/state-" in key for key in self.dav.files))
+
+    def test_initial_v1_migration_requires_cloud_confirmation_even_if_local_stamp_is_newer(self):
+        app.save_webdav(self.config())
+        local = self.saved_state("Migrated v1", "2050-01-01T00:00:00+00:00")
+        local["_migration"] = {"fromVersion": 1, "pendingCloudConfirmation": True}
+        app.save_state(local, stamp=False)
+        cloud = self.saved_state("Existing v2", "2020-01-01T00:00:00+00:00")
+        self.put_cloud(cloud)
+        before = self.dav.files["/dav/PaperLine/state-v2.json"]
+        sync = app.WebDavSync()
+        with self.assertRaises(app.SyncConflict):
+            sync.sync_now()
+        self.assertEqual(self.dav.files["/dav/PaperLine/state-v2.json"], before)
+        sync.sync_now(force=True)
+        self.assertNotIn("_migration", app.load_state())
+        self.assertNotIn("_migration", json.loads(self.dav.files["/dav/PaperLine/state-v2.json"]))
+        self.assertTrue(any("/history-v2/state-v2-overwritten-" in key for key in self.dav.files))
+
+    def test_restoring_v1_backup_also_requires_v2_cloud_confirmation_before_overwrite(self):
+        app.save_webdav(self.config())
+        cloud = self.saved_state("Other device v2 learning", "2025-01-01T00:00:00+00:00")
+        self.put_cloud(cloud)
+        original = self.dav.files["/dav/PaperLine/state-v2.json"]
+        old_backup = self.saved_state("Old v1 backup", "2018-01-01T00:00:00+00:00")
+        old_backup["version"] = 1
+        old_backup.pop("stages")
+        app.restore_state(old_backup)
+        self.assertTrue(app.load_state()["_migration"]["pendingCloudConfirmation"])
+        sync = app.WebDavSync()
+        with patch.object(app, "webdav_upload", wraps=app.webdav_upload) as upload, \
+                patch.object(app, "webdav_keep_overwritten", wraps=app.webdav_keep_overwritten) as keep:
+            with self.assertRaises(app.SyncConflict):
+                sync.sync_now(force=False)
+            upload.assert_not_called()
+            keep.assert_not_called()
+        self.assertEqual(self.dav.files["/dav/PaperLine/state-v2.json"], original)
+        events = []
+        original_upload, original_keep = app.webdav_upload, app.webdav_keep_overwritten
+        def record_keep(*args):
+            events.append("keep")
+            return original_keep(*args)
+        def record_upload(*args, **kwargs):
+            events.append("upload")
+            return original_upload(*args, **kwargs)
+        with patch.object(app, "webdav_keep_overwritten", side_effect=record_keep), \
+                patch.object(app, "webdav_upload", side_effect=record_upload):
+            sync.sync_now(force=True)
+        self.assertEqual(events, ["keep", "upload"])
+        histories = [value for key, value in self.dav.files.items() if "/history-v2/state-v2-overwritten-" in key]
+        self.assertEqual(len(histories), 1)
+        self.assertEqual(json.loads(histories[0])["lines"][0]["title"], "Other device v2 learning")
+
+    def test_conditional_update_stops_a_cloud_change_between_get_and_put(self):
+        app.save_webdav(self.config())
+        app.save_state(self.saved_state("Local newer", "2050-01-01T00:00:00+00:00"), stamp=False)
+        self.put_cloud(self.saved_state("Old cloud", "2020-01-01T00:00:00+00:00"))
+        concurrent = json.dumps(self.saved_state("Concurrent device", "2099-01-01T00:00:00+00:00")).encode()
+        def race(path):
+            if path.endswith("/state-v2.json"):
+                self.dav.files[path] = concurrent
+        self.dav.before_put = race
+        sync = app.WebDavSync()
+        with self.assertRaises(app.SyncConflict):
+            sync.sync_now()
+        self.assertEqual(self.dav.files["/dav/PaperLine/state-v2.json"], concurrent)
+        self.assertTrue(sync.status()["conflict"])
+        self.assertTrue(sync.status()["pending"])
+
+    def test_conditional_create_stops_a_competing_first_upload(self):
+        app.save_webdav(self.config())
+        app.save_state(self.saved_state("Local", "2050-01-01T00:00:00+00:00"), stamp=False)
+        concurrent = json.dumps(self.saved_state("Concurrent first upload", "2099-01-01T00:00:00+00:00")).encode()
+        def race(path):
+            if path.endswith("/state-v2.json"):
+                self.dav.files[path] = concurrent
+        self.dav.before_put = race
+        with self.assertRaises(app.SyncConflict):
+            app.WebDavSync().sync_now()
+        self.assertEqual(self.dav.files["/dav/PaperLine/state-v2.json"], concurrent)
+
+    def test_missing_etag_refuses_different_cloud_but_identical_content_needs_no_put(self):
+        app.save_webdav(self.config())
+        local = self.saved_state("Local", "2050-01-01T00:00:00+00:00")
+        app.save_state(local, stamp=False)
+        self.put_cloud(self.saved_state("Different remote", "2020-01-01T00:00:00+00:00"))
+        self.dav.emit_etag = False
+        sync = app.WebDavSync()
+        with patch.object(app, "webdav_upload", wraps=app.webdav_upload) as upload:
+            with self.assertRaisesRegex(app.SyncConflict, "ETag"):
+                sync.sync_now(force=True)
+            upload.assert_not_called()
+        local["_migration"] = {"fromVersion": 1, "pendingCloudConfirmation": True}
+        app.save_state(local, stamp=False)
+        self.put_cloud({key: value for key, value in local.items() if key != "_migration"})
+        with patch.object(app, "webdav_upload", wraps=app.webdav_upload) as upload:
+            sync.sync_now()
+            upload.assert_not_called()
+        self.assertEqual(app.load_state()["savedAt"], local["savedAt"])
+        self.assertNotIn("_migration", app.load_state())
+
+    def test_unknown_or_damaged_v2_cloud_is_never_treated_as_empty_even_when_forced(self):
+        app.save_webdav(self.config())
+        app.save_state(self.saved_state("Local", "2050-01-01T00:00:00+00:00"), stamp=False)
+        sync = app.WebDavSync()
+        for content in (b"broken", b'{"version":99}', b'{"version":1}'):
+            self.dav.files["/dav/PaperLine/state-v2.json"] = content
+            with self.subTest(content=content), self.assertRaises(ValueError):
+                sync.sync_now(force=True)
+            self.assertEqual(self.dav.files["/dav/PaperLine/state-v2.json"], content)
 
     def test_upload_pauses_when_the_cloud_is_newer_until_forced(self):
         app.save_webdav(self.config())
@@ -280,12 +417,12 @@ class WebDavTests(unittest.TestCase):
         status = sync.status()
         self.assertTrue(status["conflict"])
         self.assertIsNone(status["nextUploadIn"])
-        self.assertEqual(json.loads(self.dav.files["/dav/PaperLine/state.json"])["lines"][0]["title"], "另一台电脑")
+        self.assertEqual(json.loads(self.dav.files["/dav/PaperLine/state-v2.json"])["lines"][0]["title"], "另一台电脑")
 
         sync.sync_now(force=True)
         self.assertFalse(sync.status()["conflict"])
-        self.assertEqual(json.loads(self.dav.files["/dav/PaperLine/state.json"])["lines"][0]["title"], "本机")
-        overwritten = [name for name in self.dav.files if "/history/state-overwritten-" in name]
+        self.assertEqual(json.loads(self.dav.files["/dav/PaperLine/state-v2.json"])["lines"][0]["title"], "本机")
+        overwritten = [name for name in self.dav.files if "/history-v2/state-v2-overwritten-" in name]
         self.assertEqual(len(overwritten), 1)
         self.assertEqual(json.loads(self.dav.files[overwritten[0]])["lines"][0]["title"], "另一台电脑")
 

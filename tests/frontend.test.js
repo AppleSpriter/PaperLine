@@ -38,7 +38,10 @@ function createApp(storage = new Map(), clock = { now: 0 }) {
       documentElement: { style: { setProperty(key, value) { this[key] = value; } } },
       querySelector: node,
       querySelectorAll: (selector) => selector === "dialog" ? [node("#session-dialog")] : [],
-      addEventListener(type, callback, options) { documentListeners.set(type, { callback, options }); },
+      addEventListener(type, callback, options) {
+        const callbacks = [...(documentListeners.get(type)?.callbacks || []), callback];
+        documentListeners.set(type, { callback, callbacks, options });
+      },
     },
     window: { addEventListener() {} },
     localStorage: {
@@ -53,8 +56,8 @@ function createApp(storage = new Map(), clock = { now: 0 }) {
     PaperLineI18n: { translate: (value) => value, apply() {} },
   });
   vm.runInContext(appSource, context);
-  const app = vm.runInContext(`({ ui, openSession, closeDialog, stopTimer, sessionSeconds, captureIdeaDraft, searchIdeas, selectIdea, latestSession, readingRecap,
-    graphZoomHint, setPageZoom, zoomGraph, zoomGraphWheel, graphMarkup, orderedMapPapers, paperMapLayout, updatePaperSelection, syncInspectorLayout, syncSelection, graphNode, displayAuthors, paperInstitution, libraryCitationCounts, rankedRecommendations, renderRecommendations, openPaperLineDialog, paperReadStatus, mapPapers, validCitations, renderPaperMap, renderPaperMapResults, renderMapInspector, renderZoteroSync, applyZoteroSync, refreshZoteroSync, startZoteroSync, markPaper, renderIdeaInspector, renderInspector, renderIdeas, renderPaperResults, searchPapers, searchLines, searchEverything, markIdea, toast, readDraft, act, refreshState, formatDuration, readingTotal, renderOutline, setState(value) { state = value; } })`, context);
+  const app = vm.runInContext(`({ ui, openSession, closeDialog, stopTimer, sessionSeconds, captureIdeaDraft, searchIdeas, selectIdea, latestSession, readingRecap, sessionHistory,
+    paperRelationRank, editableEdge, timelineLayout, stageContributions, selectTimelineStage, renderStageInspector, rememberTimelineViewport, restoreTimelineViewport, paperPickerResults, removeStageContribution, queueContributionAction, fitMethodGraph, switchWorkspaceView, methods, methodChoices, paperIdeaEdges, stagePaperEdges, workspaceDraft, submitWorkspaceForm, renderMethodsWorkspace, renderStageLine, renderPaperInspector, openStageSession, sessionDraftKey, graphZoomHint, setPageZoom, zoomGraph, zoomGraphWheel, graphMarkup, orderedMapPapers, paperMapLayout, updatePaperSelection, syncInspectorLayout, syncSelection, graphNode, displayAuthors, paperInstitution, libraryCitationCounts, rankedRecommendations, renderRecommendations, openPaperLineDialog, paperReadStatus, mapPapers, validCitations, renderPaperMap, renderPaperMapResults, renderMapInspector, renderZoteroSync, applyZoteroSync, refreshZoteroSync, startZoteroSync, markPaper, renderIdeaInspector, renderInspector, renderIdeas, renderPaperResults, searchResult, searchPapers, searchLines, searchEverything, markIdea, toast, readDraft, act, refreshState, formatDuration, readingTotal, renderOutline, setState(value) { state = value; } })`, context);
   app.setState(fixture());
   app.ui.selectedLineId = "l1";
   return { app, node, context, storage, clock, documentListeners };
@@ -108,9 +111,9 @@ test("card drafts survive selection changes, rerenders, and a reload", () => {
   assert.doesNotMatch(first.node("#inspector").innerHTML, /Unsaved/);
   const reloaded = createApp(first.storage);
   reloaded.app.ui.selectedIdeaId = "i1";
-  reloaded.app.renderInspector();
-  assert.match(reloaded.node("#inspector").innerHTML, /Unsaved &lt;insight&gt;/);
-  assert.match(reloaded.node("#inspector").innerHTML, /value="learning" checked/);
+  reloaded.app.renderMethodsWorkspace();
+  assert.match(reloaded.node("#main-view").innerHTML, /Unsaved &lt;insight&gt;/);
+  assert.match(reloaded.node("#main-view").innerHTML, /value="learning" checked/);
 });
 
 test("a pending session save cannot be submitted twice or close a different session", async () => {
@@ -759,4 +762,234 @@ test("Windows uses Ctrl-wheel only inside graphs and renders the corresponding h
     h.app.zoomGraphWheel(macCtrl);
     assert.equal(macCtrl.prevented, undefined);
   }
+});
+
+function learningFixture() {
+  const data = fixture(); data.version = 2;
+  data.ideas[0].entityType = "method"; data.ideas[0].title = "GRPO"; data.ideas[0].aliases = ["Group Relative Policy Optimization"];
+  data.ideas[1].entityType = "unclassified"; data.ideas[1].title = "Legacy paper-title card";
+  data.lines[0].kind = "research"; data.lines[0].stageIds = [];
+  data.lines.push({ id: "family", title: "Model evolution", kind: "model_family", ideaIds: [], stageIds: ["s1"], activeStageId: "s1" });
+  data.stages = [{ id: "s1", title: "Reasoning stage", date: "2025-01-20", summary: "Independent contribution" }];
+  data.edges.push({ id: "membership", fromType: "paper", fromId: "p1", toType: "stage", toId: "s1", relation: "documents" });
+  return data;
+}
+test("global methods preserve selected paper and map position across views without classifying legacy cards", () => {
+  const h = createApp(); h.app.setState(learningFixture()); h.app.ui.selectedPaperId = "p1"; h.app.ui.selectedIdeaId = "i1";
+  h.app.ui.view = "map"; h.node(".paper-map-scroll").scrollLeft = 340; h.node(".paper-map-scroll").scrollTop = 120;
+  h.app.switchWorkspaceView("graph");
+  assert.equal(h.app.ui.selectedPaperId, "p1");
+  assert.deepEqual(Array.from(h.app.methods(), (item) => item.id), ["i1"]);
+  assert.equal(h.app.methodChoices("group relative")[0].id, "i1");
+  assert.equal(h.app.paperIdeaEdges("p1").length, 1);
+  assert.equal(h.app.stagePaperEdges("s1")[0].id, "membership");
+  h.app.ui.selectedLineId = "family"; h.app.switchWorkspaceView("outline");
+  assert.equal(h.app.ui.selectedPaperId, "p1");
+  assert.match(h.node("#main-view").innerHTML, /class="reading-timeline"/);
+  assert.doesNotMatch(h.node("#main-view").innerHTML, /data-workspace-form="stage"/);
+  h.app.switchWorkspaceView("map");
+  assert.equal(h.app.ui.selectedPaperId, "p1");
+  assert.equal(h.node(".paper-map-scroll").scrollLeft, 340);
+});
+test("method annotation submits one atomic action and failed saves retain the paper draft", async () => {
+  const h = createApp(); const data = learningFixture(); h.app.setState(data); h.app.ui.selectedPaperId = "p1";
+  const form = { dataset: { workspaceForm: "annotate-method", workspaceDraft: "paper-method:p1", id: "p1" }, values: { title: "Group Relative Policy Optimization", note: "Evidence", sourceUrl } };
+  h.app.workspaceDraft(form);
+  h.context.fetch = async () => ({ ok: false, json: async () => ({ error: "offline" }) });
+  await assert.rejects(h.app.submitWorkspaceForm(form, { value: "uses" }), /offline/);
+  assert.equal(h.app.readDraft("paper-method:p1").note, "Evidence");
+  const sent = [];
+  h.context.fetch = async (path, options) => { sent.push(JSON.parse(options.body)); return { ok: true, json: async () => ({ state: data, result: { paperId: "p1", ideaId: "i1", edgeId: "e1" } }) }; };
+  await h.app.submitWorkspaceForm(form, { value: "uses" });
+  assert.equal(sent.length, 1); assert.equal(sent[0].action, "paper.annotate_method");
+  assert.equal(sent[0].payload.title, "Group Relative Policy Optimization");
+  assert.equal(sent[0].payload.relation, "uses");
+  assert.equal(h.app.readDraft("paper-method:p1"), null);
+  assert.equal(h.app.ui.selectedPaperId, "p1");
+});
+test("adding a paper to a new model stage does not require or mutate a method", async () => {
+  const h = createApp(); const data = learningFixture(); data.ideas = []; data.edges = [];
+  h.app.setState(data); h.app.ui.selectedLineId = "family"; h.app.ui.selectedIdeaId = "";
+  const form = { dataset: { workspaceForm: "join-stage", workspaceDraft: "paper-stage:p1", id: "p1" }, values: { lineId: "", lineTitle: "New model family", stageId: "", stageTitle: "New contribution", date: "2026-10-16", summary: "User-authored contribution" } };
+  h.app.workspaceDraft(form); let request;
+  h.context.fetch = async (path, options) => { request = JSON.parse(options.body); return { ok: true, json: async () => ({ state: data, result: { paperId: "p1", lineId: "family", stageId: "s1" } }) }; };
+  await h.app.submitWorkspaceForm(form, {});
+  assert.equal(request.action, "paper.add_to_stage");
+  assert.equal(request.payload.lineTitle, "New model family");
+  assert.equal(request.payload.stageTitle, "New contribution");
+  assert.equal(request.payload.ideaId, undefined);
+  assert.equal(data.ideas.length, 0);
+  assert.equal(h.app.readDraft("paper-stage:p1"), null);
+});
+test("stage reading restores its own elapsed time and saves a typed target without creating an idea session", async () => {
+  const h = createApp(); const data = learningFixture(); h.app.setState(data); h.app.ui.selectedLineId = "family";
+  h.app.openStageSession("s1"); h.node("#session-note").value = "Stage notes"; h.clock.now = 61000; h.app.stopTimer();
+  assert.equal(h.app.readDraft("session:stage:s1:family").elapsed, 61);
+  h.clock.now = 900000; h.app.openStageSession("s1");
+  assert.equal(h.app.sessionSeconds(), 61); assert.equal(h.node("#session-note").value, "Stage notes");
+  let request;
+  h.context.fetch = async (path, options) => { request = JSON.parse(options.body); return { ok: true, json: async () => ({ state: data, result: {} }) }; };
+  await h.node("#session-form").listeners.submit({ preventDefault() {} });
+  assert.equal(request.payload.targetType, "stage"); assert.equal(request.payload.targetId, "s1");
+  assert.equal(request.payload.ideaId, undefined);
+  assert.equal(h.app.readDraft("session:stage:s1:family"), null);
+});
+
+test("stage memberships never inflate idea counts in paper library and cross-library search", () => {
+  const h = createApp(); const data = learningFixture(); h.app.setState(data);
+  h.app.renderPaperResults();
+  assert.match(h.node("#paper-search-results").innerHTML, /1 个思想/);
+  assert.doesNotMatch(h.node("#paper-search-results").innerHTML, /2 个思想/);
+  assert.match(h.app.searchResult({ kind: "paper", item: data.papers[0] }), /1 个思想/);
+  assert.equal(h.app.paperIdeaEdges("p1").length, 1);
+  assert.equal(h.app.stagePaperEdges("s1").length, 1);
+});
+
+test("method workspace fits on first method selection but preserves explicit user zoom on saves", () => {
+  const h = createApp(); const data = learningFixture(); h.app.setState(data); h.app.ui.selectedIdeaId = "i1";
+  const svg = { viewBox: { baseVal: { width: 700, height: 390 } }, setAttribute() {} };
+  const scroll = h.node(".graph-scroll"); scroll.clientWidth = 560; scroll.clientHeight = 390; scroll.scrollLeft = 0; scroll.scrollTop = 0; scroll.querySelector = () => svg; scroll.classList.contains = () => false;
+  h.app.renderMethodsWorkspace();
+  assert.equal(h.app.ui.ideaGraphZoom, .8);
+  h.app.zoomGraph(scroll, 1.4);
+  h.app.renderMethodsWorkspace();
+  assert.equal(h.app.ui.ideaGraphZoom, 1.4);
+  h.app.fitMethodGraph(true);
+  assert.equal(h.app.ui.ideaGraphZoom, .8);
+});
+test("stage reading history shows saved stage notes and next questions independently of idea sessions", () => {
+  const h = createApp(); const data = learningFixture();
+  data.sessions = [{ id: "old", ideaId: "i1", targetType: "idea", targetId: "i1", createdAt: "2026-10-15T00:00:00Z", note: "Legacy idea note" }, { id: "new", targetType: "stage", targetId: "s1", createdAt: "2026-10-16T00:00:00Z", note: "Stage observation", nextQuestion: "Stage next question" }];
+  h.app.setState(data); h.app.ui.view = "outline"; h.app.ui.selectedLineId = "family"; h.app.selectTimelineStage("s1");
+  assert.match(h.node("#inspector").innerHTML, /Stage observation/);
+  assert.match(h.node("#inspector").innerHTML, /Stage next question/);
+  assert.doesNotMatch(h.node("#inspector").innerHTML, /Legacy idea note/);
+  assert.match(h.app.sessionHistory("i1"), /Legacy idea note/);
+});
+
+test("quick role changes omit empty evidence fields so existing relationship evidence is preserved", async () => {
+  const h = createApp(); const data = learningFixture(); h.app.setState(data); let request;
+  h.context.fetch = async (path, options) => { request = JSON.parse(options.body); return { ok: true, json: async () => ({ state: data, result: { paperId: "p1", ideaId: "i1", edgeId: "e1" } }) }; };
+  await h.app.submitWorkspaceForm({ dataset: { workspaceForm: "annotate-method", id: "p1" }, values: { title: "", ideaId: "i1", note: "", sourceUrl: "" } }, { value: "improves" });
+  assert.equal(request.payload.ideaId, "i1");
+  assert.equal(request.payload.relation, "improves");
+  assert.equal(Object.hasOwn(request.payload, "note"), false);
+  assert.equal(Object.hasOwn(request.payload, "sourceUrl"), false);
+});
+
+test("timeline renders only explicit contribution references, shares method identities and preserves route order", () => {
+  const h = createApp(); const data = learningFixture();
+  data.stages[0].summary = "This free text says a new imaginary method was proposed";
+  data.stages.push({ id: "s2", title: "Earlier date, later reading step", date: "2020-01-01", summary: "" });
+  data.lines[1].stageIds.push("s2"); data.edges.push({ id: "member2", fromType: "paper", fromId: "p1", toType: "stage", toId: "s2", relation: "documents", contributionRefs: ["e1"] });
+  h.app.setState(data);
+  assert.equal(h.app.stageContributions("s1").length, 0);
+  assert.equal(h.app.stageContributions("s2").length, 1);
+  const layout = h.app.timelineLayout(data.lines[1]);
+  assert.deepEqual(Array.from(layout.stages, (item) => item.id), ["s1", "s2"]);
+  assert.deepEqual(Array.from(layout.methodIds), ["i1"]);
+  data.edges.find((item) => item.id === "membership").contributionRefs = ["e1"];
+  assert.equal(h.app.timelineLayout(data.lines[1]).contributions.length, 2);
+  assert.equal(h.app.timelineLayout(data.lines[1]).methodIds.length, 1);
+  assert.equal(h.app.timelineLayout(data.lines[1]).methodInstances.length, 2);
+});
+test("paper picker searches metadata with bounded results and stage methods only choose member papers", () => {
+  const h = createApp(); const data = learningFixture();
+  data.papers[0].institution = "Target Institute";
+  data.papers.push(...Array.from({ length: 20 }, (_, index) => ({ id: `extra${index}`, title: `Extra paper ${index}`, authors: "An Author", year: "2026", doi: `10.1234/${index}` })));
+  h.app.setState(data);
+  assert.equal(h.app.paperPickerResults("target institute", { kind: "stage", id: "empty" })[0].id, "p1");
+  assert.equal(h.app.paperPickerResults("An Author", { kind: "method", id: "i1" }).length, 12);
+  assert.equal(h.app.paperPickerResults("10.1234/19", { kind: "method", id: "i1" })[0].id, "extra19");
+  assert.deepEqual(Array.from(h.app.paperPickerResults("", { kind: "stage-method", id: "s1" }), (item) => item.id), ["p1"]);
+  assert.equal(h.app.paperPickerResults("Paper", { kind: "stage", id: "s1" }).some((item) => item.id === "p1"), false);
+});
+test("paper picker input events filter rendered results without changing the query or stage membership", () => {
+  const h = createApp(); const data = learningFixture();
+  data.papers.push(
+    { id: "p2", title: "Research report 02", authors: "Other Author", year: "2024" },
+    { id: "p3", title: "Research report 03", authors: "Other Author", year: "2025" },
+  );
+  h.app.setState(data); h.app.ui.paperPicker = { kind: "stage", id: "empty" };
+  const input = h.node("#picker-paper-query"); input.value = "research report 02";
+  const before = JSON.stringify(data);
+  for (const listener of h.documentListeners.get("input").callbacks) listener({ target: input });
+  assert.match(h.node("#picker-paper-results").innerHTML, /Research report 02/);
+  assert.doesNotMatch(h.node("#picker-paper-results").innerHTML, /Research report 03/);
+  assert.doesNotMatch(h.node("#picker-paper-results").innerHTML, />Paper</);
+  assert.equal(input.value, "research report 02");
+  assert.equal(JSON.stringify(data), before);
+});
+test("stage method annotation can select a specific legacy relationship without changing entity identity", async () => {
+  const h = createApp(); const data = learningFixture(); data.edges.push({ ...data.edges[0], id: "old-second", relation: "proposes" }); h.app.setState(data); let request;
+  h.context.fetch = async (path, options) => { request = JSON.parse(options.body); return { ok: true, json: async () => ({ state: data, result: { paperId: "p1", ideaId: "i1", edgeId: "old-second", stageId: "s1" } }) }; };
+  await h.app.submitWorkspaceForm({ dataset: { workspaceForm: "annotate-method", id: "p1", stageId: "s1" }, values: { title: "", ideaId: "", edgeId: "old-second", note: "", sourceUrl: "" } }, { value: "proposes" });
+  assert.equal(request.payload.stageId, "s1"); assert.equal(request.payload.edgeId, "old-second"); assert.equal(request.payload.ideaId, "i1");
+  assert.equal(Object.hasOwn(request.payload, "note"), false); assert.equal(data.edges.filter((item) => item.toId === "i1").length, 2);
+});
+test("rapid contribution removals serialize against the latest membership references", async () => {
+  const h = createApp(); const data = learningFixture(); data.edges.find((item) => item.id === "membership").contributionRefs = ["a", "b"];
+  h.app.setState(data); const sent = [];
+  h.context.fetch = async (path, options) => {
+    const request = JSON.parse(options.body); sent.push(request);
+    await new Promise((resolve) => setImmediate(resolve));
+    data.edges.find((item) => item.id === "membership").contributionRefs = request.payload.contributionRefs;
+    return { ok: true, json: async () => ({ state: data, result: {} }) };
+  };
+  await Promise.all([h.app.removeStageContribution("membership", "a"), h.app.removeStageContribution("membership", "b")]);
+  assert.deepEqual(sent.map((request) => request.payload.contributionRefs), [["b"], []]);
+  assert.equal(data.edges.some((item) => item.id === "e1"), true);
+  assert.equal(data.ideas.length, 2);
+});
+test("timeline zoom and viewport survive selection and render without affecting map or method zoom", () => {
+  const h = createApp(); const data = learningFixture(); h.app.setState(data); h.app.ui.selectedLineId = "family";
+  const scroll = h.node(".timeline-scroll"); scroll.dataset.lineId = "family"; scroll.clientWidth = 500; scroll.clientHeight = 400; scroll.scrollLeft = 250; scroll.scrollTop = 100;
+  scroll.classList.contains = (name) => name === "timeline-scroll";
+  scroll.querySelector = () => ({ viewBox: { baseVal: { width: 1200, height: 560 } }, setAttribute() {} });
+  h.app.zoomGraph(scroll, 1.2); h.app.selectTimelineStage("s1"); h.app.renderStageLine(data.lines[1]); h.app.restoreTimelineViewport();
+  assert.equal(h.app.ui.timelineZoom, 1.2); assert.equal(scroll.scrollLeft, 350); assert.equal(scroll.scrollTop, 160);
+  assert.equal(h.app.ui.mapZoom, 1); assert.equal(h.app.ui.ideaGraphZoom, 1);
+});
+
+
+test("timeline roles order methods within a stage and use the strongest explicit relationship without changing data", () => {
+  const h = createApp(); const data = learningFixture();
+  for (const [id, title] of [["improved", "Improved method"], ["proposed", "Proposed method"], ["used", "Used method"]]) data.ideas.push({ ...data.ideas[0], id, title });
+  data.edges.push(
+    { ...data.edges[0], id: "improve", toId: "improved", relation: "improves" },
+    { ...data.edges[0], id: "propose", toId: "proposed", relation: "proposes" },
+    { ...data.edges[0], id: "shared-propose", relation: "proposes" },
+    { ...data.edges[0], id: "use", toId: "used", relation: "uses" },
+  );
+  data.edges.find((item) => item.id === "membership").contributionRefs = ["e1", "improve", "propose", "shared-propose", "use"];
+  h.app.setState(data); const before = JSON.stringify(data);
+  assert.deepEqual(Array.from(h.app.stageContributions("s1"), ({ connection }) => connection.id), ["propose", "shared-propose", "improve", "e1", "use"]);
+  h.app.renderStageLine(data.lines[1]);
+  const html = h.node("#main-view").innerHTML;
+  const methodNodes = [...html.matchAll(/<g class="timeline-node method paper-role-(\w+)[^"]*"[^>]*data-id="([^"]+)"/g)];
+  assert.deepEqual(methodNodes.map((match) => [match[1], match[2]]), [["proposes", "proposed"], ["proposes", "i1"], ["improves", "improved"], ["uses", "used"]]);
+  assert.equal(h.app.timelineLayout(data.lines[1]).contributions.length, 5);
+  assert.match(html, /class="timeline-verb"[^>]*>使用<\/text>/);
+  assert.match(html, /class="timeline-verb"[^>]*>提出<\/text>/);
+  assert.match(html, /class="paper-relation-legend"/);
+  assert.equal(JSON.stringify(data), before);
+});
+
+test("idea graph and relationship cards consistently display proposes, improves, then uses without changing identities", () => {
+  const h = createApp(); const data = learningFixture();
+  data.papers.push({ ...data.papers[0], id: "p2", title: "Improving paper" }, { ...data.papers[0], id: "p3", title: "Proposing paper" });
+  data.edges.push({ ...data.edges[0], id: "improve", fromId: "p2", relation: "improves" }, { ...data.edges[0], id: "propose", fromId: "p3", relation: "proposes" });
+  h.app.setState(data); h.app.ui.selectedIdeaId = "i1"; const before = JSON.stringify(data);
+  assert.deepEqual(["proposes", "improves", "uses", "questions"].map(h.app.paperRelationRank), [0, 1, 2, 3]);
+  const graph = h.app.graphMarkup(data.ideas[0]);
+  const nodes = [...graph.matchAll(/class="graph-node paper-node paper-role-(\w+)"[^>]*data-id="([^"]+)"/g)];
+  assert.deepEqual(nodes.map((match) => [match[1], match[2]]), [["proposes", "p3"], ["improves", "p2"], ["uses", "p1"]]);
+  h.app.renderMethodsWorkspace();
+  const html = h.node("#main-view").innerHTML;
+  assert.deepEqual([...html.matchAll(/class="editable-edge paper-role-(\w+)"/g)].map((match) => match[1]), ["proposes", "improves", "uses"]);
+  for (const connection of data.edges.filter((item) => item.toId === "i1")) assert.match(h.app.editableEdge(connection), new RegExp(`data-id="${connection.id}"`));
+  data.edges.push({ ...data.edges[0], id: "same-paper-improve", relation: "improves" });
+  assert.deepEqual(Array.from(h.app.paperIdeaEdges("p1"), (item) => item.relation), ["improves", "uses"]);
+  data.edges.pop();
+  assert.equal(JSON.stringify(data), before);
 });

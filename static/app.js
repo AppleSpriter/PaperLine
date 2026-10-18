@@ -18,7 +18,7 @@ const ui = {
   view: "graph", selectedLineId: "", selectedIdeaId: "", selectedPaperId: "",
   graphExpanded: false, annotations: null, annotationPaperId: "", pendingSource: null,
   zoteroResults: [], relationFocus: null, editingEdgeId: "", session: null, timer: null,
-  ideaQuery: "", ideaStatus: "", paperQuery: "", pendingParentId: "",
+  ideaQuery: "", ideaStatus: "", paperQuery: "", pendingParentId: "", methodQuery: "", selectedStageId: "", stageInspect: false, newStage: false, timelineZoom: 1, timelineViews: {},
   mapQuery: "", mapStatus: "", mapSort: "citations", inspectorOpen: false, mapAllConnections: false, mapTimelineConnections: true, recommendationAll: false, mapZoom: 1, mapOverviewZoom: 1, ideaGraphZoom: 1, pageZoom: 1, zoteroSync: null, zoteroSyncTimer: null, zoteroSyncError: "",
 };
 const draftCache = new Map();
@@ -95,8 +95,8 @@ function readingRecap(ideaId, compact = false) {
   if (!previous) return "";
   return `<span class="recap-label">上次读到这里</span><p data-user-content>${esc(compact ? truncate(previous.note, 95) : previous.note)}</p>${previous.nextQuestion ? `<span class="recap-label">下次要弄清</span><p data-user-content>${esc(compact ? truncate(previous.nextQuestion, 95) : previous.nextQuestion)}</p>` : ""}`;
 }
-function sessionHistory(ideaId) {
-  const sessions = state.sessions.filter((session) => session.ideaId === ideaId).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 3);
+function sessionHistory(ideaId, targetType = "idea") {
+  const sessions = state.sessions.filter((session) => targetType === "idea" ? (session.ideaId === ideaId || (session.targetType === "idea" && session.targetId === ideaId)) : session.targetType === targetType && session.targetId === ideaId).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 3);
   if (!sessions.length) return "";
   return `<div class="inspector-section"><h3>最近阅读</h3>${sessions.map((session) => `<div class="reading-history"><time>${esc(new Date(session.createdAt).toLocaleDateString(language() === "en" ? "en-US" : "zh-CN"))}</time><p data-user-content>${esc(session.note)}</p>${session.nextQuestion ? `<span class="recap-label">下次要弄清</span><p data-user-content>${esc(session.nextQuestion)}</p>` : ""}</div>`).join("")}</div>`;
 }
@@ -112,9 +112,8 @@ function ideaSourcePayload() {
 }
 function selectIdea(id) {
   const current = line(ui.selectedLineId);
-  if (!current?.ideaIds.includes(id)) ui.selectedLineId = state.lines.find((entry) => entry.ideaIds.includes(id))?.id || "";
+  if (idea(id)?.entityType !== "method" && !current?.ideaIds.includes(id)) ui.selectedLineId = state.lines.find((entry) => entry.ideaIds.includes(id))?.id || "";
   ui.selectedIdeaId = id;
-  ui.selectedPaperId = "";
   ui.view = "graph";
   ui.graphExpanded = false;
   render();
@@ -256,8 +255,9 @@ async function act(action, payload) {
     if (draft && Object.entries(draft).every(([key, value]) => key === "baseUpdatedAt" || payload[key] === value)) forgetDraft(`idea:${payload.id}`);
   }
   if (data.result.lineId) ui.selectedLineId = data.result.lineId;
-  if (data.result.ideaId) { ui.selectedIdeaId = data.result.ideaId; ui.selectedPaperId = ""; }
-  if (data.result.paperId) { ui.selectedPaperId = data.result.paperId; ui.selectedIdeaId = ""; }
+  if (data.result.ideaId) ui.selectedIdeaId = data.result.ideaId;
+  if (data.result.paperId) { ui.selectedPaperId = data.result.paperId; ui.inspectorOpen = true; }
+  if (data.result.stageId) ui.selectedStageId = data.result.stageId;
   render();
   noteLocalChange();
   return data.result;
@@ -281,7 +281,7 @@ function syncSelection() {
     ui.selectedIdeaId = "";
   }
   if (ui.selectedIdeaId && !idea(ui.selectedIdeaId)) ui.selectedIdeaId = "";
-  if (!ui.selectedIdeaId && !ui.selectedPaperId && current?.ideaIds.length) {
+  if (ui.view !== "graph" && !ui.selectedIdeaId && !ui.selectedPaperId && current?.kind !== "model_family" && current?.ideaIds.length) {
     ui.selectedIdeaId = current.activeIdeaId || current.ideaIds[0];
   }
   if (ui.selectedPaperId && !paper(ui.selectedPaperId)) ui.selectedPaperId = "";
@@ -293,8 +293,9 @@ function markMainAnimation(animate) {
   if (main?.dataset) main.dataset.animate = animate ? "1" : "0";
 }
 function render() {
+  rememberTimelineViewport();
   const mapScroll = ui.view === "map" ? $(".paper-map-scroll") : null;
-  const mapPosition = mapScroll ? { left: mapScroll.scrollLeft, top: mapScroll.scrollTop } : null;
+  const mapPosition = mapScroll ? { left: mapScroll.scrollLeft, top: mapScroll.scrollTop } : ui.view === "map" ? ui.mapViewport : null;
   syncSelection();
   $(".workspace").dataset.view = ui.view;
   renderNav();
@@ -306,6 +307,7 @@ function render() {
   renderInspector();
   localize();
   centerGraph();
+  restoreTimelineViewport();
   if (mapPosition) { const next = $(".paper-map-scroll"); if (next) { next.scrollLeft = mapPosition.left; next.scrollTop = mapPosition.top; } }
 }
 function centerGraph() {
@@ -345,8 +347,8 @@ catch { setPageZoom(1, false); }
 function zoomGraph(scroller, requested, anchor = null) {
   const svg = scroller?.querySelector("svg");
   if (!svg || !Number.isFinite(requested)) return false;
-  const map = scroller.classList.contains("paper-map-scroll");
-  const previous = map ? ui.mapZoom : ui.ideaGraphZoom;
+  const map = scroller.classList.contains("paper-map-scroll"), timeline = scroller.classList.contains("timeline-scroll");
+  const previous = timeline ? ui.timelineZoom : map ? ui.mapZoom : ui.ideaGraphZoom;
   const zoom = Math.max(.15, Math.min(2, requested));
   if (zoom === previous) return true;
   const x = anchor?.x ?? scroller.clientWidth / 2;
@@ -359,8 +361,9 @@ function zoomGraph(scroller, requested, anchor = null) {
   scroller.scrollLeft = Math.max(0, left);
   scroller.scrollTop = Math.max(0, top);
   if (map) { ui.mapZoom = zoom; if (!ui.selectedPaperId) ui.mapOverviewZoom = zoom; }
+  else if (timeline) { ui.timelineZoom = zoom; rememberTimelineViewport(); }
   else ui.ideaGraphZoom = zoom;
-  const control = $(map ? "[data-action='map-zoom'][data-step='0']" : "[data-action='idea-zoom'][data-step='0']");
+  const control = $(timeline ? "#timeline-zoom-percent" : map ? "[data-action='map-zoom'][data-step='0']" : "[data-action='idea-zoom'][data-step='0']");
   if (control) control.textContent = `${Math.round(zoom * 100)}%`;
   return true;
 }
@@ -371,10 +374,10 @@ function graphZoomModifier() {
 function graphZoomHint() { return graphZoomModifier() === "ctrlKey" ? "按住 Ctrl + 滚轮缩放" : "按住 Command + 滚轮缩放"; }
 function zoomGraphWheel(event) {
   if (!event[graphZoomModifier()] || !event.cancelable || !Number.isFinite(event.deltaY) || !event.deltaY) return;
-  const scroller = event.target.closest?.(".paper-map-scroll, .graph-scroll");
+  const scroller = event.target.closest?.(".paper-map-scroll, .graph-scroll, .timeline-scroll");
   if (!scroller) return;
   const delta = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? scroller.clientHeight : 1);
-  const previous = scroller.classList.contains("paper-map-scroll") ? ui.mapZoom : ui.ideaGraphZoom;
+  const previous = scroller.classList.contains("timeline-scroll") ? ui.timelineZoom : scroller.classList.contains("paper-map-scroll") ? ui.mapZoom : ui.ideaGraphZoom;
   const rect = scroller.getBoundingClientRect();
   const scaleX = scroller.offsetWidth ? rect.width / scroller.offsetWidth : ui.pageZoom;
   const scaleY = scroller.offsetHeight ? rect.height / scroller.offsetHeight : ui.pageZoom;
@@ -394,7 +397,7 @@ function renderSidebar() {
     const active = idea(item.activeIdeaId);
     return `<button type="button" class="line-item ${selected ? "selected" : ""}" data-action="select-line" data-id="${esc(item.id)}" aria-current="${selected ? "page" : "false"}">
       <span class="line-item-title" data-user-content>${esc(item.title)}</span>
-      <span class="line-item-meta">${item.ideaIds.length} 张卡${active ? ` · 下一张：${esc(truncate(active.title, 13))}` : ""}</span>
+      <span class="line-item-meta">${item.kind === "model_family" ? `${(item.stageIds || []).length} ${tr("个阶段")}` : `${item.ideaIds.length} ${tr("张卡")}`}${active ? ` · 下一张：${esc(truncate(active.title, 13))}` : ""}</span>
     </button>`;
   }).join("") : `<div class="side-empty">先创建一条想追的问题线。</div>`;
   const current = line(ui.selectedLineId);
@@ -404,6 +407,10 @@ function renderSidebar() {
     ${latestSession(active.id) ? `<div class="today-recap">${readingRecap(active.id, true)}</div>` : ""}
     <button type="button" class="button light-fill full" data-action="start-session" data-id="${esc(active.id)}">开始读 15 分钟 <span>↗</span></button>`
     : `<div class="today-kicker"><span class="pulse-dot"></span> 下一步</div><h3>从一张卡开始</h3><p>为阅读线添加思想卡，就能开始第一次阅读。</p><button type="button" class="button light-fill full" data-action="new-idea">新建思想卡 <span>＋</span></button>`;
+  if (current?.kind === "model_family") {
+    const target = stage(current.activeStageId) || stage(current.stageIds?.[0]);
+    $("#today-panel").innerHTML = `<div class="today-kicker">${tr("模型演进线")}</div><h3 data-user-content>${esc(target?.title || current.title)}</h3><p>${tr("独立记录阶段贡献与论文，方法关联可选。")}</p>${target ? `<button type="button" class="button light-fill full" data-workspace-action="read-stage" data-id="${esc(target.id)}">开始阶段阅读</button>` : `<button type="button" class="button light-fill full" data-action="select-line" data-id="${esc(current.id)}">添加阶段</button>`}`;
+  }
 }
 
 function pageHeader(kicker, title, description, actions = "", userTitle = true, userDescription = false) {
@@ -415,6 +422,8 @@ function renderMain() {
   if (ui.view === "map") return renderPaperMap();
   if (ui.view === "papers") return renderPapers();
   if (ui.view === "ideas") return renderIdeas();
+  if (ui.view === "graph") return renderMethodsWorkspace();
+  if (ui.view === "outline" && current?.kind === "model_family") return renderStageLine(current);
   if (!current) {
     const selected = idea(ui.selectedIdeaId);
     if (selected && ui.view === "graph") {
@@ -444,8 +453,9 @@ function renderGraphView(current) {
 }
 
 function graphMarkup(focus) {
-  const paperEdges = state.edges.filter((item) => item.fromType === "paper" && item.toId === focus.id);
+  const paperEdges = state.edges.filter((item) => item.fromType === "paper" && item.toType !== "stage" && item.toId === focus.id).sort(comparePaperRelations);
   const ideaEdges = state.edges.filter((item) => item.fromType === "idea" && (item.fromId === focus.id || item.toId === focus.id));
+  const graphWidth = focus.entityType === "method" && !ideaEdges.length ? 700 : 1000;
   const left = (ui.graphExpanded ? paperEdges : paperEdges.slice(0, 7)).map((item) => ({ edge: item, node: paper(item.fromId) })).filter((item) => item.node);
   const right = (ui.graphExpanded ? ideaEdges : ideaEdges.slice(0, 7)).map((item) => ({ edge: item, node: idea(item.fromId === focus.id ? item.toId : item.fromId) })).filter((item) => item.node);
   const rows = Math.max(left.length, right.length, 3);
@@ -468,17 +478,17 @@ function graphMarkup(focus) {
   const more = paperEdges.length > 7 || ideaEdges.length > 7;
   const paperCount = new Set(paperEdges.map((item) => item.fromId)).size;
   const parent = ideaEdges.find((connection) => connection.toId === focus.id && connection.relation === "extends");
-  return `${parent ? `<button type="button" class="button quiet parent-return" data-action="select-idea" data-id="${esc(parent.fromId)}"><span>↖ 返回来源</span> <span data-user-content>${esc(idea(parent.fromId)?.title)}</span></button>` : ""}<section class="graph-panel"><div class="graph-toolbar"><div class="graph-stats"><span><b>${paperCount}</b> ${countUnit(paperCount, "篇论文", "paper", "papers")}</span><span><b>${ideaEdges.length}</b> ${countUnit(ideaEdges.length, "条思想关联", "idea connection", "idea connections")}</span></div><div class="graph-legend"><span><i class="legend-paper"></i>论文</span><span><i class="legend-idea"></i>思想</span></div></div>
-    <div class="graph-zoom"><span>${esc(tr(graphZoomHint()))}</span><button type="button" class="button quiet" data-action="idea-zoom" data-step="-0.2" aria-label="缩小思想图">−</button><button type="button" class="button quiet" data-action="idea-zoom" data-step="0" aria-label="重置思想图缩放">${Math.round(ui.ideaGraphZoom * 100)}%</button><button type="button" class="button quiet" data-action="idea-zoom" data-step="0.2" aria-label="放大思想图">＋</button></div>
-    <div class="graph-scroll" tabindex="0"><svg class="idea-graph" width="${1000 * ui.ideaGraphZoom}" height="${height * ui.ideaGraphZoom}" viewBox="0 0 1000 ${height}" role="group" aria-label="${esc(focus.title)} 与 ${paperCount} 篇论文及 ${ideaEdges.length} 条思想关系的图谱"><defs><pattern id="dot-grid" width="24" height="24" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="1" fill="var(--graph-dot)"/></pattern></defs><rect width="1000" height="${height}" fill="url(#dot-grid)"/>${paths}${nodes}${center}</svg></div>
+  return `${parent ? `<button type="button" class="button quiet parent-return" data-action="select-idea" data-id="${esc(parent.fromId)}"><span>↖ 返回来源</span> <span data-user-content>${esc(idea(parent.fromId)?.title)}</span></button>` : ""}<section class="graph-panel"><div class="graph-toolbar"><div class="graph-stats"><span><b>${paperCount}</b> ${countUnit(paperCount, "篇论文", "paper", "papers")}</span><span><b>${ideaEdges.length}</b> ${countUnit(ideaEdges.length, "条思想关联", "idea connection", "idea connections")}</span></div><div class="graph-legend"><span><i class="legend-paper"></i>论文</span><span><i class="legend-idea"></i>思想</span></div>${paperRelationLegend()}</div>
+    <div class="graph-zoom"><span>${esc(tr(graphZoomHint()))}</span>${focus.entityType === "method" ? `<button type="button" class="button quiet" data-workspace-action="fit-method">全图</button>` : ""}<button type="button" class="button quiet" data-action="idea-zoom" data-step="-0.2" aria-label="缩小思想图">−</button><button type="button" class="button quiet" data-action="idea-zoom" data-step="0" aria-label="重置思想图缩放">${Math.round(ui.ideaGraphZoom * 100)}%</button><button type="button" class="button quiet" data-action="idea-zoom" data-step="0.2" aria-label="放大思想图">＋</button></div>
+    <div class="graph-scroll" tabindex="0"><svg class="idea-graph" width="${graphWidth * ui.ideaGraphZoom}" height="${height * ui.ideaGraphZoom}" viewBox="0 0 ${graphWidth} ${height}" role="group" aria-label="${esc(focus.title)} 与 ${paperCount} 篇论文及 ${ideaEdges.length} 条思想关系的图谱"><defs><pattern id="dot-grid" width="24" height="24" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="1" fill="var(--graph-dot)"/></pattern></defs><rect width="1000" height="${height}" fill="url(#dot-grid)"/>${paths}${nodes}${center}</svg></div>
     ${more ? `<button type="button" class="graph-more" data-action="expand-graph">${ui.graphExpanded ? "收起部分节点" : `展开全部关联（${paperEdges.length + ideaEdges.length}）`}</button>` : ""}
     <div class="graph-bottom"><p>${paperCount ? "同一个思想卡可以汇集多篇论文；每条连线记录具体用法。" : "从论文库导入来源，再建立“论文 → 思想”的关联。"}</p><div><button type="button" class="button quiet" data-action="link-paper">＋ 关联论文</button><button type="button" class="button quiet" data-action="derive-idea">＋ 引申新卡</button><button type="button" class="button quiet" data-action="link-idea">关联已有思想</button></div></div></section>`;
 }
-function graphNode(kind, item, x, y, width) {
+function graphNode(kind, item, x, y, width, relation = "") {
   const secondary = kind === "paper" ? [displayAuthors(item), item.year].filter(Boolean).join(" · ") || "来源论文" : `${labels.kind[item.kind]} · ${labels.status[item.status]}`;
   const institution = kind === "paper" ? paperInstitution(item) : "";
   const titleY = institution ? y + 33 : y + 26;
-  return `<g class="graph-node ${kind}-node" data-action="select-${kind}" data-id="${esc(item.id)}" role="button" tabindex="0" aria-label="查看${kind === "paper" ? "论文" : "思想"} ${esc(item.title)}"><title data-user-content>${esc([item.title, institution, kind === "paper" ? item.authors : ""].filter(Boolean).join(" · "))}</title><rect x="${x}" y="${y}" width="${width}" height="62" rx="17"/>${institution ? `<text x="${x + width - 14}" y="${y + 15}" text-anchor="end" class="graph-node-institution" data-user-content>${esc(truncate(institution.replace(/\s+/g, " "), 26))}</text>` : ""}<text x="${x + 16}" y="${titleY}" class="node-title" data-user-content>${esc(truncate(item.title, kind === "paper" ? 25 : 20))}</text><text x="${x + 16}" y="${institution ? y + 50 : y + 47}" class="node-sub" ${kind === "paper" && (item.authors || item.year) ? "data-user-content" : ""}>${esc(truncate(secondary, 30))}</text></g>`;
+  return `<g class="graph-node ${kind}-node ${kind === "paper" ? paperRoleClass(relation) : ""}" data-action="select-${kind}" data-id="${esc(item.id)}" role="button" tabindex="0" aria-label="查看${kind === "paper" ? "论文" : "思想"} ${esc(item.title)}"><title data-user-content>${esc([item.title, institution, kind === "paper" ? item.authors : ""].filter(Boolean).join(" · "))}</title><rect x="${x}" y="${y}" width="${width}" height="62" rx="17"/>${institution ? `<text x="${x + width - 14}" y="${y + 15}" text-anchor="end" class="graph-node-institution" data-user-content>${esc(truncate(institution.replace(/\s+/g, " "), 26))}</text>` : ""}<text x="${x + 16}" y="${titleY}" class="node-title" data-user-content>${esc(truncate(item.title, kind === "paper" ? 25 : 20))}</text><text x="${x + 16}" y="${institution ? y + 50 : y + 47}" class="node-sub" ${kind === "paper" && (item.authors || item.year) ? "data-user-content" : ""}>${esc(truncate(secondary, 30))}</text></g>`;
 }
 
 function renderOutline(current) {
@@ -487,7 +497,7 @@ function renderOutline(current) {
   let rows = current.ideaIds.map((id, index) => {
     const item = idea(id);
     if (!item) return "";
-    const paperCount = state.edges.filter((connection) => connection.fromType === "paper" && connection.toId === id).length;
+    const paperCount = state.edges.filter((connection) => connection.fromType === "paper" && connection.toType !== "stage" && connection.toId === id).length;
     const read = readingTotal([id]).seconds;
     const moves = `<span class="move-group"><button type="button" class="mini-action move-action" data-action="move-idea" data-id="${esc(id)}" data-offset="-1" aria-label="上移 ${esc(item.title)}" ${index === 0 ? "disabled" : ""}>↑</button><button type="button" class="mini-action move-action" data-action="move-idea" data-id="${esc(id)}" data-offset="1" aria-label="下移 ${esc(item.title)}" ${index === last ? "disabled" : ""}>↓</button></span>`;
     return `<div class="outline-row ${current.activeIdeaId === id ? "is-next" : ""}"><span class="step-num">${String(index + 1).padStart(2, "0")}</span><button type="button" class="outline-body" data-action="select-idea" data-id="${esc(id)}"><strong data-user-content>${esc(item.title)}</strong><small><span ${item.summary ? "data-user-content" : ""}>${esc(item.summary || "等待写下一句话理解")}</span> · <span>${paperCount} 篇论文</span>${read ? ` · <span>已读 ${formatDuration(read)}</span>` : ""}</small></button><span class="status-pill ${item.status}">${labels.status[item.status]}</span>${moves}<button type="button" class="mini-action" data-action="set-next" data-id="${esc(id)}">${current.activeIdeaId === id ? "下一张" : "设为下一张"}</button><button type="button" class="mini-action remove-action" data-action="detach-idea" data-id="${esc(id)}" aria-label="从阅读线移出 ${esc(item.title)}">×</button></div>`;
@@ -516,7 +526,7 @@ function searchEverything(query) {
   ];
 }
 function paperCountFor(ideaId) {
-  return new Set(state.edges.filter((connection) => connection.fromType === "paper" && connection.toId === ideaId).map((connection) => connection.fromId)).size;
+  return new Set(state.edges.filter((connection) => connection.fromType === "paper" && connection.toType !== "stage" && connection.toId === ideaId).map((connection) => connection.fromId)).size;
 }
 function searchResult({ kind, item }) {
   const open = `data-action="search-open" data-kind="${kind}" data-id="${esc(item.id)}"`;
@@ -525,7 +535,7 @@ function searchResult({ kind, item }) {
     return `<button type="button" class="search-result line" ${open}><div class="search-result-top"><strong data-user-content>${esc(item.title)}</strong><span class="type-tag line">阅读线</span></div><p ${item.question ? "data-user-content" : ""}>${esc(truncate(item.question || "还没写下这条线要回答的问题", 150))}</p><span>${item.ideaIds.length} 张卡${next ? ` · 下一张：${esc(truncate(next.title, 13))}` : ""}</span></button>`;
   }
   if (kind === "paper") {
-    const ideaCount = new Set(state.edges.filter((connection) => connection.fromType === "paper" && connection.fromId === item.id).map((connection) => connection.toId)).size;
+    const ideaCount = new Set(state.edges.filter((connection) => connection.fromType === "paper" && connection.toType !== "stage" && connection.fromId === item.id).map((connection) => connection.toId)).size;
     return `<button type="button" class="search-result paper" ${open}><div class="search-result-top"><strong data-user-content>${esc(item.title)}</strong><span class="type-tag paper">论文</span></div><small ${item.authors || item.year ? "data-user-content" : ""}>${esc([displayAuthors(item), item.year].filter(Boolean).join(" · ") || "手动添加")}</small><span>${ideaCount} 个思想</span></button>`;
   }
   return `<button type="button" class="search-result idea" ${open}><div class="search-result-top"><strong data-user-content>${esc(item.title)}</strong><span class="tag-row"><span class="type-tag idea">思想卡</span><span class="status-pill ${item.status}">${labels.status[item.status]}</span></span></div>${item.aliases?.length ? `<small data-user-content>${esc(item.aliases.join(" · "))}</small>` : ""}<p ${item.summary ? "data-user-content" : ""}>${esc(truncate(item.summary || "等待写下一句话理解", 150))}</p><span>${paperCountFor(item.id)} 篇论文</span></button>`;
@@ -657,8 +667,10 @@ function syncMapConnectionsButton() {
   button.setAttribute?.("aria-pressed", String(focused || shown));
 }
 function updatePaperSelection(id) {
+  ui.stageInspect = false; ui.newStage = false;
   if (!["map", "recommendations"].includes(ui.view)) {
     ui.selectedPaperId = id;
+    ui.inspectorOpen = Boolean(id);
     if (ui.view === "papers") ui.selectedIdeaId = "";
     render();
     return;
@@ -692,12 +704,12 @@ function updatePaperSelection(id) {
 }
 function syncInspectorLayout() {
   const inspector = $("#inspector");
-  const mapView = ["map", "recommendations"].includes(ui.view);
+  const mapView = ["map", "recommendations", "graph", "outline", "papers"].includes(ui.view) && (Boolean(ui.selectedPaperId) || ui.stageInspect);
   inspector.classList.toggle("paper-inspector", mapView);
-  inspector.classList.toggle("is-open", mapView && Boolean(ui.selectedPaperId) && ui.inspectorOpen);
+  inspector.classList.toggle("is-open", mapView && (Boolean(ui.selectedPaperId) || ui.stageInspect) && ui.inspectorOpen);
 }
 function renderPaperMap() {
-  const header = pageHeader("PAPER MAP / 论文地图", "沿着引用，看见阅读全貌", "如果 A 引用了 B，箭头从 B 指向 A。阅读标注独立保存，重新同步后仍然保留。", "", false);
+  const header = pageHeader("PAPER MAP / 论文地图", "沿着引用，看见阅读全貌", "如果 A 引用了 B，箭头从 B 指向 A。阅读标注独立保存，重新同步后仍然保留。", `<button type="button" class="button secondary" data-action="new-paper">＋ 添加论文</button>`, false);
   const read = state.papers.filter((item) => paperReadStatus(item) === "read").length;
   $("#main-view").innerHTML = header + `<section id="paper-map-sync" class="paper-map-sync" aria-live="polite"></section>
     <div class="map-summary"><span><b>${state.papers.length}</b> 篇论文</span><span><i class="read-dot unread"></i><b>${state.papers.length - read}</b> 未读</span><span><i class="read-dot read"></i><b>${read}</b> 已读</span><span><b>${validCitations().length}</b> 条库内引用</span></div>
@@ -801,7 +813,7 @@ function openPaperLineDialog(id) {
   $("#paper-line-paper").value = id;
   $("#paper-line-choice").innerHTML = state.lines.map((item) => `<option value="${esc(item.id)}" data-user-content>${esc(item.title)}</option>`).join("");
   $("#paper-line-choice").value = state.lines.some((item) => item.id === ui.selectedLineId) ? ui.selectedLineId : state.lines[0]?.id || "";
-  const related = new Set(state.edges.filter((connection) => connection.fromType === "paper" && connection.fromId === id).map((connection) => connection.toId));
+  const related = new Set(state.edges.filter((connection) => connection.fromType === "paper" && connection.toType !== "stage" && connection.fromId === id).map((connection) => connection.toId));
   $("#paper-line-idea").innerHTML = `<option value="">从论文创建思想卡</option>` + state.ideas.filter((item) => related.has(item.id)).map((item) => `<option value="${esc(item.id)}" data-user-content>${esc(item.title)}</option>`).join("");
   $("#paper-line-submit").disabled = !state.lines.length;
   $("#paper-line-empty").hidden = Boolean(state.lines.length);
@@ -820,7 +832,7 @@ function renderPapers() {
 function renderPaperResults() {
   const results = searchPapers(ui.paperQuery);
   $("#paper-search-results").innerHTML = `<p class="field-help result-count">${results.length} 篇论文</p>` + (results.length ? `<div class="paper-list">${results.map((item) => {
-    const count = new Set(state.edges.filter((connection) => connection.fromType === "paper" && connection.fromId === item.id).map((connection) => connection.toId)).size;
+    const count = new Set(state.edges.filter((connection) => connection.fromType === "paper" && connection.toType !== "stage" && connection.fromId === item.id).map((connection) => connection.toId)).size;
     return `<button type="button" class="paper-list-item ${ui.selectedPaperId === item.id ? "selected" : ""}" data-action="select-paper" data-id="${esc(item.id)}"><span class="paper-icon">▤</span><span><strong data-user-content>${esc(item.title)}</strong><small ${item.authors || item.year ? "data-user-content" : ""}>${esc([displayAuthors(item), item.year].filter(Boolean).join(" · ") || "手动添加")}</small></span><span class="paper-list-meta">${paperInstitution(item) ? `<strong class="paper-institution" data-user-content>${esc(paperInstitution(item))}</strong>` : ""}<em>${count} 个思想</em></span></button>`;
   }).join("")}</div>` : `<div class="empty-main compact"><h2>没有找到论文</h2><p>换个关键词，或添加新的论文来源。</p><button type="button" class="button primary" data-action="new-paper">添加论文</button></div>`);
   localize($("#paper-search-results"));
@@ -828,8 +840,9 @@ function renderPaperResults() {
 
 function renderInspector() {
   syncInspectorLayout();
+  if (ui.view === "outline" && line(ui.selectedLineId)?.kind === "model_family" && ui.stageInspect) return renderStageInspector();
   if (ui.selectedPaperId) return renderPaperInspector(paper(ui.selectedPaperId));
-  if (["map", "recommendations"].includes(ui.view)) { $("#inspector").innerHTML = `<div class="inspector-empty"><span class="eyebrow">PAPER MAP</span><h2>选中一篇论文</h2><p>在这里标记阅读状态，查看引用依据与 PDF 分析结果。</p></div>`; return; }
+  if (["map", "recommendations", "graph"].includes(ui.view)) { $("#inspector").innerHTML = `<div class="inspector-empty"><span class="eyebrow">PAPER MAP</span><h2>选中一篇论文</h2><p>在这里标记阅读状态，查看引用依据与 PDF 分析结果。</p></div>`; return; }
   if (ui.selectedIdeaId) return renderIdeaInspector(idea(ui.selectedIdeaId));
   $("#inspector").innerHTML = `<div class="inspector-empty"><span class="eyebrow">DETAILS</span><h2>选中一张卡</h2><p>卡片的理解、来源和引申会出现在这里。</p></div>`;
 }
@@ -858,15 +871,15 @@ function renderIdeaInspector(item) {
   if (!item) return;
   const draft = readDraft(`idea:${item.id}`);
   const edit = { ...item, aliases: (item.aliases || []).join(", ") };
-  for (const key of ["title", "aliases", "kind", "status", "summary", "mechanism", "thoughts"]) {
+  for (const key of ["title", "aliases", "kind", "status", "entityType", "summary", "mechanism", "thoughts"]) {
     if (typeof draft?.[key] === "string") edit[key] = draft[key];
   }
-  const papers = state.edges.filter((connection) => connection.fromType === "paper" && connection.toId === item.id);
+  const papers = state.edges.filter((connection) => connection.fromType === "paper" && connection.toType !== "stage" && connection.toId === item.id).sort(comparePaperRelations);
   const related = state.edges.filter((connection) => connection.fromType === "idea" && (connection.fromId === item.id || connection.toId === item.id));
   const lineNames = state.lines.filter((entry) => entry.ideaIds.includes(item.id)).map((entry) => entry.title);
   $("#inspector").innerHTML = `<div class="inspector-top"><span class="eyebrow">IDEA CARD</span><span class="status-pill ${item.status}">${labels.status[item.status]}</span></div><h2 class="inspector-title" data-user-content>${esc(item.title)}</h2><p class="inspector-sub">${labels.kind[item.kind]} · 出现在 ${lineNames.length} 条阅读线</p>
     ${(() => { const total = readingTotal([item.id]); return total.count ? `<p class="reading-total">累计阅读 ${formatDuration(total.seconds)} · ${total.count} 次</p>` : ""; })()}
-    <form id="idea-edit-form" class="detail-form" data-id="${esc(item.id)}"><label>名称<input name="title" maxlength="120" value="${esc(edit.title)}" required></label><label>别名<input name="aliases" maxlength="1500" value="${esc(edit.aliases)}" placeholder="缩写、全称或其他写法，用逗号分隔"></label><div class="choice-grid">${choiceField("kind", "类型", labels.kind, edit.kind, item.id)}${choiceField("status", "状态", labels.status, edit.status, item.id)}</div>
+    <form id="idea-edit-form" class="detail-form" data-id="${esc(item.id)}"><label>名称<input name="title" maxlength="120" value="${esc(edit.title)}" required></label><label>内容分类<select name="entityType">${[["method","方法"],["concept","概念"],["question","问题"],["unclassified","尚未分类"]].map(([value,label]) => `<option value="${value}" ${(edit.entityType || "unclassified") === value ? "selected" : ""}>${label}</option>`).join("")}</select></label><label>别名<input name="aliases" maxlength="1500" value="${esc(edit.aliases)}" placeholder="缩写、全称或其他写法，用逗号分隔"></label><div class="choice-grid">${choiceField("kind", "类型", labels.kind, edit.kind, item.id)}${choiceField("status", "状态", labels.status, edit.status, item.id)}</div>
     <label>一句话理解<textarea name="summary" rows="3" maxlength="4000" placeholder="用自己的话说清这张卡。">${esc(edit.summary)}</textarea></label><label>核心机制<textarea name="mechanism" rows="4" maxlength="6000" placeholder="关键步骤、公式或假设。">${esc(edit.mechanism)}</textarea></label><label>我的思考<textarea name="thoughts" rows="4" maxlength="6000" placeholder="质疑、联系、引申。">${esc(edit.thoughts)}</textarea></label><p id="idea-draft-status" class="field-help" ${draft ? "" : "hidden"}>草稿已保留，点击保存卡片可写入笔记。</p><button type="submit" class="button primary full">保存卡片</button></form>
     <div class="inspector-section"><div class="inspector-section-head"><h3>论文来源 <span>${papers.length}</span></h3><button type="button" data-action="link-paper">＋</button></div>${papers.length ? papers.map((connection) => relationRow(connection, "paper", paper(connection.fromId))).join("") : `<p class="empty-small">关联论文后，这里会显示每篇论文如何使用这个思想。</p>`}</div>
     <div class="inspector-section"><div class="inspector-section-head"><h3>思想关联 <span>${related.length}</span></h3><div><button type="button" class="text-action" data-action="derive-idea">引申新卡</button><button type="button" data-action="link-idea" aria-label="关联已有思想">＋</button></div></div>${related.length ? related.map((connection) => relationRow(connection, "idea", idea(connection.fromId === item.id ? connection.toId : connection.fromId))).join("") : `<p class="empty-small">继续追问时，可以把新的思想连进来。</p>`}</div>
@@ -892,13 +905,13 @@ function renderMapInspector(item) {
   const citing = connections.filter((connection) => connection.fromId === item.id);
   const status = paperReadStatus(item);
   const analysis = item.referenceAnalysis;
-  const related = state.edges.filter((connection) => connection.fromType === "paper" && connection.fromId === item.id && idea(connection.toId));
+  const related = state.edges.filter((connection) => connection.fromType === "paper" && connection.toType !== "stage" && connection.fromId === item.id && idea(connection.toId));
   $("#inspector").innerHTML = `<button type="button" class="button quiet paper-inspector-close" data-action="close-paper-inspector" aria-label="关闭论文详情">关闭详情 ×</button><div class="inspector-top"><span class="eyebrow">PAPER MAP</span><span class="paper-read-badge ${status}">${paperReadLabel(item)}</span></div><h2 class="inspector-title" data-user-content>${esc(item.title)}</h2><p class="inspector-sub" data-user-content>${esc([displayAuthors(item), item.year].filter(Boolean).join(" · "))}</p>${fullAuthorsDetail(item)}<button type="button" class="button primary full" data-action="mark-paper" data-id="${esc(item.id)}" data-status="${status === "read" ? "unread" : "read"}">${status === "read" ? "标记为未读" : "标记为已读"}</button>${paperInstitution(item) ? `<p class="paper-institution" data-user-content>${esc(paperInstitution(item))}</p>` : ""}<div class="paper-bridge"><button type="button" class="button secondary full" data-action="paper-add-line" data-id="${esc(item.id)}">加入阅读线</button><button type="button" class="button quiet full" data-action="link-paper-to-idea">关联思想卡</button>${related.length ? related.map((connection) => `<button type="button" class="button quiet full" data-action="paper-view-idea" data-id="${esc(connection.toId)}">查看思想图 · <span data-user-content>${esc(idea(connection.toId).title)}</span></button>`).join("") : ""}</div>${item.zoteroUrl ? `<a class="button quiet full" href="${safeHref(item.zoteroUrl)}">在 Zotero 打开 ↗</a>` : ""}<div class="inspector-section"><h3>参考文献分析</h3><p class="analysis-status">${referenceStatus(item)}</p>${analysis?.message ? `<p class="field-help" data-user-content>${esc(analysis.message)}</p>` : ""}${item.zoteroMissing ? `<p class="field-help">Zotero 中已移除；保留阅读标注。</p>` : ""}<p class="field-help">仅连接库内已识别的引用；没有连线不代表没有引用。</p></div><div class="inspector-section"><h3>引用的论文 <span>${references.length}</span></h3><p class="field-help">这些论文 → 当前论文</p>${references.length ? citationRows(references, "fromId") : `<p class="empty-small">尚未识别库内引用。</p>`}</div><div class="inspector-section"><h3>引用它的论文 <span>${citing.length}</span></h3><p class="field-help">当前论文 → 这些论文</p>${citing.length ? citationRows(citing, "toId") : `<p class="empty-small">尚未识别库内被引。</p>`}</div>`;
 }
-function renderPaperInspector(item) {
+function renderLegacyPaperInspector(item) {
   if (!item) return;
   if (["map", "recommendations"].includes(ui.view)) return renderMapInspector(item);
-  const related = state.edges.filter((connection) => connection.fromType === "paper" && connection.fromId === item.id);
+  const related = state.edges.filter((connection) => connection.fromType === "paper" && connection.toType !== "stage" && connection.fromId === item.id);
   const annotations = ui.annotationPaperId === item.id ? ui.annotations : null;
   $("#inspector").innerHTML = `<div class="inspector-top"><span class="eyebrow">PAPER SOURCE</span><span class="paper-tag">论文</span></div><h2 class="inspector-title" data-user-content>${esc(item.title)}</h2><p class="inspector-sub" ${item.authors || item.year ? "data-user-content" : ""}>${esc([displayAuthors(item), item.year].filter(Boolean).join(" · ") || "手动添加")}</p>
     ${fullAuthorsDetail(item)}${paperInstitution(item) ? `<p class="paper-institution" data-user-content>${esc(paperInstitution(item))}</p>` : ""}<div class="paper-meta">${item.doi ? `<div><span>DOI</span><strong data-user-content>${esc(item.doi)}</strong></div>` : ""}${item.zoteroKey ? `<div><span>ZOTERO KEY</span><strong data-user-content>${esc(item.zoteroKey)}</strong></div>` : ""}</div>
@@ -915,6 +928,10 @@ function openLineDialog(edit = false) {
   $("#line-id").value = current?.id || "";
   $("#line-title").value = current?.title || "";
   $("#line-question").value = current?.question || "";
+  $("#line-kind").value = current?.kind || "model_family";
+  $("#line-kind").disabled = Boolean(current);
+  const saved = readDraft(current ? `line:${current.id}` : "line-new");
+  if (saved) { $("#line-title").value = saved.title || ""; $("#line-question").value = saved.question || ""; if (!current) $("#line-kind").value = saved.kind || "model_family"; }
   openDialog("#line-dialog");
   $("#line-title").focus();
 }
@@ -931,7 +948,8 @@ function openIdeaDialog(source = null, parentId = "") {
   $("#idea-aliases").value = "";
   setIdeaKind("concept");
   $("#idea-summary").value = "";
-  $("#idea-line").innerHTML = options(state.lines, ui.selectedLineId, "暂不加入阅读线");
+  $("#idea-entity-type").value = "concept";
+  $("#idea-line").innerHTML = options(state.lines.filter((item) => { return item.kind !== "model_family"; }), ui.selectedLineId, "暂不加入阅读线");
   $("#idea-source-context").hidden = !source;
   $("#idea-source-relation-wrap").hidden = !source;
   $("#idea-parent-context").hidden = !parentId;
@@ -940,6 +958,10 @@ function openIdeaDialog(source = null, parentId = "") {
     const target = paper(source.paperId);
     $("#idea-source-context").textContent = `来源：${target?.title || "论文"}${source.page ? ` · 第 ${source.page} 页` : ""}${source.text ? ` · ${truncate(source.text, 110)}` : ""}`;
     $("#idea-source-relation").value = "uses";
+  }
+  if (!source && !parentId) {
+    const saved = readDraft("idea-new");
+    if (saved) { $("#idea-title").value = saved.title || ""; $("#idea-aliases").value = saved.aliases || ""; $("#idea-summary").value = saved.summary || ""; $("#idea-entity-type").value = saved.entityType || "concept"; $("#idea-line").value = saved.lineId || ""; setIdeaKind(saved.kind || "concept"); }
   }
   renderIdeaMatches();
   openDialog("#idea-dialog");
@@ -982,6 +1004,8 @@ function openRelation(mode, focusKind = "idea", focusId = "") {
   $("#relation-dialog-title").textContent = "建立关联";
   $("#delete-edge-button").hidden = true;
   $("#relation-create-fields").hidden = false;
+  $("#relation-target-label").hidden = false;
+  $("#relation-target").required = true;
   $("#relation-mode-wrap").hidden = focusKind === "paper";
   $("#relation-mode").value = mode;
   $("#relation-context").textContent = `${focusKind === "paper" ? "论文" : "思想"}：${focusKind === "paper" ? paper(ui.relationFocus.id)?.title : idea(ui.relationFocus.id)?.title}`;
@@ -996,7 +1020,12 @@ function editRelation(id) {
   ui.editingEdgeId = id;
   $("#relation-dialog-title").textContent = "编辑关联说明";
   $("#delete-edge-button").hidden = false;
-  $("#relation-create-fields").hidden = true;
+  $("#relation-create-fields").hidden = false;
+  $("#relation-mode-wrap").hidden = true;
+  $("#relation-target-label").hidden = true;
+  $("#relation-target").required = false;
+  relationOptions(item.fromType === "paper" ? "paper" : "idea");
+  $("#relation-type").value = item.relation;
   const source = item.fromType === "paper" ? paper(item.fromId) : idea(item.fromId);
   const target = idea(item.toId);
   $("#relation-context").textContent = `${source?.title || ""} → ${target?.title || ""}`;
@@ -1047,13 +1076,13 @@ function sessionSeconds(session = ui.session) {
 }
 function checkpointSession() {
   if (!ui.session) return;
-  writeDraft(`session:${ui.session.lineId}:${ui.session.ideaId}`, {
+  writeDraft(sessionDraftKey(ui.session), {
     elapsed: sessionSeconds(), note: $("#session-note").value, nextQuestion: $("#session-next-question").value,
   });
 }
 function stopTimer(discard = false) {
   if (ui.session) {
-    if (discard) forgetDraft(`session:${ui.session.lineId}:${ui.session.ideaId}`);
+    if (discard) forgetDraft(sessionDraftKey(ui.session));
     else checkpointSession();
   }
   if (ui.timer) clearInterval(ui.timer);
@@ -1085,7 +1114,7 @@ function openSession(ideaId) {
   const recap = readingRecap(target.id);
   $("#session-recap").hidden = !recap;
   $("#session-recap").innerHTML = recap;
-  const source = state.edges.find((item) => item.fromType === "paper" && item.toId === target.id);
+  const source = state.edges.find((item) => item.fromType === "paper" && item.toType !== "stage" && item.toId === target.id);
   const url = source?.sourceUrl || paper(source?.fromId)?.zoteroUrl || "";
   const link = $("#session-zotero");
   link.hidden = !url;
@@ -1128,7 +1157,7 @@ document.addEventListener("click", async (event) => {
   const id = button.dataset.id;
   try {
     if (action === "page-zoom") setPageZoom(Number(button.dataset.step) ? ui.pageZoom + Number(button.dataset.step) : 1);
-    else if (action.startsWith("view-")) { ui.view = action.slice(5); ui.selectedPaperId = ""; render(); }
+    else if (action.startsWith("view-")) { switchWorkspaceView(action.slice(5)); }
     else if (action === "sync-zotero-library") await startZoteroSync();
     else if (action === "mark-paper") await markPaper(id, button.dataset.status);
     else if (action === "recommendation-filter") { ui.recommendationAll = button.dataset.all === "true"; renderRecommendations(); }
@@ -1144,7 +1173,7 @@ document.addEventListener("click", async (event) => {
       const map = action === "map-zoom", previous = map ? ui.mapZoom : ui.ideaGraphZoom;
       zoomGraph($(map ? ".paper-map-scroll" : ".graph-scroll"), Number(button.dataset.step) ? previous + Number(button.dataset.step) : 1);
     }
-    else if (action === "select-line") { ui.selectedLineId = id; ui.selectedIdeaId = line(id)?.activeIdeaId || line(id)?.ideaIds[0] || ""; ui.selectedPaperId = ""; render(); }
+    else if (action === "select-line") { ui.selectedLineId = id; ui.view = "outline"; render(); }
     else if (action === "select-idea") selectIdea(id);
     else if (action === "select-paper") updatePaperSelection(id);
     else if (action === "map-overview") updatePaperSelection("");
@@ -1167,7 +1196,7 @@ document.addEventListener("click", async (event) => {
     }
     else if (action === "filter-status") { ui.ideaStatus = button.dataset.status || ""; markMainAnimation(false); renderIdeas(); localize($("#main-view")); }
     else if (action === "delete-idea") {
-      if (!await confirmAction(tr("删除这张思想卡？它的关系和阅读记录会一并删除；下次导出时，关联笔记将移至 Obsidian 库的 .trash/PaperLine，可恢复。"))) return;
+      if (!await confirmAction(tr("删除这张思想卡？它的关系会移除，阅读记录保留为历史；下次导出时，关联笔记将移至 Obsidian 库的 .trash/PaperLine，可恢复。"))) return;
       ui.selectedIdeaId = "";
       await act("idea.delete", { id });
       toast("思想卡已删除。");
@@ -1193,7 +1222,7 @@ document.addEventListener("click", async (event) => {
     else if (action === "reuse-idea") await reuseIdea(id);
     else if (action === "new-idea-from-paper") openIdeaDialog({ paperId: ui.selectedPaperId });
     else if (action === "new-paper") openPaperDialog();
-    else if (action === "link-paper") openRelation("paper", "idea");
+    else if (action === "link-paper") { if (idea(ui.selectedIdeaId)?.entityType === "method") openPaperPicker("method", ui.selectedIdeaId); else openRelation("paper", "idea"); }
     else if (action === "link-idea") openRelation("idea", "idea");
     else if (action === "link-paper-to-idea") openRelation("paper", "paper");
     else if (action === "edit-edge") editRelation(id);
@@ -1330,6 +1359,7 @@ document.addEventListener("click", async (event) => {
 });
 
 document.addEventListener("keydown", (event) => {
+  if ((event.key === "Enter" || event.key === " ") && event.target.matches(".timeline-node")) { event.preventDefault(); event.target.dispatchEvent(new Event("click", { bubbles: true })); return; }
   if ((event.key === "Enter" || event.key === " ") && event.target.matches(".graph-node, .map-node")) {
     event.preventDefault(); event.target.click();
   }
@@ -1340,11 +1370,11 @@ document.addEventListener("keydown", (event) => {
   if (document.querySelector("dialog[open]")) return;
   if (event.target?.matches?.("input, textarea, select, [contenteditable='true']")) return;
   const view = viewKeys[event.key];
-  if (view) { event.preventDefault(); ui.view = view; ui.selectedPaperId = ""; render(); return; }
+  if (view) { event.preventDefault(); switchWorkspaceView(view); return; }
   if (event.key === "n") { event.preventDefault(); openIdeaDialog(); }
   else if (event.key === "p") { event.preventDefault(); openPaperDialog(); }
   else if (event.key === "l") { event.preventDefault(); openLineDialog(); }
-  else if (event.key === "s") { event.preventDefault(); openSession(ui.selectedIdeaId); }
+  else if (event.key === "s") { event.preventDefault(); const current = line(ui.selectedLineId); if (current?.kind === "model_family") openStageSession(current.stageIds?.includes(ui.selectedStageId) ? ui.selectedStageId : current.activeStageId || current.stageIds?.[0]); else openSession(ui.selectedIdeaId); }
   else if (event.key === "/") { event.preventDefault(); ui.view = "ideas"; render(); $("#idea-search")?.focus(); }
   else if (event.key === "?" || event.key === "h") { event.preventDefault(); openDialog("#help-dialog"); }
 });
@@ -1406,9 +1436,12 @@ $("#line-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
     const id = $("#line-id").value;
-    const payload = { title: $("#line-title").value, question: $("#line-question").value };
+    const payload = { title: $("#line-title").value, question: $("#line-question").value, kind: $("#line-kind").value };
     if (id) { payload.id = id; payload.activeIdeaId = line(id)?.activeIdeaId || ""; }
+    const draftKey = id ? `line:${id}` : "line-new", snapshot = JSON.stringify(readDraft(draftKey));
     await act(id ? "line.update" : "line.create", payload);
+    if (JSON.stringify(readDraft(draftKey)) === snapshot) forgetDraft(draftKey);
+    ui.view = "outline"; render();
     closeDialog($("#line-dialog"));
     toast(id ? "阅读线已更新。" : "阅读线已创建。");
   } catch (error) { toast(error.message, true); }
@@ -1417,12 +1450,14 @@ $("#idea-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
     const payload = {
-      title: $("#idea-title").value, kind: ideaKind(),
+      title: $("#idea-title").value, kind: ideaKind(), entityType: $("#idea-entity-type").value,
       summary: $("#idea-summary").value, lineId: $("#idea-line").value,
       aliases: $("#idea-aliases").value, ...ideaSourcePayload(),
     };
     ui.view = "graph";
+    const snapshot = JSON.stringify(readDraft("idea-new"));
     await act("idea.create", payload);
+    if (JSON.stringify(readDraft("idea-new")) === snapshot) forgetDraft("idea-new");
     closeDialog($("#idea-dialog"));
     toast("思想卡已创建。");
   } catch (error) { toast(error.message, true); }
@@ -1461,7 +1496,7 @@ $("#relation-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
     if (ui.editingEdgeId) {
-      await act("edge.update", { id: ui.editingEdgeId, note: $("#relation-note").value, sourceUrl: $("#relation-source-url").value });
+      await act("edge.update", { id: ui.editingEdgeId, relation: $("#relation-type").value, note: $("#relation-note").value, sourceUrl: $("#relation-source-url").value });
     } else {
       const mode = $("#relation-mode").value;
       const targetId = $("#relation-target").value;
@@ -1489,10 +1524,10 @@ $("#session-form").addEventListener("submit", async (event) => {
   $("#session-save").disabled = true;
   try {
     const elapsed = sessionSeconds(session);
-    await act("session.create", { lineId: session.lineId, ideaId: session.ideaId, note: $("#session-note").value, nextQuestion: $("#session-next-question").value, durationSeconds: elapsed });
+    await act("session.create", { lineId: session.lineId, ...(session.targetType ? { targetType: session.targetType, targetId: session.targetId } : { ideaId: session.ideaId }), note: $("#session-note").value, nextQuestion: $("#session-next-question").value, durationSeconds: elapsed });
     stopTimer(true);
     closeDialog($("#session-dialog"));
-    toast("本次阅读已记录。下次可以从这张卡继续。");
+    toast("本次阅读已记录。下次可以从这里继续。");
   } catch (error) { toast(error.message, true); }
   finally {
     session.saving = false;
@@ -1525,6 +1560,326 @@ document.addEventListener("submit", async (event) => {
     if (/别的页面改过/.test(error.message)) await acceptNewerCard(event.target.dataset.id);
     toast(error.message, true);
   }
+});
+
+// Methods and model-family stages share papers without changing citation-map layout.
+function switchWorkspaceView(view) {
+  if (ui.view === "map") { const scroll = $(".paper-map-scroll"); if (scroll) ui.mapViewport = { left: scroll.scrollLeft, top: scroll.scrollTop }; }
+  ui.view = view; render();
+}
+function stages() { return state.stages || []; }
+function stage(id) { return stages().find((item) => item.id === id); }
+function methods() { return state.ideas.filter((item) => item.entityType === "method"); }
+function paperRelationRank(relation) { return ({ proposes: 0, improves: 1, uses: 2, questions: 3 })[relation] ?? 4; }
+function comparePaperRelations(a, b) { return paperRelationRank(a.relation) - paperRelationRank(b.relation); }
+function paperRoleClass(relation) { return paperRelationRank(relation) < 3 ? `paper-role-${relation}` : ""; }
+function paperRelationLegend() {
+  return `<div class="paper-relation-legend" aria-label="${tr("论文与方法关系")}">${["proposes", "improves", "uses"].map((relation) => `<span class="${paperRoleClass(relation)}"><i></i>${tr(labels.paper[relation])}</span>`).join("")}</div>`;
+}
+function paperIdeaEdges(paperId) { return state.edges.filter((item) => item.fromType === "paper" && item.toType !== "stage" && item.fromId === paperId && idea(item.toId)).sort(comparePaperRelations); }
+function stagePaperEdges(stageId) { return state.edges.filter((item) => item.fromType === "paper" && item.toType === "stage" && item.toId === stageId && paper(item.fromId)); }
+function draftValues(key, saved = {}) { return { ...saved, ...(readDraft(key) || {}) }; }
+function workspaceDraft(form) {
+  const key = form.dataset.workspaceDraft;
+  if (key) writeDraft(key, Object.fromEntries(new FormData(form).entries()));
+}
+function sessionDraftKey(session) { return session.targetType ? `session:${session.targetType}:${session.targetId}:${session.lineId || ""}` : `session:${session.lineId}:${session.ideaId}`; }
+function methodChoices(query = "") {
+  const needle = normalized(query);
+  return methods().filter((item) => !needle || normalized([item.title, ...(item.aliases || [])].join(" ")).includes(needle));
+}
+function methodEditor(item) {
+  const edit = draftValues(`idea:${item.id}`, { ...item, entityType: item.entityType || "unclassified", aliases: (item.aliases || []).join(", ") });
+  return `<form id="idea-edit-form" class="detail-form method-editor" data-id="${esc(item.id)}"><h3>编辑方法与笔记</h3><label>名称<input name="title" maxlength="120" value="${esc(edit.title)}" required></label><label>别名<input name="aliases" maxlength="1500" value="${esc(edit.aliases)}"></label><label>内容分类<select name="entityType">${[["method","方法"],["concept","概念"],["question","问题"],["unclassified","尚未分类"]].map(([value,label]) => `<option value="${value}" ${edit.entityType === value ? "selected" : ""}>${label}</option>`).join("")}</select></label><div class="choice-grid">${choiceField("kind", "类型", labels.kind, edit.kind, item.id)}${choiceField("status", "理解状态", labels.status, edit.status, item.id)}</div><label>方法定义<textarea name="summary" maxlength="4000" rows="3">${esc(edit.summary)}</textarea></label><label>核心机制<textarea name="mechanism" maxlength="6000" rows="3">${esc(edit.mechanism)}</textarea></label><label>我的思考<textarea name="thoughts" maxlength="6000" rows="3">${esc(edit.thoughts)}</textarea></label><p id="idea-draft-status" class="field-help" ${readDraft(`idea:${item.id}`) ? "" : "hidden"}>草稿已保留，点击保存卡片可写入笔记。</p><button type="submit" class="button primary">保存方法与笔记</button></form>`;
+}
+function directEdgeControls(connection) {
+  return `<div class="direct-relations">${["proposes", "improves", "uses"].map((relation) => `<button type="button" class="button quiet" data-workspace-action="edge-relation" data-id="${esc(connection.id)}" data-relation="${relation}" aria-pressed="${connection.relation === relation}">${labels.paper[relation]}</button>`).join("")}${connection.relation === "questions" ? `<span class="status-pill">质疑</span>` : ""}</div>`;
+}
+function editableEdge(connection, showPaper = false) {
+  const target = idea(connection.toId), source = paper(connection.fromId), key = `edge:${connection.id}`, edit = draftValues(key, connection);
+  if (!target || !source) return "";
+  return `<div class="editable-edge ${paperRoleClass(connection.relation)}"><div class="inspector-section-head"><button type="button" class="text-action" data-action="${showPaper ? "select-paper" : "paper-view-idea"}" data-id="${esc(showPaper ? source.id : target.id)}"><span data-user-content>${esc(showPaper ? source.title : target.title)}</span></button><button type="button" class="mini-action" data-action="edit-edge" data-id="${esc(connection.id)}">编辑关系</button></div>${directEdgeControls(connection)}<p class="field-help" data-user-content>${esc(connection.note || "")}</p><details class="relation-evidence"><summary>编辑依据与原文位置</summary><form class="workspace-form" data-workspace-form="edge" data-workspace-draft="${esc(key)}" data-id="${esc(connection.id)}"><label>关系依据<textarea name="note" maxlength="3000" rows="2">${esc(edit.note || "")}</textarea></label><label>原文位置链接<input name="sourceUrl" maxlength="1500" value="${esc(edit.sourceUrl || "")}" placeholder="zotero://open-pdf/…"></label><button type="submit" class="button quiet">保存关系依据</button></form></details></div>`;
+}
+function fitMethodGraph(all = false) {
+  const scroll = $(".graph-scroll"), svg = scroll?.querySelector?.("svg");
+  if (!svg || !scroll.clientWidth) return;
+  const box = svg.viewBox.baseVal;
+  const availableHeight = window.innerHeight ? Math.min(720, window.innerHeight * .65) : box.height;
+  zoomGraph(scroll, Math.min(1, scroll.clientWidth / box.width, all ? availableHeight / box.height : 1));
+}
+function renderMethodsWorkspace() {
+  const choices = methodChoices(ui.methodQuery);
+  let selected = idea(ui.selectedIdeaId);
+  if (!selected) { selected = choices[0]; if (selected) ui.selectedIdeaId = selected.id; }
+  const header = pageHeader("METHODS / 思想图", "共享方法，连接不同论文", "同一个方法可被不同论文提出、使用或改进；这些关系独立于引用与阅读顺序。", `<button type="button" class="button primary" data-workspace-action="new-method">＋ 新建方法</button>${selected ? `<button type="button" class="button secondary" data-workspace-action="edit-method">编辑当前方法</button>` : ""}<button type="button" class="button secondary" data-action="new-paper">＋ 添加论文</button>`, false);
+  $("#main-view").innerHTML = header + `<label class="idea-search-label">搜索方法名称或别名<input id="method-search" type="search" value="${esc(ui.methodQuery)}" placeholder="例如：GRPO"></label><div id="method-results" class="card-tabs">${choices.map((item) => `<button type="button" class="card-tab ${selected?.id === item.id ? "active" : ""}" data-action="paper-view-idea" data-id="${esc(item.id)}" data-user-content>${esc(item.title)}</button>`).join("")}</div>` + (selected ? `${selected.entityType !== "method" ? `<p class="workspace-note">${!state.lines.some((path) => path.ideaIds.includes(selected.id)) ? tr("这张思想卡还没有加入阅读线。") : ""}${tr("这张旧卡尚未明确分类为方法。可在下方修改内容分类；旧笔记与关系保留。")}</p>` : ""}${graphMarkup(selected)}<section class="method-relations"><h2>论文与此方法的关系</h2>${state.edges.filter((item) => item.fromType === "paper" && item.toType !== "stage" && item.toId === selected.id).sort(comparePaperRelations).map((item) => editableEdge(item, true)).join("") || `<p class="field-help">还没有关联论文。选中右侧论文，直接添加已有方法或新方法。</p>`}</section>${methodEditor(selected)}` : `<div class="empty-main compact"><h2>还没有明确分类的方法</h2><p>新建共享方法，或从搜索中打开旧卡并手动确认分类。旧卡不会自动改成方法。</p><button type="button" class="button primary" data-workspace-action="new-method">新建方法</button></div>`);  if (selected && ui.methodFitId !== selected.id) {
+    fitMethodGraph();
+    if ($(".graph-scroll")?.clientWidth) ui.methodFitId = selected.id;
+  }
+}
+let contributionQueue = Promise.resolve();
+function queueContributionAction(operation) {
+  const next = contributionQueue.catch(() => {}).then(operation);
+  contributionQueue = next;
+  return next;
+}
+function removeStageContribution(membershipId, relationshipId) {
+  return queueContributionAction(() => {
+    const membership = edge(membershipId);
+    if (!membership) throw new Error("阶段成员已变化，请重新选择阶段。");
+    return act("edge.update", { id: membershipId, contributionRefs: (membership.contributionRefs || []).filter((ref) => ref !== relationshipId) });
+  });
+}
+function stageContributions(stageId) {
+  return stagePaperEdges(stageId).flatMap((membership) => (membership.contributionRefs || []).flatMap((id) => {
+    const connection = edge(id);
+    return connection?.fromType === "paper" && connection.toType !== "stage" && connection.fromId === membership.fromId && idea(connection.toId)?.entityType === "method" ? [{ membership, connection }] : [];
+  })).sort((a, b) => comparePaperRelations(a.connection, b.connection));
+}
+function timelineLayout(current) {
+  const ordered = (current.stageIds || []).map(stage).filter(Boolean);
+  const contributions = ordered.flatMap((item) => stageContributions(item.id));
+  const methodIds = [...new Set(contributions.map(({ connection }) => connection.toId))];
+  const methodInstances = ordered.flatMap((item) => [...new Set(stageContributions(item.id).map(({ connection }) => connection.toId))].map((methodId) => ({ stageId: item.id, methodId })));
+  const rows = Math.max(1, ...ordered.map((item) => Math.max(stagePaperEdges(item.id).length, methodInstances.filter((instance) => instance.stageId === item.id).length)));
+  return { stages: ordered, methodIds, methodInstances, contributions, width: Math.max(760, ordered.length * 460 + 40), height: 252 + rows * 108 };
+}
+function rememberTimelineViewport() {
+  const scroll = $(".timeline-scroll");
+  if (!scroll?.dataset?.lineId) return;
+  ui.timelineViews ||= {};
+  ui.timelineViews[scroll.dataset.lineId] = { zoom: ui.timelineZoom || 1, left: scroll.scrollLeft, top: scroll.scrollTop };
+}
+function restoreTimelineViewport() {
+  const scroll = $(".timeline-scroll"), saved = ui.timelineViews?.[scroll?.dataset?.lineId];
+  if (scroll && saved) { scroll.scrollLeft = saved.left; scroll.scrollTop = saved.top; }
+}
+function timelineLabel(value, width, font = 13) {
+  const text = String(value || ""); let used = 0, result = "";
+  for (const char of text) { const size = char.charCodeAt(0) > 255 ? font : font * .55; if (used + size > width - 14) return result + "…"; used += size; result += char; }
+  return result;
+}
+function timelineNode({ x, y, width = 240, height = 72, title, subtitle = "", action, id, paperId = "", selected = false, kind, detail = "", relation = "" }) {
+  return `<g class="timeline-node ${kind} ${paperRoleClass(relation)} ${selected ? "selected" : ""}" role="button" tabindex="0" aria-label="${esc(title)}" aria-pressed="${selected}" data-workspace-action="${action}" data-id="${esc(id)}" ${paperId ? `data-paper-id="${esc(paperId)}"` : ""}><title data-user-content>${esc(title)}${detail ? " · " + esc(detail) : ""}</title><rect x="${x}" y="${y}" width="${width}" height="${height}" rx="13"/><text x="${x + 14}" y="${y + 28}" class="timeline-node-title" data-user-content>${esc(timelineLabel(title, width - 28))}</text><text x="${x + 14}" y="${y + 50}" class="timeline-node-subtitle" data-user-content>${esc(timelineLabel(subtitle, width - 28, 11))}</text></g>`;
+}
+function renderStageLine(current) {
+  if (!ui.newStage && !(current.stageIds || []).includes(ui.selectedStageId)) ui.stageInspect = false;
+  const layout = timelineLayout(current), { width, height } = layout;
+  ui.timelineZoom = ui.timelineViews?.[current.id]?.zoom || 1;
+  const paperPositions = new Map(), methodPositions = new Map();
+  let route = "", branches = "", nodes = "", methodsMarkup = "";
+  layout.stages.forEach((item, index) => {
+    const x = 30 + index * 460, memberships = stagePaperEdges(item.id), refs = stageContributions(item.id);
+    const localMethods = [...new Set(refs.map(({ connection }) => connection.toId))];
+    if (index) route += `<path class="timeline-route" d="M ${x - 60} 107 H ${x - 8}" marker-end="url(#timeline-route-arrow)"/>`;
+    nodes += `<text class="timeline-date" x="${x + 8}" y="42" data-user-content>${esc(item.date || tr("日期待补充"))}</text>`;
+    nodes += timelineNode({ x, y: 70, width: 400, title: item.title, subtitle: `${index + 1} · ${tr("阶段顺序")}`, action: "select-stage", id: item.id, selected: ui.stageInspect && ui.selectedStageId === item.id, kind: "stage" });
+    memberships.forEach((membership, row) => {
+      const point = { x, y: 216 + row * 108 }; paperPositions.set(`${item.id}:${membership.fromId}`, point);
+      branches += `<path class="timeline-membership" d="M ${x + 200} 142 V ${point.y - 15} H ${point.x + 90} V ${point.y}"/>`;
+      nodes += timelineNode({ ...point, width: 180, title: paper(membership.fromId).title, subtitle: `${paper(membership.fromId).year || tr("年份未知")} · ${paperInstitution(paper(membership.fromId)) || tr("关联论文")}`, detail: [displayAuthors(paper(membership.fromId)), paperInstitution(paper(membership.fromId))].filter(Boolean).join(" · "), action: "timeline-paper", id: item.id, paperId: membership.fromId, selected: !ui.stageInspect && ui.selectedPaperId === membership.fromId, kind: "paper" });
+    });
+    localMethods.forEach((id, row) => {
+      const point = { x: x + 230, y: 216 + row * 108 }; methodPositions.set(`${item.id}:${id}`, point);
+      const relation = refs.find(({ connection }) => connection.toId === id).connection.relation;
+      methodsMarkup += timelineNode({ ...point, width: 180, title: idea(id).title, subtitle: `${tr(labels.paper[relation])} · ${tr("共享方法 · 点击进入思想图")}`, action: "timeline-method", id, kind: "method", relation });
+    });
+    nodes += `<g class="timeline-node timeline-add" role="button" tabindex="0" aria-label="${tr("添加阶段论文")}" data-workspace-action="stage-papers" data-id="${esc(item.id)}"><text x="${x + 8}" y="185">${tr("＋ 论文")}</text></g><g class="timeline-node timeline-add" role="button" tabindex="0" aria-label="${tr("添加阶段方法")}" data-workspace-action="stage-methods" data-id="${esc(item.id)}"><text x="${x + 238}" y="185">${tr("＋ 方法")}${refs.length ? "" : ` · ${tr("未标注贡献")}`}</text></g>`;
+  });
+  const pairCounts = new Map();
+  layout.contributions.forEach(({ membership, connection }) => {
+    const point = paperPositions.get(`${membership.toId}:${membership.fromId}`), target = methodPositions.get(`${membership.toId}:${connection.toId}`);
+    if (!point || !target) return;
+    const x1 = point.x + 180, y1 = point.y + 36, x2 = target.x, y2 = target.y + 36;
+    const key = `${membership.id}:${connection.toId}`, rank = pairCounts.get(key) || 0; pairCounts.set(key, rank + 1);
+    branches += `<path class="timeline-contribution" d="M ${x1} ${y1} C ${x1 + 25} ${y1}, ${x2 - 25} ${y2}, ${x2} ${y2}" marker-end="url(#timeline-fact-arrow)"/><text class="timeline-verb" x="${x1 + 11}" y="${(y1 + y2) / 2 - 7 + rank * 14}">${labels.paper[connection.relation] || esc(connection.relation)}</text>`;
+  });
+  $("#main-view").innerHTML = pageHeader("MODEL FAMILY / 阅读线", current.title, "沿日期、论文与方法，理解每一步贡献。", `<button type="button" class="button primary" data-workspace-action="new-stage">＋ 阶段</button><button type="button" class="button secondary" data-action="edit-line">编辑阅读线</button><button type="button" class="button quiet" data-action="new-line">＋ 新建阅读线</button>`) + (current.question ? `<details class="timeline-goal"><summary>阅读目标</summary><p data-user-content>${esc(current.question)}</p></details>` : "") + `${paperRelationLegend()}<div class="timeline-controls"><p>${tr("沿主线阅读阶段，分支查看论文与明确标注的方法贡献。")}</p><div class="map-zoom"><button type="button" class="button quiet" data-workspace-action="fit-timeline">全图</button><button type="button" class="button quiet" data-workspace-action="timeline-zoom" data-step="-0.2" aria-label="缩小阅读线">−</button><button type="button" class="button quiet" data-workspace-action="timeline-zoom" data-step="0" id="timeline-zoom-percent" aria-label="重置阅读线缩放">${Math.round(ui.timelineZoom * 100)}%</button><button type="button" class="button quiet" data-workspace-action="timeline-zoom" data-step="0.2" aria-label="放大阅读线">＋</button></div></div>` + (layout.stages.length ? `<div class="timeline-scroll" data-line-id="${esc(current.id)}" tabindex="0" aria-label="模型演进阅读路线"><svg class="reading-timeline" width="${width * ui.timelineZoom}" height="${height * ui.timelineZoom}" viewBox="0 0 ${width} ${height}" role="group" aria-label="阶段按阅读顺序连接；关联论文通过明确动词连接共享方法"><defs><marker id="timeline-route-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="#47755b"/></marker><marker id="timeline-fact-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7 Z" fill="#8b795b"/></marker></defs>${route}${branches}${nodes}${methodsMarkup}</svg></div><p class="map-footnote">${tr("阶段顺序不是模型继承关系；关联论文不自动等于模型首发论文。")} ${tr("同名方法在各阶段重复显示，点击进入同一个思想图实体。")} ${tr(graphZoomHint())}</p>` : `<div class="empty-main compact"><h2>这条阅读线还没有阶段</h2><p>先添加一个阶段，再搜索加入论文和明确的方法贡献。</p><button type="button" class="button primary" data-workspace-action="new-stage">＋ 阶段</button></div>`);
+}
+
+function selectTimelineStage(id, create = false) {
+  ui.stageInspect = true; ui.newStage = create; ui.selectedStageId = create ? "" : id; ui.inspectorOpen = true;
+  renderInspector(); localize($("#inspector"));
+  document.querySelectorAll(".timeline-node.stage, .timeline-node.paper").forEach((node) => {
+    const selected = !create && node.classList.contains("stage") && node.dataset.id === id;
+    node.classList.toggle("selected", selected); node.setAttribute?.("aria-pressed", String(selected));
+  });
+}
+function newStageEditor(current) {
+  const key = `stage-new:${current.id}`, edit = draftValues(key);
+  return `<section class="stage-panel"><h2>新增独立阶段</h2><form class="workspace-form" data-workspace-form="new-stage" data-workspace-draft="${esc(key)}" data-id="${esc(current.id)}"><label>阶段名称<input name="title" maxlength="120" value="${esc(edit.title || "")}" required></label><label>阶段日期<input name="date" type="date" value="${esc(edit.date || "")}"></label><label>本阶段贡献<textarea name="summary" maxlength="4000">${esc(edit.summary || "")}</textarea></label><button type="submit" class="button primary">新增阶段</button></form></section>`;
+}
+function stageEditor(item, current, index) {
+  const key = `stage:${item.id}`, edit = draftValues(key, item), memberships = stagePaperEdges(item.id), refs = stageContributions(item.id);
+  const methodPaper = memberships.some((member) => member.fromId === ui.stageMethodPaperId) ? paper(ui.stageMethodPaperId) : null;
+  return `<section class="stage-panel"><div class="inspector-section-head"><span class="eyebrow">${index + 1} · ${tr("阶段顺序")}</span><div class="stage-actions"><button type="button" class="button quiet" data-workspace-action="move-stage" data-id="${esc(item.id)}" data-offset="-1" ${index === 0 ? "disabled" : ""}>上移</button><button type="button" class="button quiet" data-workspace-action="move-stage" data-id="${esc(item.id)}" data-offset="1" ${index === current.stageIds.length - 1 ? "disabled" : ""}>下移</button><button type="button" class="button quiet" data-workspace-action="detach-stage" data-id="${esc(item.id)}">移出本线</button></div></div><h2 data-user-content>${esc(item.title)}</h2><form class="workspace-form" data-workspace-form="stage" data-workspace-draft="${esc(key)}" data-id="${esc(item.id)}"><label>阶段名称<input name="title" maxlength="120" value="${esc(edit.title)}" required></label><label>阶段日期<input name="date" type="date" value="${esc(edit.date || "")}"></label><label>本阶段贡献<textarea name="summary" maxlength="4000" rows="3">${esc(edit.summary || "")}</textarea></label><button type="submit" class="button secondary">保存阶段</button></form><h3>阶段论文</h3>${memberships.map((membership) => `<div class="stage-paper-row"><button type="button" class="button quiet" data-action="select-paper" data-id="${esc(membership.fromId)}" data-user-content>${esc(paper(membership.fromId).title)}</button><button type="button" class="mini-action" data-workspace-action="remove-stage-paper" data-id="${esc(item.id)}" data-paper-id="${esc(membership.fromId)}">移出阶段</button></div>`).join("") || `<p class="field-help">此阶段还没有论文，可以直接添加。</p>`}<button type="button" class="button secondary" data-workspace-action="stage-papers" data-id="${esc(item.id)}">＋ 论文</button><h3>明确标注的方法贡献</h3>${refs.map(({ membership, connection }) => `<div class="stage-contribution-row"><button type="button" class="button quiet" data-workspace-action="timeline-method" data-id="${esc(connection.toId)}"><span data-user-content>${esc(paper(connection.fromId).title)} · ${tr(labels.paper[connection.relation])} · ${esc(idea(connection.toId).title)}</span></button><button type="button" class="mini-action" data-workspace-action="remove-contribution" data-id="${esc(membership.id)}" data-edge-id="${esc(connection.id)}">移出贡献展示</button></div>`).join("") || `<p class="field-help">尚无明确方法贡献；不会从阶段摘要或全部论文关系自动推断。</p>`}<button type="button" class="button secondary" data-workspace-action="stage-methods" data-id="${esc(item.id)}">＋ 方法</button>${methodPaper ? `<h3>${tr("为成员论文标注方法")}</h3><p data-user-content>${esc(methodPaper.title)}</p>${paperMethodForm(methodPaper, item.id)}` : ""}<button type="button" class="button secondary" data-workspace-action="read-stage" data-id="${esc(item.id)}">开始阶段阅读</button>${sessionHistory(item.id, "stage")}</section>`;
+}
+function renderStageInspector() {
+  const current = line(ui.selectedLineId), target = stage(ui.selectedStageId);
+  if (!current || current.kind !== "model_family") return;
+  $("#inspector").innerHTML = `<button type="button" class="button quiet paper-inspector-close" data-action="close-paper-inspector">关闭详情 ×</button>` + (ui.newStage ? newStageEditor(current) : target ? stageEditor(target, current, current.stageIds.indexOf(target.id)) : "");
+}
+function paperPickerResults(query, context = ui.paperPicker) {
+  const memberIds = context?.kind === "stage-method" ? new Set(stagePaperEdges(context.id).map((membership) => membership.fromId)) : null;
+  const existing = context?.kind === "stage" ? new Set(stagePaperEdges(context.id).map((membership) => membership.fromId)) : new Set();
+  const terms = normalized(query).split(/\s+/).filter(Boolean);
+  return state.papers.filter((item) => {
+    const metadata = normalized([item.title, item.authors, item.doi, paperInstitution(item)].join(" "));
+    return terms.every((term) => metadata.includes(term) || normalized(item.year) === term);
+  }).filter((item) => (!memberIds || memberIds.has(item.id)) && !existing.has(item.id)).slice(0, 12);
+}
+function renderPaperPickerResults() {
+  const context = ui.paperPicker; if (!context) return;
+  const items = paperPickerResults($("#picker-paper-query").value);
+  $("#picker-paper-results").innerHTML = items.length ? items.map((item) => `<div class="picker-paper-row"><div><strong data-user-content>${esc(item.title)}</strong><small data-user-content>${esc([displayAuthors(item), item.year, paperInstitution(item)].filter(Boolean).join(" · "))}</small></div><button type="button" class="button secondary" data-workspace-action="pick-paper" data-id="${esc(item.id)}">${tr(context.kind === "stage" ? "添加" : "选择")}</button></div>`).join("") : `<p class="field-help">没有匹配的论文。可以更换关键词；阶段方法只能选择已加入阶段的论文。</p>`;
+  localize($("#picker-paper-results"));
+}
+function openPaperPicker(kind, id) {
+  ui.paperPicker = { kind, id }; $("#picker-paper-query").value = "";
+  $("#picker-paper-title").textContent = tr(kind === "stage" ? "搜索并添加阶段论文" : kind === "stage-method" ? "选择阶段内的成员论文" : "搜索关联此方法的论文");
+  $("#picker-method-editor").innerHTML = ""; renderPaperPickerResults(); openDialog("#paper-picker-dialog"); $("#picker-paper-query").focus();
+}
+
+function paperMethodForm(item, stageId = "") {
+  const draftKey = `paper-method:${item.id}${stageId ? `:${stageId}` : ""}`;
+  const edit = draftValues(draftKey);
+  return `<form class="workspace-form" data-workspace-form="annotate-method" data-workspace-draft="${esc(draftKey)}" data-id="${esc(item.id)}" ${stageId ? `data-stage-id="${esc(stageId)}"` : ""}><label>搜索已有方法或输入新名称<input name="title" maxlength="120" list="method-options-${esc(item.id)}" value="${esc(edit.title || "")}" placeholder="例如：GRPO"></label><label>明确选择已有方法<select name="ideaId"><option value="">按输入名称匹配或新建</option>${methods().map((method) => `<option value="${esc(method.id)}" ${edit.ideaId === method.id ? "selected" : ""} data-user-content>${esc(method.title)} · ${esc(method.id.slice(-6))}</option>`).join("")}</select></label><datalist id="method-options-${esc(item.id)}">${methods().map((method) => `<option value="${esc(method.title)}">${esc((method.aliases || []).join(" · "))}</option>`).join("")}</datalist>${paperIdeaEdges(item.id).some((connection) => idea(connection.toId)?.entityType === "method") ? `<label>选择既有关系（多条旧关系时）<select name="edgeId"><option value="">自动创建或复用唯一关系</option>${paperIdeaEdges(item.id).filter((connection) => idea(connection.toId)?.entityType === "method").map((connection) => `<option value="${esc(connection.id)}" ${edit.edgeId === connection.id ? "selected" : ""} data-user-content>${esc(idea(connection.toId).title)} · ${labels.paper[connection.relation]} · ${esc(truncate(connection.note || connection.id, 42))}</option>`).join("")}</select></label>` : ""}<label>关系依据<textarea name="note" maxlength="3000" rows="2">${esc(edit.note || "")}</textarea></label><label>原文位置链接<input name="sourceUrl" maxlength="1500" value="${esc(edit.sourceUrl || "")}"></label><p class="field-help">已有名称或别名会复用方法；新名称直接创建。请选择论文与方法的关系。</p><div class="direct-relations">${["proposes","improves","uses"].map((relation) => `<button type="submit" name="relation" value="${relation}" class="button secondary">${labels.paper[relation]}</button>`).join("")}</div></form>`;
+}
+function paperStageForm(item) {
+  const edit = draftValues(`paper-stage:${item.id}`), paths = state.lines.filter((line) => line.kind === "model_family"), selectedLine = paths.find((line) => line.id === edit.lineId);
+  return `<form class="workspace-form" data-workspace-form="join-stage" data-workspace-draft="paper-stage:${esc(item.id)}" data-id="${esc(item.id)}"><label>选择演进线或新建<select name="lineId"><option value="">＋ 新建演进线</option>${options(paths, edit.lineId)}</select></label><label>新演进线名称<input name="lineTitle" maxlength="120" value="${esc(edit.lineTitle || "")}" placeholder="例如：DeepSeek 模型演进"></label><label>选择阶段或新建<select name="stageId"><option value="">＋ 新增阶段</option>${options((selectedLine?.stageIds || []).map(stage).filter(Boolean), edit.stageId)}</select></label><label>新阶段名称<input name="stageTitle" maxlength="120" value="${esc(edit.stageTitle || "")}" placeholder="例如：R1 · 推理强化学习"></label><label>阶段日期<input name="date" type="date" value="${esc(edit.date || "")}"></label><label>本阶段贡献<textarea name="summary" maxlength="4000" rows="2">${esc(edit.summary || "")}</textarea></label><button type="submit" class="button primary">保存论文阶段</button></form>`;
+}
+function renderPaperInspector(item) {
+  if (!item) return;
+  renderMapInspector(item);
+  const container = $("#inspector"), bridge = container.querySelector?.(".paper-bridge");
+  const content = `<section class="inspector-section paper-workspace"><h3>方法关系</h3>${paperIdeaEdges(item.id).filter((connection) => idea(connection.toId)?.entityType === "method").map((connection) => editableEdge(connection)).join("") || `<p class="field-help">尚无方法关系。可以直接关联已有方法或创建新方法。</p>`}${paperMethodForm(item)}</section>${paperIdeaEdges(item.id).some((edge) => idea(edge.toId)?.entityType !== "method") ? `<section class="inspector-section"><h3>其他思想卡（保留原分类）</h3>${paperIdeaEdges(item.id).filter((edge) => idea(edge.toId)?.entityType !== "method").map((edge) => relationRow(edge, "idea", idea(edge.toId))).join("")}</section>` : ""}<section class="inspector-section paper-workspace"><h3>演进阶段</h3>${state.lines.filter((path) => path.kind === "model_family").flatMap((path) => (path.stageIds || []).filter((id) => stagePaperEdges(id).some((edge) => edge.fromId === item.id)).map((id) => `<div class="stage-membership"><button type="button" class="button quiet" data-action="select-line" data-id="${esc(path.id)}"><span data-user-content>${esc(path.title)} · ${esc(stage(id)?.title)}</span></button><button type="button" class="mini-action" data-workspace-action="remove-stage-paper" data-id="${esc(id)}" data-paper-id="${esc(item.id)}">移出阶段</button></div>`)).join("")}${paperStageForm(item)}</section><div class="paper-meta">${item.doi ? `<p data-user-content>DOI · ${esc(item.doi)}</p>` : ""}</div>`;
+  // Preserve the citation inspector's original evidence sections, replacing only its bridge.
+  if (bridge) bridge.outerHTML = content;
+  else container.innerHTML += content;
+  if (item.zoteroKey) container.innerHTML += `<section class="inspector-section"><h3>Zotero 批注</h3><button type="button" class="button quiet" data-action="load-annotations">读取</button>${ui.annotationPaperId === item.id ? (ui.annotations || []).map((annotation, index) => `<div class="annotation"><p data-user-content>${esc(annotation.text || annotation.comment || "")}</p><button type="button" class="button quiet" data-action="annotation-create" data-index="${index}">从批注新建卡片</button><button type="button" class="button quiet" data-action="annotation-link" data-index="${index}">关联已有卡</button></div>`).join("") : ""}</section>`;
+  container.innerHTML += `<button type="button" class="button danger" data-action="delete-paper" data-id="${esc(item.id)}">删除这篇论文</button>`;
+}
+function openStageSession(id) {
+  const target = stage(id); if (!target) return;
+  ui.selectedStageId = id;
+  stopTimer();
+  const session = { targetType: "stage", targetId: id, lineId: ui.selectedLineId || "", elapsed: 0, startedAt: Date.now(), running: true };
+  const saved = readDraft(sessionDraftKey(session));
+  session.elapsed = Number.isFinite(saved?.elapsed) ? Math.max(0, Math.min(86400, saved.elapsed)) : 0;
+  ui.session = session;
+  $("#session-title").textContent = target.title; $("#session-line").textContent = line(session.lineId)?.title || "";
+  $("#session-note").value = saved?.note || ""; $("#session-next-question").value = saved?.nextQuestion || "";
+  $("#session-recap").hidden = true; $("#session-zotero").hidden = true;
+  updateClock(); ui.timer = setInterval(updateClock, 1000); openDialog("#session-dialog");
+}
+async function submitWorkspaceForm(form, submitter) {
+  const values = Object.fromEntries(new FormData(form).entries()), kind = form.dataset.workspaceForm;
+  const draftKey = form.dataset.workspaceDraft, snapshot = draftKey ? JSON.stringify(readDraft(draftKey)) : "";
+  let action, payload;
+  if (kind === "annotate-method") {
+    if (!["proposes","uses","improves"].includes(submitter?.value)) throw new Error("请选择提出、使用或改进。");
+    if (!values.edgeId && !values.ideaId && !values.title.trim()) throw new Error("请输入方法名称或明确选择已有方法。");
+    action = "paper.annotate_method"; payload = { paperId: form.dataset.id, ...(form.dataset.stageId ? { stageId: form.dataset.stageId } : {}), ...(values.edgeId ? { edgeId: values.edgeId, ideaId: edge(values.edgeId)?.toId } : values.ideaId ? { ideaId: values.ideaId } : { title: values.title }), relation: submitter.value, ...(values.note.trim() ? { note: values.note } : {}), ...(values.sourceUrl.trim() ? { sourceUrl: values.sourceUrl } : {}) };
+  } else if (kind === "edge") { action = "edge.update"; payload = { id: form.dataset.id, note: values.note, sourceUrl: values.sourceUrl }; }
+  else if (kind === "stage") { action = "stage.update"; payload = { id: form.dataset.id, ...values }; }
+  else if (kind === "new-stage") { action = "stage.create"; payload = { ...values, lineId: form.dataset.id }; }
+  else if (kind === "stage-paper") { action = "paper.add_to_stage"; payload = { paperId: values.paperId, lineId: ui.selectedLineId, stageId: form.dataset.id }; }
+  else if (kind === "join-stage") {
+    if (!values.lineId && !values.lineTitle.trim()) throw new Error("请选择演进线或填写新线名称。");
+    if (!values.stageId && !values.stageTitle.trim()) throw new Error("请选择阶段或填写新阶段名称。");
+    action = "paper.add_to_stage"; payload = { paperId: form.dataset.id, ...(values.lineId ? {lineId: values.lineId} : {lineTitle: values.lineTitle}), ...(values.stageId ? {stageId: values.stageId} : {stageTitle: values.stageTitle}), ...(values.date ? {date: values.date} : {}), ...(values.summary ? {summary: values.summary} : {}) };
+  } else return;
+  if (kind === "annotate-method" && form.dataset.stageId) await queueContributionAction(() => act(action, payload));
+  else await act(action, payload);
+  if (kind === "new-stage") { ui.newStage = false; ui.stageInspect = true; ui.inspectorOpen = true; }
+  if (kind === "annotate-method" && $("#paper-picker-dialog")?.open) closeDialog($("#paper-picker-dialog"));
+  if (draftKey && JSON.stringify(readDraft(draftKey)) === snapshot) forgetDraft(draftKey);
+  render(); toast("已保存，关联内容保持同步。");
+}
+function captureDialogDraft(form) {
+  if (form?.id === "line-form") writeDraft($("#line-id").value ? `line:${$("#line-id").value}` : "line-new", { title: $("#line-title").value, question: $("#line-question").value, kind: $("#line-kind").value });
+  if (form?.id === "idea-form") writeDraft("idea-new", { title: $("#idea-title").value, aliases: $("#idea-aliases").value, summary: $("#idea-summary").value, kind: ideaKind(), entityType: $("#idea-entity-type").value, lineId: $("#idea-line").value, relation: $("#idea-source-relation").value });
+}
+document.addEventListener("input", (event) => {
+  const form = event.target.form;
+  captureDialogDraft(form);
+  if (form?.dataset.workspaceForm === "annotate-method" && event.target.name === "title") {
+    if (form.elements.ideaId) form.elements.ideaId.value = "";
+    if (form.elements.edgeId) form.elements.edgeId.value = "";
+  }
+  if (form?.dataset.workspaceDraft) workspaceDraft(form);
+  if (event.target.id === "picker-paper-query") renderPaperPickerResults();
+  if (event.target.id === "method-search") {
+    ui.methodQuery = event.target.value;
+    $("#method-results").innerHTML = methodChoices(ui.methodQuery).map((item) => `<button type="button" class="card-tab" data-action="paper-view-idea" data-id="${esc(item.id)}" data-user-content>${esc(item.title)}</button>`).join("");
+  }
+});
+document.addEventListener("change", (event) => {
+  const form = event.target.form;
+  captureDialogDraft(form);
+  if (!form?.dataset.workspaceDraft) return;
+  if (form.dataset.workspaceForm === "annotate-method") {
+    if (event.target.name === "edgeId" && event.target.value && form.elements.ideaId) form.elements.ideaId.value = edge(event.target.value)?.toId || "";
+    if (event.target.name === "ideaId" && form.elements.edgeId?.value && edge(form.elements.edgeId.value)?.toId !== event.target.value) form.elements.edgeId.value = "";
+  }
+  workspaceDraft(form);
+  if (form.dataset.workspaceForm === "join-stage" && event.target.name === "lineId") {
+    const path = line(event.target.value); form.elements.stageId.innerHTML = `<option value="">＋ 新增阶段</option>` + options((path?.stageIds || []).map(stage).filter(Boolean));
+    workspaceDraft(form);
+  }
+});
+document.addEventListener("submit", async (event) => {
+  if (!event.target.dataset.workspaceForm) return;
+  event.preventDefault();
+  try { await submitWorkspaceForm(event.target, event.submitter); } catch (error) { toast(error.message, true); }
+});
+document.addEventListener("click", async (event) => {
+  const button = event.target.closest?.("[data-workspace-action]"); if (!button) return;
+  const { workspaceAction: action, id } = button.dataset;
+  try {
+    if (action === "select-stage") selectTimelineStage(id);
+    else if (action === "new-stage") selectTimelineStage("", true);
+    else if (action === "timeline-paper") { ui.selectedStageId = id; updatePaperSelection(button.dataset.paperId); }
+    else if (action === "timeline-method") { ui.stageInspect = false; ui.newStage = false; selectIdea(id); }
+    else if (action === "stage-papers") { selectTimelineStage(id); openPaperPicker("stage", id); }
+    else if (action === "stage-methods") {
+      selectTimelineStage(id);
+      const members = stagePaperEdges(id);
+      if (members.length === 1) { ui.stageMethodPaperId = members[0].fromId; renderInspector(); localize($("#inspector")); }
+      else if (members.length) openPaperPicker("stage-method", id);
+      else { openPaperPicker("stage", id); toast("先添加阶段论文，再为它标注方法贡献。"); }
+    }
+    else if (action === "pick-paper") {
+      const context = ui.paperPicker;
+      if (context?.kind === "stage") {
+        ui.stageInspect = true; ui.newStage = false; ui.selectedStageId = context.id;
+        await act("paper.add_to_stage", { paperId: id, lineId: ui.selectedLineId, stageId: context.id }); closeDialog($("#paper-picker-dialog"));
+      } else if (context?.kind === "stage-method") {
+        ui.stageMethodPaperId = id; selectTimelineStage(context.id); closeDialog($("#paper-picker-dialog"));
+      } else if (context?.kind === "method") {
+        $("#picker-method-editor").innerHTML = paperMethodForm(paper(id));
+        const form = $("#picker-method-editor").querySelector("form");
+        form.elements.ideaId.value = context.id; form.elements.title.value = idea(context.id).title; localize($("#picker-method-editor"));
+      }
+    }
+    else if (action === "remove-contribution") {
+      await removeStageContribution(id, button.dataset.edgeId);
+    }
+    else if (action === "timeline-zoom") zoomGraph($(".timeline-scroll"), Number(button.dataset.step) ? ui.timelineZoom + Number(button.dataset.step) : 1);
+    else if (action === "fit-timeline") {
+      const scroll = $(".timeline-scroll"), svg = scroll?.querySelector("svg");
+      if (svg) zoomGraph(scroll, Math.min(1, scroll.clientWidth / svg.viewBox.baseVal.width, scroll.clientHeight / svg.viewBox.baseVal.height));
+    }
+    else if (action === "new-method") { openIdeaDialog(); $("#idea-entity-type").value = "method"; if (ui.methodQuery) $("#idea-title").value = ui.methodQuery; renderIdeaMatches(); }
+    else if (action === "fit-method") fitMethodGraph(true);
+    else if (action === "edit-method") { const form = $("#idea-edit-form"); form?.scrollIntoView?.({ block: "start", behavior: "smooth" }); form?.querySelector?.("input")?.focus?.({ preventScroll: true }); }
+    else if (action === "edge-relation") await act("edge.update", { id, relation: button.dataset.relation });
+    else if (action === "move-stage") await act("line.move_stage", { lineId: ui.selectedLineId, stageId: id, offset: Number(button.dataset.offset) });
+    else if (action === "detach-stage") { if (await confirmAction(tr("从当前阅读线移出阶段？阶段、论文和方法仍然保留。"))) await act("line.detach_stage", { lineId: ui.selectedLineId, stageId: id }); }
+    else if (action === "remove-stage-paper") await act("stage.remove_paper", { stageId: id, paperId: button.dataset.paperId });
+    else if (action === "read-stage") openStageSession(id);
+  } catch (error) { toast(error.message, true); }
 });
 
 api("/api/state").then((data) => { state = data; render(); checkReminder(); setInterval(checkReminder, 30_000); refreshWebdav(); setInterval(refreshWebdav, 30_000); refreshZoteroSync(); }).catch((error) => {

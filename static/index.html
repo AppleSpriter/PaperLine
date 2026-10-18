@@ -52,11 +52,20 @@
 
   <div id="toast" class="toast" role="status" aria-live="polite" popover="manual" data-user-content></div>
 
+  <dialog id="paper-picker-dialog" class="modal wide-modal">
+    <div class="modal-top"><h2 id="picker-paper-title">搜索论文</h2><button type="button" class="close-button" data-action="close-dialog" aria-label="关闭">×</button></div>
+    <label>搜索库内论文<input id="picker-paper-query" type="search" placeholder="标题、作者、年份、机构或 DOI"></label>
+    <p class="field-help">显示最多 12 条匹配结果。</p>
+    <div id="picker-paper-results" aria-live="polite"></div>
+    <div id="picker-method-editor"></div>
+  </dialog>
+
   <dialog id="line-dialog" class="modal">
     <form id="line-form" method="dialog">
       <div class="modal-top"><div><span class="eyebrow">READING PATH</span><h2 id="line-dialog-title">新建阅读线</h2></div><button type="button" class="close-button" data-action="close-dialog" aria-label="关闭">×</button></div>
       <input type="hidden" id="line-id">
       <label>这条线要回答什么问题？<input id="line-title" maxlength="120" placeholder="例如：如何稳定策略更新？" required></label>
+      <label>阅读线类型<select id="line-kind"><option value="model_family">模型演进线（阶段与论文）</option><option value="research">主题研究线（思想卡顺序）</option></select></label>
       <label>研究目标或背景 <span class="optional">可选</span><textarea id="line-question" rows="3" maxlength="800" placeholder="写下你为什么要追这条线，以及希望得到什么答案。"></textarea></label>
       <div class="modal-actions"><button type="button" class="button danger" id="delete-line-button" data-action="delete-line" hidden>删除阅读线</button><span class="modal-spacer"></span><button type="button" class="button quiet" data-action="close-dialog">取消</button><button type="submit" class="button primary">保存阅读线</button></div>
     </form>
@@ -68,6 +77,7 @@
       <div id="idea-source-context" class="source-context" hidden></div>
       <div id="idea-parent-context" class="source-context" hidden></div>
       <label>思想名称<input id="idea-title" maxlength="120" placeholder="例如：GRPO" required></label>
+      <label>内容分类<select id="idea-entity-type"><option value="method">方法</option><option value="concept">概念</option><option value="question">问题</option><option value="unclassified">尚未分类</option></select></label>
       <label>别名 <span class="optional">可选</span><input id="idea-aliases" maxlength="1500" placeholder="缩写、全称或其他写法，用逗号分隔"></label>
       <div id="idea-matches" class="idea-matches" aria-live="polite" hidden></div>
       <div class="choice-field" role="group" aria-labelledby="idea-kind-label"><span class="choice-label" id="idea-kind-label">卡片类型</span><div class="choice-row"><input type="radio" class="choice-input" id="idea-kind-concept" name="idea-kind" value="concept" checked><label class="choice-button" for="idea-kind-concept">基础概念</label><input type="radio" class="choice-input" id="idea-kind-innovation" name="idea-kind" value="innovation"><label class="choice-button" for="idea-kind-innovation">创新思想</label><input type="radio" class="choice-input" id="idea-kind-question" name="idea-kind" value="question"><label class="choice-button" for="idea-kind-question">引申问题</label></div></div>
@@ -135,11 +145,11 @@
       <div class="modal-top"><div><span class="eyebrow">FOCUS SESSION</span><h2 id="session-title" data-user-content>开始阅读</h2></div><button type="button" class="close-button" data-action="close-dialog" aria-label="关闭">×</button></div>
       <p id="session-line" class="modal-context"></p>
       <div id="session-recap" class="reading-recap" hidden></div>
-      <div class="session-clock"><strong id="session-time">00:00</strong><span>今天只推进这一张卡</span></div>
+      <div class="session-clock"><strong id="session-time">00:00</strong><span>今天只推进这一步</span></div>
       <div class="session-shortcuts"><button type="button" class="button secondary" data-action="pause-session" id="pause-button">暂停计时</button><a id="session-zotero" class="button quiet" href="#" hidden>在 Zotero 打开论文 ↗</a></div>
       <label>结束时，用自己的话写两句<textarea id="session-note" rows="3" maxlength="4000" placeholder="我现在理解了什么？下一步要弄清什么？" required></textarea></label>
       <label>下次要弄清的问题 <span class="optional">可选</span><input id="session-next-question" maxlength="1000" placeholder="留下一个下次打开就能开始的小问题"></label>
-      <p class="field-help">稍后继续会保留本次计时和感想。重新打开这张卡即可接着读。</p>
+      <p class="field-help">稍后继续会保留本次计时和感想。重新打开当前阅读对象即可从这里继续。</p>
       <div class="modal-actions"><button type="button" class="button quiet" data-action="close-dialog">稍后继续</button><button id="session-save" type="submit" class="button primary">保存本次阅读</button></div>
     </form>
   </dialog>
@@ -209,7 +219,7 @@
           <li>所有数据只留在这台机器上，写入前会自动留一份备份，设置里也能下载完整 JSON。</li>
           <li>设置里的“从备份恢复”可以选一个备份文件替换当前数据，替换前会把当前数据另存一份。</li>
           <li>同时开着两个页面时，切回页面会自动载入最新数据；如果一张卡已在别处改过，保存会先提醒你。</li>
-          <li>删除思想卡会连带它的关系和阅读记录；删除论文只删关系；删除阅读线会保留卡片。</li>
+          <li>删除思想卡或论文会移除它的关系，阅读记录保留为历史；删除阅读线会保留卡片、阶段与论文。</li>
           <li>下次导出时，已删除卡片对应的 PaperLine 笔记将移至 Obsidian 库的 .trash/PaperLine，可恢复；其他笔记不受影响。</li>
           <li>在设置里填好 WebDAV 后，改动会自动上传到云端，并每天保留一份历史版本；右上角会显示同步状态。</li>
           <li>上传前会比较本机和云端的保存时间：云端更新时自动上传会暂停，右上角显示“云端更新”，可以在设置里从云端恢复，或确认后用本机覆盖。</li>

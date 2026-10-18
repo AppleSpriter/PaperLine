@@ -6,7 +6,7 @@ import argparse
 import io
 import json
 import marshal
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import types
 import zipfile
 
@@ -16,13 +16,23 @@ def private_prefixes() -> tuple[str, ...]:
     return (str(Path(__file__).resolve().parent.parent), str(Path.home()))
 
 
+def path_replacements(prefixes: tuple[str, ...]) -> tuple[tuple[str, str], ...]:
+    replacements = {}
+    for index, prefix in enumerate(prefixes):
+        replacement = "/build/paperline" if index == 0 else "/build"
+        for variant in (prefix, prefix.replace("\\", "/"), prefix.replace("/", "\\")):
+            replacements.setdefault(variant, replacement)
+    # Replace repository variants before their containing home directory.
+    return tuple(sorted(replacements.items(), key=lambda item: -len(item[0])))
+
+
 def sanitized_code(code: types.CodeType, prefixes: tuple[str, ...]) -> types.CodeType:
     def sanitize(value):
         if isinstance(value, types.CodeType):
             return sanitized_code(value, prefixes)
         if isinstance(value, str):
-            for prefix in prefixes:
-                value = value.replace(prefix, "/build/paperline" if prefix == prefixes[0] else "/build")
+            for prefix, replacement in path_replacements(prefixes):
+                value = value.replace(prefix, replacement)
             return value
         if isinstance(value, tuple):
             return tuple(sanitize(item) for item in value)
@@ -64,7 +74,7 @@ def prepare_spec(spec: Path, output: Path) -> None:
 
 def audit_archive(binary: Path) -> dict[str, int]:
     from PyInstaller.archive.readers import CArchiveReader
-    prefixes = private_prefixes()
+    prefixes = tuple(prefix for prefix, _ in path_replacements(private_prefixes()))
     counters = {"archiveEntries": 0, "pyzModules": 0, "zipMembers": 0, "codeObjects": 0,
                 "privatePathOccurrences": 0, "sensitiveDataEntries": 0}
     archive = CArchiveReader(str(binary))
@@ -89,7 +99,7 @@ def audit_archive(binary: Path) -> dict[str, int]:
 
     for name, entry in archive.toc.items():
         counters["archiveEntries"] += 1
-        if Path(name).name in {"state.json", "webdav.json", "state.backup.json", ".env"}:
+        if PureWindowsPath(name).name in {"state.json", "state-v2.json", "state-v2.backup.json", "webdav.json", "state.backup.json", ".env"}:
             counters["sensitiveDataEntries"] += 1
         data = archive.extract(name)
         inspect(data)

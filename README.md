@@ -2,15 +2,15 @@
 
 [English](README.en.md) · 简体中文
 
-一个本地运行的轻量论文阅读应用。用**阅读线**安排下一步，用**思想卡**汇集来自多篇论文的同一想法，用关系图查看论文如何提出、使用、改进或质疑它。
+一个本地运行的论文学习工作台。以论文为证据维护**共享方法与概念**，用**模型家族演进线**组织独立阶段，并在阶段下记录论文与方法贡献；研究阅读线保留已有的知识与学习记录。
 
-## macOS 原生桌面版（0.2.1）
+## macOS 原生桌面版（0.3.2）
 
 原生版使用 Tauri 2 与 macOS 自带 WebView，Python 后端随应用一起打包，通过标准输入输出通信，不启动本地 HTTP 端口。安装后不需要 Python、Node.js 或项目源码。重复打开会聚焦已有窗口，关闭窗口即退出后台进程。
 
-在 macOS 13 或更新版本上，把 `dist/macos/0.2.1/PaperLine.app` 拖入“应用程序”后双击打开。项目根目录原有的 `PaperLine.app` 是旧版浏览器启动器；原生构建产物按版本保存在 `dist/macos/<version>/`，两者不要混淆。
+在 macOS 13 或更新版本上打开 DMG，将应用安装到 `/Applications/PaperLine.app`，以后只从这个位置启动。升级前正常退出旧版。项目根目录的 `PaperLine.app` 是保留的旧浏览器启动器；不要把构建目录或版本目录内的 `.app` 当作新的安装入口。
 
-原生数据目录为 `~/Library/Application Support/io.github.applespriter.paperline/`；升级、移动应用不会改变这个路径。首次使用可在“设置”导入旧版 `data/state.json` 或通过旧版导出的 JSON 备份。应用不会在启动时自动覆盖现有数据。备份、Obsidian 目录选择与确认操作使用系统对话框；论文网址与 Zotero 链接交给浏览器或 Zotero 打开。
+原生数据目录为 `~/Library/Application Support/io.github.applespriter.paperline/`；升级、移动应用不会改变这个路径。首次使用可在“设置”导入旧版 `data/state.json` 或通过旧版导出的 JSON 备份。Mac 0.3 使用 schema 2：首次启动会只读导入同目录旧 `state.json`，写入独立的 `state-v2.json`；原文件保留，后续直接读取 v2。备份、Obsidian 目录选择与确认操作使用系统对话框；论文网址与 Zotero 链接交给浏览器或 Zotero 打开。
 
 构建需要 Apple Silicon Mac、Xcode Command Line Tools、Node.js/npm、Rust stable 与 Python 3.10+。仓库内 `.desktop-tools/cargo/bin`、`.desktop-tools/rustup`、`.desktop-tools/venv` 若已安装，会自动复用；否则使用 PATH 上的 Rust 与 Python，并在 `.desktop-tools/venv` 创建打包环境。
 
@@ -19,11 +19,15 @@ npm ci
 npm run desktop:package
 ```
 
-输出：`dist/macos/0.2.1/PaperLine.app` 与 `PaperLine_0.2.1_aarch64-apple-darwin.dmg`。DMG 通过 `hdiutil` 无界面生成，包含应用与“应用程序”快捷方式，不需要 Finder 或解锁桌面。构建不会覆盖 `dist/macos/PaperLine.app` 的预览版。`npm run desktop:dev` 启动开发版。构建只打包 `static/` 与独立后端，不包含 `data/`、WebDAV 凭据或本地日志。首次构建会下载 Cargo 依赖与 PyInstaller。打包前会检查 Python 可执行文件与动态库的最低 macOS 版本；若高于 13.0 会终止构建。可以通过 `PAPERLINE_PYTHON=/path/to/python3.13 npm run desktop:package` 指定兼容的 Python；已有构建环境使用其他解释器时，须先重建 `.desktop-tools/venv`。当前默认使用本机 ad-hoc 签名并保留 Hardened Runtime；由于打包的 Python 动态库没有 Team ID，应用仅添加 `disable-library-validation` 例外（Tauri 对主程序与侧车共用同一 entitlement 文件）。打包脚本会再次运行已签名应用内的后端，检查启动、API 与退出；对外分发前需要 Developer ID 签名与 Apple 公证。
+输出到 `dist/macos/0.3.2/`：`PaperLine_0.3.2_aarch64-apple-darwin.dmg` 和压缩的 `.app.zip`。不再保留可直接启动的版本目录 `.app`；构建目录的临时 bundle 在打包验证后清理。DMG 通过 `hdiutil` 无界面生成，包含应用与“应用程序”快捷方式。`npm run desktop:dev` 启动开发版。构建只打包 `static/` 与独立后端，不包含 `data/`、WebDAV 凭据或本地日志。首次构建会下载 Cargo 依赖与 PyInstaller。打包前会检查 Python 可执行文件与动态库的最低 macOS 版本；若高于 13.0 会终止构建。可以通过 `PAPERLINE_PYTHON=/path/to/python3.13 npm run desktop:package` 指定兼容的 Python；已有构建环境使用其他解释器时，须先重建 `.desktop-tools/venv`。当前默认使用本机 ad-hoc 签名并保留 Hardened Runtime；由于打包的 Python 动态库没有 Team ID，应用仅添加 `disable-library-validation` 例外（Tauri 对主程序与侧车共用同一 entitlement 文件）。打包脚本会再次运行已签名应用内的后端，检查启动、API 与退出；对外分发前需要 Developer ID 签名与 Apple 公证。
 
-macOS 构建会把 Rust 二进制中的本机构建路径匿名化为通用 `/build` 前缀。
+macOS 构建会把 Rust 二进制中的本机构建路径匿名化为通用 `/build` 前缀，并在打包前检查后端归档隐私。
 
-## Windows 桌面版（0.2.1，CI 验证通过）
+开发部署可执行 `python3 scripts/install-macos.py /Volumes/PaperLine/PaperLine.app`。脚本先检查 bundle ID 与签名，要求正常退出正在运行的 PaperLine，把旧正式应用压缩到 `.desktop-build/install-backups/`，再原子替换 `/Applications/PaperLine.app`；替换后签名验证失败会回滚。它不修改 AppSupport、Keychain、Obsidian 或旧浏览器启动器。恢复时先用 `ditto -x -k <备份.zip> <临时目录>` 解压旧 bundle，再用同一安装脚本替换正式应用。
+
+## Windows 桌面版（0.3.0）
+
+Mac 与 Windows 版本独立：Mac 为 0.3.2，Windows 为 0.3.0。Windows 同步使用时间线、模型阶段、全局方法与论文搜索的共享实现；其有效版本由 `src-tauri/tauri.windows.conf.json` 指定。
 
 目标为 Windows 10/11 x64。安装器采用 NSIS，为当前用户安装，无需单独安装 Python 或 Node.js；可选择简体中文或英文。缺少 WebView2 时，安装器会下载微软官方 bootstrapper，因此首次安装可能需要联网。应用数据存放在 `%APPDATA%\io.github.applespriter.paperline\`，与安装目录分开。旧版 JSON 数据可以从“设置”导入。
 
@@ -34,17 +38,17 @@ npm ci
 npm run desktop:windows:package
 ```
 
-需要指定解释器时，先设置 `$env:PAPERLINE_PYTHON = "C:\path\to\python.exe"`。打包脚本使用独立的 `.desktop-tools/venv-windows`，生成 `paperline-backend-x86_64-pc-windows-msvc.exe` 并通过标准输入输出测试；不会打包真实 `data/`、账户信息或日志。输出为 `dist/windows/0.2.1/PaperLine_0.2.1_x64-setup.exe` 与 `SHA256SUMS.txt`。`npm run desktop:windows:dev` 启动开发版。Windows 后端必须在 Windows 编译，不能用 macOS 的 PyInstaller 产物替代。
+需要指定解释器时，先设置 `$env:PAPERLINE_PYTHON = "C:\path\to\python.exe"`。打包脚本使用独立的 `.desktop-tools/venv-windows`，生成 `paperline-backend-x86_64-pc-windows-msvc.exe` 并通过标准输入输出测试；不会打包真实 `data/`、账户信息或日志。输出为 `dist/windows/0.3.0/PaperLine_0.3.0_x64-setup.exe` 与 `SHA256SUMS.txt`。`npm run desktop:windows:dev` 启动开发版。Windows 后端必须在 Windows 编译，不能用 macOS 的 PyInstaller 产物替代。
 
-`.github/workflows/windows-desktop.yml` 提供 Windows CI：运行 Node、Python、Rust 测试，构建安装器，静默安装到临时目录，使用 `--smoke-test` 的空临时数据目录创建真实窗口、正常退出并检查本次启动的进程是否残留。测试模式不会读取默认用户数据，也不会使用真实 Zotero/WebDAV 凭据。通过后上传安装器和校验和作为 GitHub Actions artifact，不发布 Release。
+`.github/workflows/windows-desktop.yml` 运行 Node、Python、Rust 测试，构建前后审计 Python archive 与原生可执行文件中的私有构建路径，再打包 NSIS。在专属 CI runner 中，安装验收先将已发布的 0.2.1 安装到含中文和空格的路径，在默认 `%APPDATA%` 目录创建合成 v1 笔记，再升级到 0.3.0。检查覆盖只读 v1 迁移、手工方法与阶段贡献、阅读记录、重装和卸载后数据字节一致、真实窗口、正常退出及所属子进程清理。合成默认数据目录在开始时必须不存在，并在结束后清理；不使用真实 Zotero/WebDAV 凭据。通过后上传安装器及校验和作为 GitHub Actions artifact，不发布 Release。
 
-[本次 Windows CI](https://github.com/AppleSpriter/PaperLine/actions/runs/38501863099) 已通过 Node、Python、Rust 测试、NSIS 打包、临时目录静默安装、独立数据 API、窗口启动、正常退出、子进程清理与卸载验证，并上传安装器 artifact。这些验证覆盖安装、窗口启动、协议与生命周期；Zotero、目录选择、备份保存及完整界面仍需 Windows 实机验收。现阶段没有 Windows 代码签名证书；未签名安装器可能触发 SmartScreen。设计依据：[Tauri 官方 Windows installer 文档](https://v2.tauri.app/distribute/windows-installer/)。
+Windows 0.3.0 的安装器须通过本轮 workflow 后才算完成验证。[历史 0.2.1 CI](https://github.com/AppleSpriter/PaperLine/actions/runs/38501863099) 不代表 0.3.0 已通过。草稿序列化与恢复由 JavaScript 测试覆盖；原生 WebView 草稿跨升级保留、Zotero、目录选择、备份保存及完整界面仍需 Windows 实机验收。现阶段没有 Windows 代码签名证书，未签名安装器可能触发 SmartScreen。设计依据：[Tauri 官方 Windows installer 文档](https://v2.tauri.app/distribute/windows-installer/)。
 
 ## 浏览器版运行
 
 需要 Python 3.10 或更新版本，无需安装依赖。
 
-**macOS：双击项目目录中的 `PaperLine.app`。** 启动器会在后台启动本地服务并打开浏览器；如果服务已在运行，则直接打开页面。通过 `.app` 启动后，双击 `stop.command` 可停止服务。请让 `PaperLine.app` 与 `app.py` 保持在同一项目目录中。
+仓库中的旧浏览器启动器与 `stop.command` 保留作源码兼容用途，不作为 Mac 0.3 的安装或日常启动入口。Mac 原生版只从 `/Applications/PaperLine.app` 启动。
 
 也可以双击 `start.command`，在终端前台运行；关闭该终端即可停止服务。其他系统在项目目录执行：
 
@@ -57,6 +61,8 @@ python3 app.py
 右上角的“帮助”随时打开完整使用说明，包含概念、上手步骤、Zotero 与 Obsidian 配置和快捷键。
 
 ## 首次使用
+
+模型家族演进线以时间线展示阶段日期、论文和方法贡献连线。论文库可搜索已导入的论文，再打开论文或加入阶段。方法是全局共享实体：不同论文与阶段引用同一方法，修改后各处保持一致。
 
 1. 创建一条阅读线，写下要研究的问题。
 2. 在“搜索”里一个框同时搜阅读线、思想卡和论文，结果按类型用左侧色条和标签区分（思想卡绿色、阅读线蓝色、论文紫色），点一下直接跳到对应位置；选了状态筛选时只看思想卡。添加新卡时也会显示相近卡片。思想卡可以设置别名，并同时属于多条阅读线。
@@ -93,25 +99,28 @@ Zotero 须保持开启，并在 **设置 → 高级**中启用“允许本机其
 
 ## 数据与导出
 
-- 浏览器版数据存放在 `data/state.json`；该目录已被 Git 忽略。
-- 每次写入前会把上一份数据复制到 `data/state.backup.json`。主文件损坏时应用不会改动任何数据，并在错误提示里给出这份备份的位置。
-- “设置 → 备份数据”可下载完整 JSON 备份；“从备份恢复”可以选一个备份文件替换当前数据。恢复前会检查文件格式和引用是否完整，并把当前数据另存为 `data/state.before-restore-时间.json`。Obsidian 路径、语言和提醒时间沿用本机设置，不从备份带过来。WebDAV 云端 `history/` 里的文件也可以直接拿来恢复。
+模型家族阅读线可关联阶段（标题、日期、摘要），学习记录可指向阶段或保留旧卡片目标。迁移备份会一并携带经过引用与长度检查的阶段、论文批注、新建表单及计时草稿；旧卡片和旧阅读记录草稿仍保留。云端 v2 固定写入 `state-v2.json`，不覆盖旧版 `state.json`。
+
+- 浏览器版数据存放在 `data/state-v2.json`；该目录已被 Git 忽略。
+- 每次写入前会把上一份数据复制到 `data/state-v2.backup.json`。主文件损坏时应用不会改动任何数据，并在错误提示里给出这份备份的位置。
+- “设置 → 备份数据”可下载完整 JSON 备份；“从备份恢复”可以选一个备份文件替换当前数据。恢复前会检查文件格式和引用是否完整，并把当前数据另存为 `data/state-v2.before-restore-时间.json`。Obsidian 路径、语言和提醒时间沿用本机设置，不从备份带过来。WebDAV 云端 `history-v2/` 里的文件也可以直接拿来恢复。
 
 ## WebDAV 云同步
 
 - 在“设置 → WebDAV 云同步”填写地址、用户名、密码和云端文件夹，勾选“自动上传到 WebDAV”，先点“测试连接”确认能写入。
-- 开启后，有改动时每 5 分钟自动上传一次 `state.json` 到云端文件夹（从第一次改动算起，5 分钟内的改动合并成一次上传；没有改动就不上传），并在 `history/` 下每天保留一份 `state-YYYY-MM-DD.json`。上传失败会按 1、2、4…最长 15 分钟退避重试；应用启动时和正常退出前也会补传一次。
+- 开启后，有改动时每 5 分钟自动上传一次 `state-v2.json` 到云端文件夹（从第一次改动算起，5 分钟内的改动合并成一次上传；没有改动就不上传），并在 `history-v2/` 下每天保留一份 v2 历史备份。上传失败会按 1、2、4…最长 15 分钟退避重试；应用启动时和正常退出前也会补传一次。
 - 右上角显示“已同步 / 待同步 / 同步失败”，点它打开设置查看原因；“立即同步”可以手动上传。
 - 坚果云地址是 `https://dav.jianguoyun.com/dav/`，密码要用它后台生成的“应用密码”。Nextcloud 一般是 `https://你的域名/remote.php/dav/files/用户名/`。
-- 账号单独存放在 `data/webdav.json`（权限 600），不会写进 `state.json`、备份下载或浏览器。密码框留空表示沿用已保存的密码；换了地址或用户名就必须重新填写。
+- 账号单独存放在 `data/webdav.json`（权限 600），不会写进 `state-v2.json`、备份下载或浏览器。密码框留空表示沿用已保存的密码；换了地址或用户名就必须重新填写。
 - 每次保存都会在数据里记下保存时间 `savedAt`。设置里会显示本机和云端各自的保存时间，以及哪边更新。
+- 主文件上传使用条件写入：新建要求云端文件仍不存在，覆盖要求强 ETag 与刚读取的版本一致；同步期间云端有变化会停止并提示冲突。已有不同内容的云端文件缺少强 ETag 时，即使手动确认覆盖也会保守停止，可先从云端恢复或选择空同步位置。旧版备份导入后，首次覆盖不同的 v2 云端内容需明确确认。
 - 上传前先比较两边时间：云端比本机新（比如另一台电脑刚传过）时，自动上传会暂停，右上角显示“云端更新”，不会覆盖云端。
-- 这时可以点“从云端恢复”，确认后用云端数据替换本机；本机当前数据先另存为 `data/state.before-cloud-restore-时间.json`。恢复后两边时间一致，自动上传照常继续。
-- 也可以点“立即同步”，确认后用本机覆盖云端；被覆盖的云端那份会先存成 `history/state-overwritten-时间.json`。
+- 这时可以点“从云端恢复”，确认后用云端数据替换本机；本机当前数据先另存为独立的恢复前备份。恢复后两边时间一致，自动上传照常继续。
+- 也可以点“立即同步”，确认后用本机覆盖云端；被覆盖的云端那份会先存成 `history-v2/state-v2-overwritten-时间.json`。
 - 如果本机比云端新，“从云端恢复”会多提醒一句会用较旧的数据替换。两边内容一致时不会恢复。Obsidian 路径、语言和提醒时间始终沿用本机设置。
 - 旧版本上传、没有 `savedAt` 的云端文件，按服务器记录的修改时间比较。两台电脑的系统时钟差太多时，判断可能不准。
-- 不会自动合并两边的改动：两台电脑都改过时，只能选一边保留，另一边在 `history/` 或 `data/` 里留有副本。建议使用 https 地址，http 会明文传输密码。
-- Obsidian 导出位置是所选库的 `PaperLine/`，包含“阅读线”“思想卡”“论文”三个目录。
+- 不会自动合并两边的改动：两台电脑都改过时，只能选一边保留，另一边在 `history-v2/` 或 `data/` 里留有副本。建议使用 https 地址，http 会明文传输密码。
+- Obsidian 导出位置是所选库的 `PaperLine/`，包含“阅读线”“思想卡”“论文”“模型阶段”四个目录。
 - 导出笔记不再包含隐藏 HTML 标记。生成内容的所有权保存在 `PaperLine/.paperline-export.json`；重复导出只替换上次生成的完整内容，保留前后的手写补充，旧标记笔记会自动迁移。如果生成内容被手工修改、出现重复或同名文件无法确认归属，整次导出会在写入前停止并指出冲突文件。请保留该隐藏记录文件。
 - 内容没有变化的笔记会跳过、不重写文件，避免 Obsidian 同步整库刷新；导出后会提示本次写入多少篇、跳过多少篇。
 - 笔记文件名在创建时按标题生成，之后改标题不会改文件名，以免 Obsidian 里已有的链接失效；笔记正文中的标题会随之更新。

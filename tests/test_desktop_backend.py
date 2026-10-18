@@ -49,10 +49,27 @@ class DesktopProtocolTests(unittest.TestCase):
             self.assertEqual(replies[4]["data"]["state"]["lines"][0]["title"], "Imported reading line")
             self.assertEqual(replies[5]["data"]["dataDir"], str(directory.resolve()))
             self.assertEqual(replies[6]["data"]["status"], "idle")
-            self.assertTrue((directory / "state.json").is_file())
-            self.assertTrue((directory / "state.backup.json").is_file())
-            self.assertTrue(list(directory.glob("state.before-restore-*.json")))
+            self.assertTrue((directory / "state-v2.json").is_file())
+            self.assertTrue((directory / "state-v2.backup.json").is_file())
+            self.assertTrue(list(directory.glob("state-v2.before-restore-*.json")))
             self.assertEqual(diagnostics, "")
+
+    def test_legacy_import_is_read_only_and_v2_is_reused_on_restart(self):
+        legacy = app.default_state()
+        legacy["version"] = 1
+        legacy.pop("stages", None)
+        with tempfile.TemporaryDirectory() as folder:
+            directory = Path(folder)
+            original = json.dumps(legacy, ensure_ascii=False).encode("utf-8")
+            (directory / "state.json").write_bytes(original)
+            replies, _ = self.run_backend(directory, [self.request(1, "GET", "/api/state")])
+            self.assertEqual(replies[1]["data"]["version"], 2)
+            self.assertEqual((directory / "state.json").read_bytes(), original)
+            migrated = (directory / "state-v2.json").read_bytes()
+            replies, _ = self.run_backend(directory, [self.request(2, "GET", "/api/state")])
+            self.assertEqual(replies[1]["data"]["version"], 2)
+            self.assertEqual((directory / "state-v2.json").read_bytes(), migrated)
+            self.assertEqual((directory / "state.json").read_bytes(), original)
 
     def test_protocol_errors_do_not_end_session_and_shutdown_stops_reading(self):
         with tempfile.TemporaryDirectory() as folder:

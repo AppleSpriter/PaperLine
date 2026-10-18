@@ -183,7 +183,9 @@ class ReadingGraphTests(unittest.TestCase):
         app.apply_action(self.state, "idea.delete", {"id": idea_id})
         self.assertEqual([item["id"] for item in self.state["ideas"]], [second_id])
         self.assertEqual(self.state["edges"], [])
-        self.assertEqual(self.state["sessions"], [])
+        self.assertEqual(len(self.state["sessions"]), 1)
+        self.assertTrue(self.state["sessions"][0]["targetSnapshot"]["deleted"])
+        self.assertEqual(self.state["sessions"][0]["note"], "读过一次。")
         self.assertEqual(self.state["lines"][0]["ideaIds"], [second_id])
         self.assertEqual(self.state["lines"][0]["activeIdeaId"], second_id)
         with self.assertRaises(ValueError):

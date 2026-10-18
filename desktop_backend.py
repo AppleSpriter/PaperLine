@@ -25,8 +25,9 @@ def configure_data_dir(directory: str) -> Path:
     data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     with tempfile.TemporaryFile(dir=data_dir):
         pass
-    app.DATA_FILE = data_dir / "state.json"
-    app.BACKUP_FILE = data_dir / "state.backup.json"
+    app.LEGACY_DATA_FILE = data_dir / "state.json"
+    app.DATA_FILE = data_dir / "state-v2.json"
+    app.BACKUP_FILE = data_dir / "state-v2.backup.json"
     app.WEBDAV_FILE = data_dir / "webdav.json"
     app._RECOMMENDATION_CACHE = None
     with app.LOCK:

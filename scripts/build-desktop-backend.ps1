@@ -21,10 +21,19 @@ $rustInfo = & rustc -vV
 if ($LASTEXITCODE -ne 0 -or ($rustInfo -join "`n") -notmatch 'host: x86_64-pc-windows-msvc') { throw 'Install the Rust x86_64-pc-windows-msvc toolchain.' }
 New-Item -ItemType Directory -Force 'src-tauri/binaries' | Out-Null
 # Console bootloader preserves JSON-lines stdin/stdout; the Rust parent hides its window.
-& $python -m PyInstaller --noconfirm --clean --onefile --console `
+& $python -m PyInstaller.utils.cliutils.makespec --onefile --console `
     --name paperline-backend-x86_64-pc-windows-msvc `
-    --distpath src-tauri/binaries --workpath .desktop-build/pyinstaller-windows `
     --specpath .desktop-build --paths . desktop_backend.py
+if ($LASTEXITCODE -ne 0) { throw 'Windows sidecar spec generation failed.' }
+& $python scripts/desktop-build-privacy.py prepare `
+    --spec .desktop-build/paperline-backend-x86_64-pc-windows-msvc.spec `
+    --output .desktop-build/paperline-backend-x86_64-pc-windows-msvc.privacy.spec
+if ($LASTEXITCODE -ne 0) { throw 'Windows sidecar privacy preparation failed.' }
+& $python -m PyInstaller --noconfirm --clean `
+    --distpath src-tauri/binaries --workpath .desktop-build/pyinstaller-windows `
+    .desktop-build/paperline-backend-x86_64-pc-windows-msvc.privacy.spec
 if ($LASTEXITCODE -ne 0) { throw 'Windows sidecar build failed.' }
+& $python scripts/desktop-build-privacy.py audit src-tauri/binaries/paperline-backend-x86_64-pc-windows-msvc.exe
+if ($LASTEXITCODE -ne 0) { throw 'Windows sidecar privacy audit failed.' }
 & $python scripts/verify-packaged-backend.py src-tauri/binaries/paperline-backend-x86_64-pc-windows-msvc.exe
 if ($LASTEXITCODE -ne 0) { throw 'Windows sidecar startup verification failed.' }

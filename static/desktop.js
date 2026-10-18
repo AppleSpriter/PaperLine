@@ -11,8 +11,15 @@
     if (!plain(drafts) || Object.keys(drafts).length > 2000) throw new Error("迁移草稿格式无效或数量过多。");
     const ideas = new Set((backup?.ideas || []).map((item) => item.id));
     const lines = new Map((backup?.lines || []).map((item) => [item.id, item]));
+    const stages = new Set((backup?.stages || []).map((item) => item.id));
+    const papers = new Set((backup?.papers || []).map((item) => item.id));
+    const edges = new Map((backup?.edges || []).map((item) => [item.id, item]));
+    const strings = (draft, fields) => Object.entries(draft).every(([field, value]) => Object.hasOwn(fields, field) && typeof value === "string" && value.length <= fields[field]);
+    const reference = (id, collection) => id === undefined || id === "" || collection.has(id);
+    const date = (value) => value === undefined || value === "" || (/^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value);
+    const session = (draft) => !Object.keys(draft).some((field) => !["elapsed", "note", "nextQuestion"].includes(field)) && Number.isInteger(draft.elapsed) && draft.elapsed >= 0 && draft.elapsed <= 86400 && typeof draft.note === "string" && draft.note.length <= 4000 && typeof draft.nextQuestion === "string" && draft.nextQuestion.length <= 1000;
     const result = Object.create(null);
-    const limits = { title: 120, aliases: 1500, summary: 4000, mechanism: 6000, thoughts: 6000, baseUpdatedAt: 100, kind: 20, status: 20 };
+    const limits = { title: 120, aliases: 1500, summary: 4000, mechanism: 6000, thoughts: 6000, baseUpdatedAt: 100, kind: 20, status: 20, entityType: 20 };
     for (const [key, draft] of Object.entries(drafts)) {
       if (!plain(draft) || !key.startsWith(prefix)) continue;
       const parts = key.slice(prefix.length).split(":");
@@ -20,8 +27,34 @@
         if (typeof draft.title !== "string" || Object.entries(draft).some(([field, value]) => !Object.hasOwn(limits, field) || typeof value !== "string" || value.length > limits[field])) continue;
         if (draft.kind !== undefined && !["concept", "innovation", "question"].includes(draft.kind)) continue;
         if (draft.status !== undefined && !["inbox", "learning", "understood"].includes(draft.status)) continue;
+        if (draft.entityType !== undefined && !["method", "concept", "question", "unclassified"].includes(draft.entityType)) continue;
       } else if (parts[0] === "session" && parts.length === 3 && ideas.has(parts[2]) && lines.get(parts[1])?.ideaIds?.includes(parts[2])) {
-        if (Object.keys(draft).some((field) => !["elapsed", "note", "nextQuestion"].includes(field)) || !Number.isInteger(draft.elapsed) || draft.elapsed < 0 || draft.elapsed > 86400 || typeof draft.note !== "string" || draft.note.length > 4000 || typeof draft.nextQuestion !== "string" || draft.nextQuestion.length > 1000) continue;
+        if (!session(draft)) continue;
+      } else if (parts[0] === "session" && parts.length === 4 && parts[1] === "stage" && stages.has(parts[2]) && (parts[3] === "" || lines.get(parts[3])?.stageIds?.includes(parts[2]))) {
+        if (!session(draft)) continue;
+      } else if (parts[0] === "stage" && parts.length === 2 && stages.has(parts[1])) {
+        if (!strings(draft, { title: 120, date: 10, summary: 4000, baseUpdatedAt: 100 }) || !date(draft.date)) continue;
+      } else if (parts[0] === "stage-new" && parts.length === 2 && lines.get(parts[1])?.kind === "model_family") {
+        if (!strings(draft, { title: 120, date: 10, summary: 4000 }) || !date(draft.date)) continue;
+      } else if (parts[0] === "line" && parts.length === 2 && lines.has(parts[1])) {
+        if (!strings(draft, { title: 120, question: 1000, kind: 20 })) continue;
+      } else if (parts[0] === "edge" && parts.length === 2 && edges.has(parts[1])) {
+        if (!strings(draft, { note: 3000, sourceUrl: 1500 })) continue;
+      } else if (parts[0] === "paper-method" && [2, 3].includes(parts.length) && papers.has(parts[1])) {
+        if (parts.length === 3 && (!stages.has(parts[2]) || !(backup.edges || []).some((edge) => edge.fromType === "paper" && edge.fromId === parts[1] && edge.toType === "stage" && edge.toId === parts[2] && edge.relation === "documents"))) continue;
+        if (!strings(draft, { title: 120, ideaId: 150, edgeId: 40, note: 3000, sourceUrl: 1500 }) || !reference(draft.ideaId, ideas)) continue;
+        if (draft.edgeId) {
+          const edge = edges.get(draft.edgeId);
+          if (!edge || edge.fromType !== "paper" || edge.fromId !== parts[1] || (edge.toType === undefined ? "idea" : edge.toType) !== "idea" || !ideas.has(edge.toId) || (draft.ideaId && draft.ideaId !== edge.toId)) continue;
+        }
+      } else if (parts[0] === "paper-stage" && parts.length === 2 && papers.has(parts[1])) {
+        if (!strings(draft, { lineId: 150, lineTitle: 120, stageId: 150, stageTitle: 120, date: 10, summary: 4000 }) || !reference(draft.lineId, new Set(lines.keys())) || !reference(draft.stageId, stages) || !date(draft.date)) continue;
+        if (draft.lineId && draft.stageId && !lines.get(draft.lineId)?.stageIds?.includes(draft.stageId)) continue;
+      } else if (parts[0] === "line-new" && parts.length === 1) {
+        if (!strings(draft, { title: 120, question: 1000, kind: 20 })) continue;
+      } else if (parts[0] === "idea-new" && parts.length === 1) {
+        if (!strings(draft, { title: 120, aliases: 1500, summary: 4000, kind: 20, entityType: 20, lineId: 150, relation: 30 }) || !reference(draft.lineId, new Set(lines.keys()))) continue;
+        if (draft.entityType !== undefined && !["method", "concept", "question", "unclassified"].includes(draft.entityType)) continue;
       } else continue;
       result[key] = { ...draft };
     }

@@ -6,6 +6,7 @@ on:
     paths:
       - 'app.py'
       - 'desktop_backend.py'
+      - 'learning.py'
       - 'paper_map.py'
       - 'static/**'
       - 'src-tauri/**'
@@ -15,10 +16,11 @@ on:
       - '.github/workflows/windows-desktop.yml'
 
   push:
-    branches: ['codex/desktop-windows']
+    branches: ['codex/desktop-windows', 'codex/learning-timeline-desktop']
     paths:
       - 'app.py'
       - 'desktop_backend.py'
+      - 'learning.py'
       - 'paper_map.py'
       - 'static/**'
       - 'src-tauri/**'
@@ -74,11 +76,19 @@ jobs:
         env:
           PAPERLINE_PYTHON: ${{ env.pythonLocation }}\python.exe
         run: ./scripts/package-desktop.ps1
+      - name: Download published upgrade baseline
+        shell: pwsh
+        run: |
+          $previous = Join-Path $env:RUNNER_TEMP 'PaperLine_0.2.1_x64-setup.exe'
+          Invoke-WebRequest -Uri 'https://github.com/AppleSpriter/PaperLine/releases/download/v0.2.1/PaperLine_0.2.1_x64-setup.exe' -OutFile $previous
+          $expected = '3d5251653a1fe4495ff78f6d5a498290bbe441fb7f43659ecd2327679a285e63'
+          if ((Get-FileHash $previous -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) { throw 'Published upgrade baseline checksum changed.' }
       - name: Verify installation and native app lifecycle
         shell: pwsh
         run: |
-          $version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
-          ./scripts/verify-windows-installer.ps1 -Installer "dist/windows/$version/PaperLine_${version}_x64-setup.exe"
+          $version = (Get-Content src-tauri/tauri.windows.conf.json -Raw | ConvertFrom-Json).version
+          $previous = Join-Path $env:RUNNER_TEMP 'PaperLine_0.2.1_x64-setup.exe'
+          ./scripts/verify-windows-installer.ps1 -Installer "dist/windows/$version/PaperLine_${version}_x64-setup.exe" -PreviousInstaller $previous
       - name: Upload verified installer and checksum
         uses: actions/upload-artifact@v4
         with:
