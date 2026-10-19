@@ -375,6 +375,16 @@ def apply_action(state: dict[str, Any], action: str, payload: dict[str, Any]) ->
         line["activeIdeaId"] = active
         line["updatedAt"] = utc_now()
         result["lineId"] = line["id"]
+    elif action == "line.reorder":
+        target_line = find(state, "lines", field(payload, "lineId", 40, True))
+        offset = payload.get("offset")
+        if type(offset) is not int or offset not in (-1, 1):
+            raise ValueError("移动方向无效。")
+        index = state["lines"].index(target_line)
+        target = index + offset
+        if 0 <= target < len(state["lines"]):
+            state["lines"][index], state["lines"][target] = state["lines"][target], state["lines"][index]
+        result["movedLineId"] = target_line["id"]
     elif action == "line.move":
         line = find(state, "lines", field(payload, "lineId", 40, True))
         idea_id = field(payload, "ideaId", 40, True)

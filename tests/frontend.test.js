@@ -1468,3 +1468,166 @@ test("page zoom reveals only an open calendar without changing its date or rebui
   open.hidden = true; h.app.setPageZoom(1); assert.equal(calls.length, 1);
   h.context.document.querySelectorAll = () => []; h.app.setPageZoom(1.4); assert.equal(calls.length, 1);
 });
+
+test("a member paper opened from a timeline annotates the selected stage atomically with an isolated draft", async () => {
+  const h = createApp(), data = learningFixture(); h.app.setState(data);
+  h.app.ui.view = "outline"; h.app.ui.selectedLineId = "family";
+  h.app.workspaceDraft({ dataset: { workspaceDraft: "paper-method:p1" }, values: { title: "Global draft" } });
+  h.app.workspaceDraft({ dataset: { workspaceDraft: "paper-method:p1:s1" }, values: { title: "Stage draft" } });
+  await workspaceClick(h, { workspaceAction: "timeline-paper", id: "s1", paperId: "p1" });
+  const html = h.node("#inspector").innerHTML;
+  assert.match(html, /data-stage-id="s1"/); assert.match(html, /保存后显示于阶段/); assert.match(html, /<strong data-user-content>Reasoning stage<\/strong>/);
+  assert.match(html, /value="Stage draft"/); assert.doesNotMatch(html, /value="Global draft"/);
+  assert.match(html, /data-workspace-action="method-stage" data-id="s1" data-line-id="family"/);
+  let request;
+  h.context.fetch = async (path, options) => {
+    request = JSON.parse(options.body);
+    data.ideas.push({ id: "new-method", title: "Stage draft", entityType: "method" });
+    data.edges.push({ id: "new-edge", fromType: "paper", fromId: "p1", toId: "new-method", relation: "proposes" });
+    data.edges.find((edge) => edge.id === "membership").contributionRefs = ["new-edge"];
+    return { ok: true, json: async () => ({ state: data, result: { paperId: "p1", stageId: "s1" } }) };
+  };
+  await h.app.submitWorkspaceForm({ dataset: { workspaceForm: "annotate-method", workspaceDraft: "paper-method:p1:s1", id: "p1", stageId: "s1" }, values: { title: "Stage draft", note: "", sourceUrl: "" } }, { value: "proposes" });
+  assert.equal(request.action, "paper.annotate_method"); assert.equal(request.payload.stageId, "s1");
+  assert.deepEqual(Array.from(h.app.timelineLayout(data.lines[1]).methodIds), ["new-method"]);
+  assert.equal(h.app.readDraft("paper-method:p1:s1"), null); assert.equal(h.app.readDraft("paper-method:p1").title, "Global draft");
+});
+
+test("paper annotation context excludes other views, other lines, missing stages, and nonmembers", () => {
+  for (const scenario of ["papers", "map", "graph", "recommendations", "research", "other-line", "missing-stage", "nonmember"]) {
+    const h = createApp(), data = learningFixture();
+    h.app.ui.view = "outline"; h.app.ui.selectedLineId = "family"; h.app.ui.selectedStageId = "s1";
+    if (["papers", "map", "graph", "recommendations"].includes(scenario)) h.app.ui.view = scenario;
+    if (scenario === "research") h.app.ui.selectedLineId = "l1";
+    if (scenario === "other-line") data.lines[1].stageIds = [];
+    if (scenario === "missing-stage") data.stages = [];
+    if (scenario === "nonmember") data.edges = data.edges.filter((edge) => edge.id !== "membership");
+    h.app.setState(data); h.app.renderPaperInspector(data.papers[0]);
+    const html = h.node("#inspector").innerHTML;
+    assert.doesNotMatch(html, /data-stage-id=/, scenario);
+    assert.match(html, /data-workspace-draft="paper-method:p1"/, scenario);
+  }
+});
+
+test("stage editor offers only explicit eligible member relationships missing from this stage", () => {
+  const h = createApp(), data = learningFixture();
+  data.edges[0].note = "Original evidence <keep>";
+  data.edges.push({ id: "already", fromType: "paper", fromId: "p1", toId: "i1", relation: "improves" });
+  data.edges.push({ id: "question", fromType: "paper", fromId: "p1", toId: "i1", relation: "questions" });
+  data.edges.push({ id: "legacy", fromType: "paper", fromId: "p1", toId: "i2", relation: "uses" });
+  data.edges.push({ id: "outsider", fromType: "paper", fromId: "p2", toId: "i1", relation: "proposes" });
+  data.edges.find((edge) => edge.id === "membership").contributionRefs = ["already"];
+  h.app.setState(data);
+  const html = h.app.stageEditor(data.stages[0], data.lines[1], 0);
+  assert.match(html, /可加入的已有方法关系/); assert.match(html, /Paper · 使用 · GRPO/);
+  assert.match(html, /Original evidence &lt;keep&gt;/);
+  const buttons = html.match(/<button[^>]+data-workspace-action="add-stage-contribution"[^>]+>/g);
+  assert.equal(buttons.length, 1); assert.match(buttons[0], /data-id="s1" data-paper-id="p1" data-idea-id="i1" data-edge-id="e1" data-relation="uses"/);
+  assert.equal(data.edges.find((edge) => edge.id === "membership").contributionRefs.length, 1);
+});
+
+test("adding an existing contribution is queued, duplicate-safe, preserves evidence, and affects only its stage", async () => {
+  const h = createApp(), data = learningFixture(), requests = [];
+  data.edges[0].note = "Keep evidence"; data.edges[0].sourceUrl = sourceUrl;
+  data.stages.push({ id: "s2", title: "Other stage" }); data.lines[1].stageIds.push("s2");
+  data.edges.push({ id: "member2", fromType: "paper", fromId: "p1", toType: "stage", toId: "s2", relation: "documents", contributionRefs: [] });
+  data.edges.find((edge) => edge.id === "membership").contributionRefs = ["unrelated-ref"];
+  h.app.setState(data); h.app.ui.view = "outline"; h.app.ui.selectedLineId = "family"; h.app.ui.selectedStageId = "s1"; h.app.ui.stageInspect = true;
+  let release;
+  h.context.fetch = async (path, options) => {
+    requests.push(JSON.parse(options.body));
+    await new Promise((resolve) => { release = resolve; });
+    data.edges.find((edge) => edge.id === "membership").contributionRefs.push("e1");
+    return { ok: true, json: async () => ({ state: data, result: { stageId: "s1", paperId: "p1", ideaId: "i1" } }) };
+  };
+  const dataset = { workspaceAction: "add-stage-contribution", id: "s1", paperId: "p1", ideaId: "i1", edgeId: "e1", relation: "uses" };
+  const button = { dataset, closest() { return null; } };
+  const click = () => Promise.all(h.documentListeners.get("click").callbacks.map((listener) => listener({ target: { closest: (selector) => selector === "[data-workspace-action]" ? button : null } })));
+  const first = click(), duplicate = click();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(requests.length, 1); assert.equal(button.disabled, true);
+  release(); await Promise.all([first, duplicate]);
+  assert.deepEqual(requests[0], { action: "stage.add_contribution", payload: { stageId: "s1", edgeId: "e1" } });
+  assert.deepEqual(data.edges.find((edge) => edge.id === "membership").contributionRefs, ["unrelated-ref", "e1"]);
+  assert.deepEqual(data.edges.find((edge) => edge.id === "member2").contributionRefs, []);
+  assert.equal(data.edges[0].note, "Keep evidence"); assert.equal(data.edges[0].sourceUrl, sourceUrl);
+  await click(); assert.equal(requests.length, 1); assert.equal(button.disabled, false);
+  assert.equal(data.ideas.length, 2); assert.equal(data.edges.filter((edge) => edge.id === "e1").length, 1);
+});
+
+test("a failed existing contribution addition remains available for retry", async () => {
+  const h = createApp(), data = learningFixture(); h.app.setState(data);
+  let calls = 0;
+  h.context.fetch = async () => { calls++; return { ok: false, json: async () => ({ error: "Retry me" }) }; };
+  const dataset = { workspaceAction: "add-stage-contribution", id: "s1", paperId: "p1", ideaId: "i1", edgeId: "e1", relation: "uses" };
+  const button = await workspaceClick(h, dataset);
+  assert.equal(button.disabled, false); assert.equal(button.dataset.saving, undefined);
+  await workspaceClick(h, dataset); assert.equal(calls, 2);
+  assert.match(h.app.stageEditor(data.stages[0], data.lines[1], 0), /data-edge-id="e1" data-relation="uses"/);
+});
+
+test("sidebar reordering preserves the selected path, editor draft, and main view", async () => {
+  const h = createApp(), data = fixture();
+  data.lines.push({ id: "l2", title: "Second path", ideaIds: [], activeIdeaId: "" });
+  h.app.setState(data); h.app.ui.selectedLineId = "l1";
+  h.node("#main-view").innerHTML = "Editor stays mounted";
+  h.app.captureIdeaDraft({ dataset: { id: "i1" }, values: { title: "Unfinished", summary: "Keep notes" } });
+  const requests = []; let release;
+  h.context.fetch = async (path, options) => {
+    requests.push(JSON.parse(options.body));
+    await new Promise((resolve) => { release = resolve; });
+    data.lines.reverse();
+    return { ok: true, json: async () => ({ state: data, result: { movedLineId: "l2" } }) };
+  };
+  const button = { dataset: { action: "move-reading-line", id: "l2", offset: "-1" } };
+  const click = () => Promise.all(h.documentListeners.get("click").callbacks.map((listener) => listener({ target: { closest: (selector) => selector === "[data-action]" ? button : null } })));
+  const first = click(), duplicate = click();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(requests.length, 1); assert.equal(button.disabled, true);
+  release(); await Promise.all([first, duplicate]);
+  assert.deepEqual(requests[0], { action: "line.reorder", payload: { lineId: "l2", offset: -1 } });
+  assert.equal(h.app.ui.selectedLineId, "l1");
+  assert.equal(h.node("#main-view").innerHTML, "Editor stays mounted");
+  assert.equal(h.app.readDraft("idea:i1").summary, "Keep notes");
+  const sidebar = h.node("#line-list").innerHTML;
+  assert.ok(sidebar.indexOf("Second path") < sidebar.indexOf("Research"));
+  assert.match(sidebar, /aria-label="上移阅读线"[^>]*disabled/);
+  assert.equal(button.disabled, false);
+});
+
+test("failed sidebar reorder can retry without changing the selection", async () => {
+  const h = createApp(); let calls = 0;
+  h.context.fetch = async () => { calls++; return { ok: false, json: async () => ({ error: "Could not save order" }) }; };
+  const button = { dataset: { action: "move-reading-line", id: "l1", offset: "1" } };
+  const click = () => Promise.all(h.documentListeners.get("click").callbacks.map((listener) => listener({ target: { closest: (selector) => selector === "[data-action]" ? button : null } })));
+  await click(); await click();
+  assert.equal(calls, 2); assert.equal(button.disabled, false);
+  assert.equal(button.dataset.saving, undefined); assert.equal(h.app.ui.selectedLineId, "l1");
+});
+
+test("reorder and annotation requests stay in order and do not steal editor focus", async () => {
+  const h = createApp(), data = learningFixture(), requests = [];
+  h.app.setState(data); h.app.ui.view = "outline"; h.app.ui.selectedLineId = "family";
+  let release;
+  h.context.fetch = async (path, options) => {
+    const request = JSON.parse(options.body); requests.push(request.action);
+    if (request.action === "line.reorder") {
+      await new Promise((resolve) => { release = resolve; });
+      data.lines.reverse();
+    } else data.edges.find((edge) => edge.id === "membership").contributionRefs = ["e1"];
+    return { ok: true, json: async () => ({ state: structuredClone(data), result: {} }) };
+  };
+  const input = { focus() { throw new Error("Already focused input should stay mounted"); } };
+  h.context.document.activeElement = input;
+  const button = { dataset: { action: "move-reading-line", id: "family", offset: "-1" } };
+  const reorder = Promise.all(h.documentListeners.get("click").callbacks.map((listener) => listener({ target: { closest: (selector) => selector === "[data-action]" ? button : null } })));
+  await new Promise((resolve) => setImmediate(resolve));
+  const annotation = h.app.act("stage.add_contribution", { stageId: "s1", edgeId: "e1" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(requests, ["line.reorder"]);
+  release(); await Promise.all([reorder, annotation]);
+  assert.deepEqual(requests, ["line.reorder", "stage.add_contribution"]);
+  assert.equal(h.context.document.activeElement, input);
+  assert.deepEqual(Array.from(h.app.stagePaperEdges("s1")[0].contributionRefs), ["e1"]);
+  assert.ok(h.node("#line-list").innerHTML.indexOf("Family") < h.node("#line-list").innerHTML.indexOf("Research"));
+});

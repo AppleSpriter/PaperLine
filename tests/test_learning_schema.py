@@ -101,6 +101,52 @@ class LearningDomainTests(unittest.TestCase):
         self.assertEqual(len(self.state["ideas"]), 2)
         app.validate_backup(self.state)
 
+    def test_add_stage_contribution_preserves_current_relationship_and_is_idempotent(self):
+        previous = self.action("paper.annotate_method", paperId=self.paper, title="MLA", relation="uses")
+        method = self.action("paper.annotate_method", paperId=self.paper, title="CED", relation="proposes",
+                             note="Original evidence", sourceUrl="https://example.org/ced")
+        stage = self.action("paper.add_to_stage", paperId=self.paper, stageTitle="V4.1",
+                            contributionRefs=[previous["edgeId"]])
+        other_stage = self.action("paper.add_to_stage", paperId=self.paper, stageTitle="Other")
+        # A stale client saw 'proposes'; an independent edit has since changed the relationship.
+        self.action("edge.update", id=method["edgeId"], relation="uses")
+        before = copy.deepcopy(self.state)
+        request = {"stageId": stage["stageId"], "edgeId": method["edgeId"]}
+        result = self.action("stage.add_contribution", **request)
+        expected = copy.deepcopy(before)
+        app.find(expected, "edges", stage["edgeId"])["contributionRefs"].append(method["edgeId"])
+        self.assertEqual(self.state, expected)
+        self.assertEqual(result, {**method, "stageId": stage["stageId"], "membershipEdgeId": stage["edgeId"]})
+        self.assertEqual(app.find(self.state, "edges", method["edgeId"])["relation"], "uses")
+        self.assertEqual(app.find(self.state, "edges", other_stage["edgeId"])["contributionRefs"], [])
+        self.assertEqual(self.action("stage.add_contribution", **request), result)
+        self.assertEqual(self.state, expected)
+        app.validate_backup(self.state)
+
+    def test_add_stage_contribution_rejects_invalid_context_without_changes(self):
+        method = self.action("paper.annotate_method", paperId=self.paper, title="CED", relation="proposes")
+        stage = self.action("stage.create", title="V4.1")["stageId"]
+        before = copy.deepcopy(self.state)
+        with self.assertRaisesRegex(ValueError, "先将这篇论文"):
+            self.action("stage.add_contribution", stageId=stage, edgeId=method["edgeId"])
+        self.assertEqual(self.state, before)
+        membership = self.action("paper.add_to_stage", paperId=self.paper, stageId=stage)
+        legacy = self.action("edge.create", fromType="paper", fromId=self.paper, toId=method["ideaId"], relation="questions")
+        concept = self.action("idea.create", title="Concept", entityType="concept")
+        concept_edge = self.action("edge.create", fromType="paper", fromId=self.paper, toId=concept["ideaId"], relation="uses")
+        before = copy.deepcopy(self.state)
+        for payload in (
+            dict(stageId="missing", edgeId=method["edgeId"]),
+            dict(stageId=stage, edgeId="missing"),
+            dict(stageId=stage, edgeId=membership["edgeId"]),
+            dict(stageId=stage, edgeId=legacy["edgeId"]),
+            dict(stageId=stage, edgeId=concept_edge["edgeId"]),
+            dict(stageId=stage, edgeId=method["edgeId"], relation="proposes"),
+        ):
+            with self.assertRaises(ValueError):
+                self.action("stage.add_contribution", **payload)
+            self.assertEqual(self.state, before)
+
     def test_stage_method_annotation_requires_existing_paper_membership_before_any_change(self):
         method = self.action("paper.annotate_method", paperId=self.paper, title="GRPO", relation="uses", note="Original")
         stage = self.action("stage.create", title="R1")["stageId"]

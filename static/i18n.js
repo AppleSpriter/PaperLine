@@ -1,6 +1,9 @@
 /* The original Chinese UI strings remain the source of truth. */
 (() => {
   const en = {
+    "可加入的已有方法关系": "Existing method relationships available to add",
+    "加入本阶段": "Add to this stage",
+    "保存后显示于阶段": "Saving will show this method in stage",
     "选择日期": "Choose date",
     "阶段日期日历": "Stage date calendar",
     "上个月": "Previous month",
@@ -505,6 +508,8 @@
     "本次阅读已记录。下次可以从这里继续。": "Reading session saved. Continue from here next time.",
     "设置已保存。": "Settings saved.",
     "卡片已保存。": "Card saved.",
+    "上移阅读线": "Move reading path up",
+    "下移阅读线": "Move reading path down",
     "无法读取应用数据": "Could not load app data",
     "请求失败，请重试。": "Request failed. Please try again.",
     "请在 Zotero 设置 → 高级中启用“允许本机其他应用与 Zotero 通信”。": "In Zotero Settings → Advanced, enable “Allow other applications on this computer to communicate with Zotero.”",

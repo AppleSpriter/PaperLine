@@ -8,7 +8,7 @@ from typing import Any
 
 ENTITY_TYPES = {"method", "concept", "question", "unclassified"}
 ACTIONS = {"paper.annotate_method", "paper.add_to_stage", "stage.create", "stage.update",
-           "line.attach_stage", "line.detach_stage", "line.move_stage", "stage.remove_paper", "session.create"}
+           "line.attach_stage", "line.detach_stage", "line.move_stage", "stage.remove_paper", "stage.add_contribution", "session.create"}
 
 
 def upgrade_v1(data: dict[str, Any]) -> dict[str, Any]:
@@ -248,6 +248,26 @@ def _apply(state, action, payload, c):
         state["edges"] = [edge for edge in state["edges"] if not (edge.get("toType") == "stage" and edge["toId"] == stage_id
                                                                and edge["fromType"] == "paper" and edge["fromId"] == paper_id)]
         return {"stageId": stage_id, "paperId": paper_id}
+    if action == "stage.add_contribution":
+        if set(payload) - {"stageId", "edgeId"}:
+            raise ValueError("加入阶段贡献只接受阶段和已有关系编号。")
+        stage_id = find(state, "stages", field(payload, "stageId", 40, True))["id"]
+        edge = find(state, "edges", field(payload, "edgeId", 40, True))
+        if (edge.get("fromType") != "paper" or edge.get("toType", "idea") != "idea"
+                or edge.get("relation") not in {"proposes", "improves", "uses"}):
+            raise ValueError("请选择论文与方法之间的提出、使用或改进关系。")
+        paper_id = find(state, "papers", edge["fromId"])["id"]
+        method = find(state, "ideas", edge["toId"])
+        if method.get("entityType") != "method":
+            raise ValueError("阶段贡献必须关联已明确分类的方法。")
+        membership = next((item for item in state["edges"] if item.get("fromType") == "paper"
+                           and item.get("fromId") == paper_id and item.get("toType") == "stage"
+                           and item.get("toId") == stage_id and item.get("relation") == "documents"), None)
+        if membership is None:
+            raise ValueError("请先将这篇论文加入所选模型阶段，再加入方法贡献。")
+        membership["contributionRefs"] = list(dict.fromkeys([*membership.get("contributionRefs", []), edge["id"]]))
+        return {"stageId": stage_id, "paperId": paper_id, "ideaId": method["id"],
+                "edgeId": edge["id"], "membershipEdgeId": membership["id"]}
     if action == "paper.annotate_method":
         paper_id = find(state, "papers", field(payload, "paperId", 40, True))["id"]
         stage_id = field(payload, "stageId", 40)

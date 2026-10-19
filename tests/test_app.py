@@ -1,3 +1,4 @@
+import copy
 import json
 import os
 import tempfile
@@ -22,6 +23,34 @@ class ReadingGraphTests(unittest.TestCase):
             "summary": "一个需要继续理解的策略优化思想。",
         })["ideaId"]
         return line_id, idea_id
+
+    def test_reading_path_order_is_persisted_without_changing_shared_content(self):
+        first, idea_id = self.make_line_and_idea()
+        second = app.apply_action(self.state, "line.create", {"title": "模型演进", "kind": "model_family"})["lineId"]
+        third = app.apply_action(self.state, "line.create", {"title": "对照研究"})["lineId"]
+        before = copy.deepcopy(self.state)
+        result = app.apply_action(self.state, "line.reorder", {"lineId": second, "offset": -1})
+        self.assertEqual(result, {"movedLineId": second})
+        self.assertEqual([item["id"] for item in self.state["lines"]], [second, first, third])
+        self.assertEqual({item["id"]: item for item in self.state["lines"]}, {item["id"]: item for item in before["lines"]})
+        for key in self.state.keys() - {"lines"}:
+            self.assertEqual(self.state[key], before[key])
+        with tempfile.TemporaryDirectory() as folder:
+            with patch.object(app, "DATA_FILE", Path(folder) / "state-v2.json"), patch.object(app, "BACKUP_FILE", Path(folder) / "backup.json"):
+                app.save_state(self.state)
+                self.assertEqual([item["id"] for item in app.load_state()["lines"]], [second, first, third])
+                self.assertEqual(app.find(app.load_state(), "ideas", idea_id)["summary"], before["ideas"][0]["summary"])
+
+    def test_reading_path_order_rejects_invalid_moves_and_stops_at_ends(self):
+        first, _ = self.make_line_and_idea()
+        before = copy.deepcopy(self.state)
+        for offset in (-1, 1):
+            app.apply_action(self.state, "line.reorder", {"lineId": first, "offset": offset})
+            self.assertEqual(self.state, before)
+        for payload in ({"lineId": first, "offset": 2}, {"lineId": first, "offset": True}, {"lineId": "missing", "offset": 1}):
+            with self.assertRaises(ValueError):
+                app.apply_action(self.state, "line.reorder", payload)
+            self.assertEqual(self.state, before)
 
     def test_many_papers_share_one_idea_and_export_preserves_manual_notes(self):
         line_id, idea_id = self.make_line_and_idea()
