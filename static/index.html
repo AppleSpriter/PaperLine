@@ -58,6 +58,7 @@
     <p class="field-help">显示最多 12 条匹配结果。</p>
     <div id="picker-paper-results" aria-live="polite"></div>
     <div id="picker-method-editor"></div>
+    <div class="form-actions"><button type="button" class="button primary" data-action="close-dialog">完成</button></div>
   </dialog>
 
   <dialog id="line-dialog" class="modal">
@@ -65,7 +66,7 @@
       <div class="modal-top"><div><span class="eyebrow">READING PATH</span><h2 id="line-dialog-title">新建阅读线</h2></div><button type="button" class="close-button" data-action="close-dialog" aria-label="关闭">×</button></div>
       <input type="hidden" id="line-id">
       <label>这条线要回答什么问题？<input id="line-title" maxlength="120" placeholder="例如：如何稳定策略更新？" required></label>
-      <label>阅读线类型<select id="line-kind"><option value="model_family">模型演进线（阶段与论文）</option><option value="research">主题研究线（思想卡顺序）</option></select></label>
+      <label>阅读线类型<select data-direct-choice id="line-kind"><option value="model_family">模型演进线（阶段与论文）</option><option value="research">主题研究线（思想卡顺序）</option></select></label>
       <label>研究目标或背景 <span class="optional">可选</span><textarea id="line-question" rows="3" maxlength="800" placeholder="写下你为什么要追这条线，以及希望得到什么答案。"></textarea></label>
       <div class="modal-actions"><button type="button" class="button danger" id="delete-line-button" data-action="delete-line" hidden>删除阅读线</button><span class="modal-spacer"></span><button type="button" class="button quiet" data-action="close-dialog">取消</button><button type="submit" class="button primary">保存阅读线</button></div>
     </form>
@@ -77,13 +78,13 @@
       <div id="idea-source-context" class="source-context" hidden></div>
       <div id="idea-parent-context" class="source-context" hidden></div>
       <label>思想名称<input id="idea-title" maxlength="120" placeholder="例如：GRPO" required></label>
-      <label>内容分类<select id="idea-entity-type"><option value="method">方法</option><option value="concept">概念</option><option value="question">问题</option><option value="unclassified">尚未分类</option></select></label>
+      <label>内容分类<select data-direct-choice id="idea-entity-type"><option value="method">方法</option><option value="concept">概念</option><option value="question">问题</option><option value="unclassified">尚未分类</option></select></label>
       <label>别名 <span class="optional">可选</span><input id="idea-aliases" maxlength="1500" placeholder="缩写、全称或其他写法，用逗号分隔"></label>
       <div id="idea-matches" class="idea-matches" aria-live="polite" hidden></div>
       <div class="choice-field" role="group" aria-labelledby="idea-kind-label"><span class="choice-label" id="idea-kind-label">卡片类型</span><div class="choice-row"><input type="radio" class="choice-input" id="idea-kind-concept" name="idea-kind" value="concept" checked><label class="choice-button" for="idea-kind-concept">基础概念</label><input type="radio" class="choice-input" id="idea-kind-innovation" name="idea-kind" value="innovation"><label class="choice-button" for="idea-kind-innovation">创新思想</label><input type="radio" class="choice-input" id="idea-kind-question" name="idea-kind" value="question"><label class="choice-button" for="idea-kind-question">引申问题</label></div></div>
       <label>加入阅读线<select id="idea-line"></select></label>
       <label>一句话理解 <span class="optional">可选</span><textarea id="idea-summary" rows="3" maxlength="4000" placeholder="先写粗略理解，之后可以继续修正。"></textarea></label>
-      <label id="idea-source-relation-wrap" hidden>这篇论文与思想的关系<select id="idea-source-relation"><option value="uses">使用</option><option value="proposes">提出</option><option value="improves">改进</option><option value="questions">质疑</option></select></label>
+      <label id="idea-source-relation-wrap" hidden>这篇论文与思想的关系<select data-direct-choice id="idea-source-relation"><option value="uses">使用</option><option value="proposes">提出</option><option value="improves">改进</option><option value="questions">质疑</option></select></label>
       <div class="modal-actions"><button type="button" class="button quiet" data-action="close-dialog">取消</button><button type="submit" class="button primary">创建卡片</button></div>
     </form>
   </dialog>
@@ -122,9 +123,9 @@
       <div class="modal-top"><div><span class="eyebrow">CONNECTION</span><h2 id="relation-dialog-title">建立关联</h2></div><button type="button" class="close-button" data-action="close-dialog" aria-label="关闭">×</button></div>
       <p id="relation-context" class="modal-context"></p>
       <div id="relation-create-fields">
-        <label id="relation-mode-wrap">连接类型<select id="relation-mode"><option value="paper">论文 → 思想</option><option value="idea">思想 → 思想</option></select></label>
+        <label id="relation-mode-wrap">连接类型<select data-direct-choice id="relation-mode"><option value="paper">论文 → 思想</option><option value="idea">思想 → 思想</option></select></label>
         <label id="relation-target-label">选择论文<select id="relation-target" required></select></label>
-        <label>关系<select id="relation-type"></select></label>
+        <label>关系<select data-direct-choice id="relation-type"></select></label>
       </div>
       <label>这条关系的具体含义 <span class="optional">可选</span><textarea id="relation-note" rows="3" maxlength="3000" placeholder="例如：这篇论文把 GRPO 用于哪一步？"></textarea></label>
       <label>原文位置链接 <span class="optional">可选</span><input id="relation-source-url" maxlength="1500" placeholder="zotero://open-pdf/..."></label>
@@ -245,7 +246,7 @@
       <p class="modal-context">填写 Obsidian 库的完整路径。应用会在库中创建 PaperLine 文件夹；再次导出时仅更新生成内容，保留你的手写补充。</p>
       <label>Obsidian 库路径<input id="vault-path" placeholder="/Users/你/Documents/我的笔记库"></label>
       <button type="button" class="button secondary" data-desktop-only hidden data-action="choose-vault">选择 Obsidian 库文件夹</button>
-      <label>界面语言<select id="language"><option value="zh">简体中文</option><option value="en">English</option></select></label>
+      <label>界面语言<select data-direct-choice id="language"><option value="zh">简体中文</option><option value="en">English</option></select></label>
       <label>每日开始阅读的提醒时间 <span class="optional">可选</span><input id="reminder-time" type="time"></label>
       <p class="field-help" data-browser-only>应用页面保持打开时会提醒你当前阅读线的下一张卡。浏览器通知需要单独开启。</p>
       <p class="field-help" data-desktop-only hidden>应用保持打开时，会在应用内提醒你当前阅读线的下一张卡。</p>

@@ -1,6 +1,13 @@
 /* The original Chinese UI strings remain the source of truth. */
 (() => {
   const en = {
+    "已选择的关系": "Selected relationship",
+    "完成": "Done",
+    "出现于这些阶段": "Appears in these stages",
+    "没有匹配的方法，保存时将使用输入的新名称。": "No matching method. Saving will use the new name you entered.",
+    "清除选择，按名称匹配或新建": "Clear selection; match or create by name",
+    "搜索选项": "Search options",
+    "匹配的方法": "Matching methods",
     "论文与方法关系": "Paper-method relationships",
     "沿日期、论文与方法，理解每一步贡献。": "Follow dates, papers, and methods to understand each contribution.",
     "阅读目标": "Reading goal",

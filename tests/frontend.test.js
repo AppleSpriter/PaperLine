@@ -23,6 +23,7 @@ function fixture() {
 function createApp(storage = new Map(), clock = { now: 0 }, bootFetch = () => new Promise(() => {})) {
   const nodes = new Map();
   const documentListeners = new Map();
+  const windowListeners = new Map();
   function node(selector) {
     if (!nodes.has(selector)) nodes.set(selector, {
       id: selector.slice(1), value: "", innerHTML: "", textContent: "", dataset: {}, open: false,
@@ -45,13 +46,16 @@ function createApp(storage = new Map(), clock = { now: 0 }, bootFetch = () => ne
         documentListeners.set(type, { callback, callbacks, options });
       },
     },
-    window: { addEventListener() {} },
+    window: { innerWidth: 1280, addEventListener(type, callback) {
+      windowListeners.set(type, [...(windowListeners.get(type) || []), callback]);
+    } },
     localStorage: {
       getItem: (key) => storage.get(key) ?? null,
       setItem: (key, value) => storage.set(key, value),
       removeItem: (key) => storage.delete(key),
     },
     FormData: class { constructor(form) { this.form = form; } entries() { return Object.entries(this.form.values); } },
+    Event: class { constructor(type, options) { this.type = type; Object.assign(this, options); } },
     Date: class extends Date { static now() { return clock.now; } },
     fetch: bootFetch,
     setInterval: () => 1, clearInterval() {}, setTimeout: () => 1, clearTimeout() {},
@@ -59,10 +63,10 @@ function createApp(storage = new Map(), clock = { now: 0 }, bootFetch = () => ne
   });
   vm.runInContext(appSource, context);
   const app = vm.runInContext(`({ ui, openDialog, openIdeaDialog, ideaDialogDraftKey, captureDialogDraft, openSession, closeDialog, stopTimer, sessionSeconds, captureIdeaDraft, searchIdeas, selectIdea, latestSession, readingRecap, sessionHistory,
-    paperRelationRank, editableEdge, timelineLayout, stageContributions, selectTimelineStage, renderStageInspector, rememberTimelineViewport, restoreTimelineViewport, paperPickerResults, removeStageContribution, queueContributionAction, fitMethodGraph, switchWorkspaceView, methods, methodChoices, paperIdeaEdges, stagePaperEdges, workspaceDraft, submitWorkspaceForm, renderMethodsWorkspace, renderStageLine, renderPaperInspector, openStageSession, sessionDraftKey, graphZoomHint, setPageZoom, zoomGraph, zoomGraphWheel, graphMarkup, orderedMapPapers, paperMapLayout, updatePaperSelection, syncInspectorLayout, syncSelection, graphNode, displayAuthors, paperInstitution, libraryCitationCounts, rankedRecommendations, renderRecommendations, openPaperLineDialog, paperReadStatus, mapPapers, validCitations, renderPaperMap, renderPaperMapResults, renderMapInspector, renderZoteroSync, applyZoteroSync, refreshZoteroSync, startZoteroSync, markPaper, renderIdeaInspector, renderInspector, renderIdeas, renderPaperResults, searchResult, searchPapers, searchLines, searchEverything, markIdea, toast, readDraft, act, refreshState, formatDuration, readingTotal, renderOutline, setState(value) { state = value; } })`, context);
+    enhanceDirectChoices, paperStageForm, paperMethodForm, methodStageOccurrences, methodMatchChoices, paperRelationRank, editableEdge, timelineLayout, stageContributions, selectTimelineStage, renderStageInspector, rememberTimelineViewport, restoreTimelineViewport, paperPickerResults, removeStageContribution, queueContributionAction, fitMethodGraph, switchWorkspaceView, methods, methodChoices, paperIdeaEdges, stagePaperEdges, workspaceDraft, submitWorkspaceForm, renderMethodsWorkspace, renderStageLine, renderPaperInspector, openStageSession, sessionDraftKey, graphZoomHint, setPageZoom, zoomGraph, zoomGraphWheel, graphMarkup, orderedMapPapers, paperMapLayout, updatePaperSelection, syncInspectorLayout, syncSelection, graphNode, displayAuthors, paperInstitution, libraryCitationCounts, rankedRecommendations, renderRecommendations, openPaperLineDialog, paperReadStatus, mapPapers, validCitations, renderPaperMap, renderPaperMapResults, renderMapInspector, renderZoteroSync, applyZoteroSync, refreshZoteroSync, startZoteroSync, markPaper, renderIdeaInspector, renderInspector, renderIdeas, renderPaperResults, searchResult, searchPapers, searchLines, searchEverything, markIdea, toast, readDraft, act, refreshState, formatDuration, readingTotal, renderOutline, setState(value) { state = value; } })`, context);
   app.setState(fixture());
   app.ui.selectedLineId = "l1";
-  return { app, node, context, storage, clock, documentListeners };
+  return { app, node, context, storage, clock, documentListeners, windowListeners };
 }
 
 test("Continue later and a page reload preserve notes and elapsed time without counting the break", () => {
@@ -1152,4 +1156,192 @@ test("a slow method annotation save leaves a newer paper picker open with its dr
   assert.equal(h.node("#paper-picker-dialog").open, true);
   assert.equal(h.app.readDraft("paper-method:p1"), null);
   assert.equal(h.app.readDraft("paper-method:p2").note, "Second evidence");
+});
+
+
+async function workspaceClick(h, dataset, form) {
+  const button = { dataset, closest: (selector) => selector === "form" ? form : null };
+  const event = { target: { closest: (selector) => selector === "[data-workspace-action]" ? button : null } };
+  await Promise.all(h.documentListeners.get("click").callbacks.map((listener) => listener(event)));
+  return button;
+}
+
+function annotationForm(values) {
+  const elements = Object.fromEntries(Object.entries(values).map(([name, value]) => [name, { name, value }]));
+  const parts = new Map();
+  return {
+    dataset: { workspaceForm: "annotate-method", workspaceDraft: "paper-method:p1", id: "p1" }, elements,
+    get values() { return Object.fromEntries(Object.entries(elements).map(([name, input]) => [name, input.value])); },
+    querySelector(selector) { if (!parts.has(selector)) parts.set(selector, { innerHTML: "" }); return parts.get(selector); },
+  };
+}
+
+test("direct choice clicks use the original select change event without adding draft values", async () => {
+  const h = createApp(); let changed = 0;
+  const control = { querySelectorAll: () => [] };
+  const select = { value: "method", parentElement: {}, nextElementSibling: control, dispatchEvent(event) { changed++; assert.equal(event.type, "change"); assert.equal(event.bubbles, true); } };
+  control.previousElementSibling = select;
+  const button = { dataset: { directValue: "concept" }, closest: () => control };
+  const event = { target: { closest: (selector) => selector === "[data-direct-value]" ? button : null } };
+  for (const listener of h.documentListeners.get("click").callbacks) await listener(event);
+  assert.equal(select.value, "concept"); assert.equal(changed, 1);
+  assert.deepEqual(Object.keys(select).filter((name) => /choice|radio/i.test(name)), []);
+});
+
+test("method chips preserve identity and evidence; typing clears explicit selections through the real input handler", async () => {
+  const h = createApp(), data = learningFixture(); h.app.setState(data);
+  data.edges.push({ ...data.edges[0], id: "legacy-other", relation: "questions" });
+  const form = annotationForm({ title: "", ideaId: "", edgeId: "", note: "Keep my evidence", sourceUrl });
+  await workspaceClick(h, { workspaceAction: "choose-method", id: "i1" }, form);
+  assert.equal(form.elements.ideaId.value, "i1"); assert.equal(form.elements.title.value, data.ideas[0].title);
+  await workspaceClick(h, { workspaceAction: "choose-method-edge", id: "legacy-other" }, form);
+  assert.equal(h.app.readDraft("paper-method:p1").edgeId, "legacy-other");
+  form.elements.title.value = "A new method";
+  const input = { ...form.elements.title, form };
+  for (const listener of h.documentListeners.get("input").callbacks) listener({ target: input });
+  const draft = h.app.readDraft("paper-method:p1");
+  assert.equal(draft.ideaId, ""); assert.equal(draft.edgeId, ""); assert.equal(draft.title, "A new method");
+  assert.equal(draft.note, "Keep my evidence"); assert.equal(draft.sourceUrl, sourceUrl);
+  assert.doesNotMatch(h.app.paperMethodForm(data.papers[0]), /<datalist|<select|legacy-other<\//);
+});
+
+test("method matches stay bounded and preserve a selected entity beyond the first results", () => {
+  const h = createApp(), data = learningFixture();
+  data.ideas = Array.from({ length: 20 }, (_, index) => ({ id: `method-${index}`, title: `Method ${index}`, entityType: "method" }));
+  h.app.setState(data);
+  const html = h.app.methodMatchChoices({ ideaId: "method-19" });
+  assert.equal((html.match(/data-workspace-action="choose-method"/g) || []).length, 8);
+  assert.match(html, /data-id="method-19" aria-pressed="true"/);
+});
+
+test("stage choices default to the current context while an explicit new-stage draft wins", () => {
+  const h = createApp(), data = learningFixture(); h.app.setState(data);
+  h.app.ui.selectedLineId = "family"; h.app.ui.selectedStageId = "s1";
+  const html = h.app.paperStageForm(data.papers[0]);
+  assert.match(html, /value="family" selected/); assert.match(html, /value="s1" selected/);
+  assert.match(html, /data-create-line hidden/); assert.match(html, /data-create-stage hidden/);
+  h.app.workspaceDraft({ dataset: { workspaceDraft: "paper-stage:p1" }, values: { lineId: "", stageId: "", lineTitle: "My new line", stageTitle: "New stage" } });
+  const draftHtml = h.app.paperStageForm(data.papers[0]);
+  assert.doesNotMatch(draftHtml, /value="family" selected|value="s1" selected/);
+  assert.match(draftHtml, /value="My new line"/); assert.doesNotMatch(draftHtml, /data-create-line hidden|data-create-stage hidden/);
+});
+
+test("method stage backlinks use explicit contribution references and navigate to that exact stage", async () => {
+  const h = createApp(), data = learningFixture(); data.edges.find((item) => item.id === "membership").contributionRefs = ["e1"]; h.app.setState(data);
+  const occurrence = h.app.methodStageOccurrences("i1");
+  assert.deepEqual(Array.from(occurrence, ({ lineId, stageId }) => [lineId, stageId]), [["family", "s1"]]);
+  data.lines.push({ id: "other", title: "Unannotated family", kind: "model_family", ideaIds: [], stageIds: ["s2"] });
+  data.stages.push({ id: "s2", title: "No contribution" });
+  data.edges.push({ id: "membership2", fromType: "paper", fromId: "p1", toType: "stage", toId: "s2", contributionRefs: [] });
+  assert.equal(h.app.methodStageOccurrences("i1").length, 1);
+  await workspaceClick(h, { workspaceAction: "method-stage", id: "s1", lineId: "family" });
+  assert.equal(h.app.ui.view, "outline"); assert.equal(h.app.ui.selectedLineId, "family"); assert.equal(h.app.ui.selectedStageId, "s1");
+  assert.equal(h.app.ui.stageInspect, true); assert.equal(h.app.ui.inspectorOpen, true);
+});
+
+test("empty graph details release the workspace column and selecting a paper restores it", () => {
+  const h = createApp(); h.app.ui.view = "graph"; h.app.ui.selectedIdeaId = "i1";
+  h.app.syncInspectorLayout(); assert.equal(h.node(".workspace").dataset.inspectorVisible, "false");
+  h.app.ui.selectedPaperId = "p1"; h.app.syncInspectorLayout();
+  assert.equal(h.node(".workspace").dataset.inspectorVisible, "true");
+});
+
+
+test("stage picker adds repeatedly without closing or losing its query and excludes accepted papers", async () => {
+  const h = createApp(), data = learningFixture(); data.papers.push({ id: "p2", title: "Paper two" }, { id: "p3", title: "Paper three" }); h.app.setState(data);
+  h.app.ui.selectedLineId = "family"; h.app.ui.paperPicker = { kind: "stage", id: "s1" };
+  h.app.openDialog("#paper-picker-dialog"); h.node("#picker-paper-query").value = "Paper";
+  const requests = [];
+  h.context.fetch = async (path, options) => {
+    const request = JSON.parse(options.body); requests.push(request);
+    data.edges.push({ id: `member-${request.payload.paperId}`, fromType: "paper", fromId: request.payload.paperId, toType: "stage", toId: "s1", relation: "documents" });
+    return { ok: true, json: async () => ({ state: data, result: { paperId: request.payload.paperId, stageId: "s1" } }) };
+  };
+  await workspaceClick(h, { workspaceAction: "pick-paper", id: "p2" });
+  assert.equal(h.node("#paper-picker-dialog").open, true); assert.equal(h.node("#picker-paper-query").value, "Paper");
+  assert.doesNotMatch(h.node("#picker-paper-results").innerHTML, /data-id="p2"/); assert.match(h.node("#picker-paper-results").innerHTML, /data-id="p3"/);
+  await workspaceClick(h, { workspaceAction: "pick-paper", id: "p3" });
+  assert.equal(requests.length, 2); assert.equal(h.node("#paper-picker-dialog").open, true);
+});
+
+test("a slow stage picker addition cannot change a reopened picker context or query", async () => {
+  const h = createApp(), data = learningFixture(); data.papers.push({ id: "p2", title: "Paper two" }); h.app.setState(data);
+  h.app.ui.selectedLineId = "family"; h.app.ui.paperPicker = { kind: "stage", id: "s1" }; h.app.openDialog("#paper-picker-dialog");
+  let finish; h.context.fetch = () => new Promise((resolve) => { finish = resolve; });
+  const saving = workspaceClick(h, { workspaceAction: "pick-paper", id: "p2" });
+  await new Promise((resolve) => setImmediate(resolve));
+  h.app.closeDialog(h.node("#paper-picker-dialog")); h.app.openDialog("#paper-picker-dialog");
+  const newer = { kind: "method", id: "i1" }; h.app.ui.paperPicker = newer;
+  h.node("#picker-paper-query").value = "Newer search"; h.node("#picker-paper-results").innerHTML = "Newer results";
+  h.app.ui.selectedStageId = "newer-stage";
+  finish({ ok: true, json: async () => ({ state: data, result: {} }) }); await saving;
+  assert.equal(h.app.ui.paperPicker, newer); assert.equal(h.node("#paper-picker-dialog").open, true);
+  assert.equal(h.node("#picker-paper-query").value, "Newer search"); assert.equal(h.node("#picker-paper-results").innerHTML, "Newer results");
+  assert.equal(h.app.ui.selectedStageId, "newer-stage");
+});
+
+
+test("direct list search keeps the same input node, composition state and middle-edit caret", () => {
+  const h = createApp();
+  const search = { value: "", selectionStart: 0, selectionEnd: 0, composing: true, matches: (selector) => selector === ".choice-search", focus() { throw new Error("Filtering must not move focus"); } };
+  const results = { innerHTML: "", setAttribute() {} };
+  const group = { classList: { contains: () => true }, querySelector: (selector) => selector === ".choice-search" ? search : results };
+  const select = {
+    value: "", nextElementSibling: group, parentElement: { firstChild: { textContent: "Choose stage" } },
+    hasAttribute: () => true, getAttribute: () => "Choose stage",
+    options: Array.from({ length: 14 }, (_, index) => ({ value: String(index), textContent: `阶段 ${index}`, hasAttribute: () => true })),
+  };
+  const root = { querySelectorAll: () => [select] }; group.parentElement = root; search.closest = () => group;
+  const type = (value, caret) => {
+    search.value = value; search.selectionStart = caret; search.selectionEnd = caret;
+    for (const listener of h.documentListeners.get("input").callbacks) listener({ target: search });
+    assert.equal(group.querySelector(".choice-search"), search); assert.equal(search.selectionStart, caret); assert.equal(search.selectionEnd, caret);
+    assert.equal(search.value, value); assert.equal(search.composing, true);
+  };
+  type("阶", 1); type("阶段 12", 5); type("阶段 2", 3);
+  assert.match(results.innerHTML, /阶段 2/); assert.doesNotMatch(results.innerHTML, /阶段 12/);
+});
+
+test("a unique method relationship needs no extra choice, but an explicit legacy edge draft remains visible", () => {
+  const h = createApp(), data = learningFixture(); h.app.setState(data);
+  assert.doesNotMatch(h.app.paperMethodForm(data.papers[0]), /choose-method-edge/);
+  h.app.workspaceDraft({ dataset: { workspaceDraft: "paper-method:p1" }, values: { title: "GRPO", ideaId: "i1", edgeId: "e1", note: "Evidence", sourceUrl } });
+  const html = h.app.paperMethodForm(data.papers[0]);
+  assert.match(html, /data-workspace-action="choose-method-edge" data-id="e1" aria-pressed="true"/);
+  assert.match(html, /已选择的关系/); assert.doesNotMatch(html, /多条旧关系时/);
+});
+
+
+test("stale method selection does not open details in an empty paper or model-family workspace", () => {
+  const h = createApp(), data = learningFixture(); h.app.setState(data); h.app.ui.selectedIdeaId = "i1";
+  h.app.ui.selectedLineId = "family"; h.app.ui.view = "outline";
+  h.app.syncInspectorLayout(); assert.equal(h.node(".workspace").dataset.inspectorVisible, "false");
+  h.app.ui.view = "papers";
+  h.app.syncInspectorLayout(); assert.equal(h.node(".workspace").dataset.inspectorVisible, "false");
+  h.app.ui.view = "outline"; h.app.ui.selectedLineId = "l1";
+  h.app.syncInspectorLayout(); assert.equal(h.node(".workspace").dataset.inspectorVisible, "true");
+  assert.equal(h.app.ui.selectedIdeaId, "i1");
+  h.app.ui.selectedLineId = "family"; h.app.ui.stageInspect = true; h.app.ui.selectedStageId = "s1";
+  h.app.syncInspectorLayout(); assert.equal(h.node(".workspace").dataset.inspectorVisible, "true");
+});
+
+
+test("whole-page zoom and resize use the effective viewport for compact inspector layout", () => {
+  const h = createApp(); h.app.ui.selectedIdeaId = "i1"; h.app.ui.selectedPaperId = "p1"; h.app.ui.selectedStageId = "stage-kept";
+  assert.equal(h.node(".workspace").dataset.compact, "false");
+  h.app.setPageZoom(1.2);
+  assert.equal(h.node(".workspace").dataset.compact, "true");
+  h.app.setPageZoom(1);
+  assert.equal(h.node(".workspace").dataset.compact, "false");
+  h.context.window.innerWidth = 1000;
+  for (const callback of h.windowListeners.get("resize")) callback();
+  assert.equal(h.node(".workspace").dataset.compact, "true");
+  h.app.setPageZoom(1.5); h.context.window.innerWidth = 1651;
+  for (const callback of h.windowListeners.get("resize")) callback();
+  assert.equal(h.node(".workspace").dataset.compact, "false");
+  h.context.window.innerWidth = 1650;
+  for (const callback of h.windowListeners.get("resize")) callback();
+  assert.equal(h.node(".workspace").dataset.compact, "true");
+  assert.equal(h.app.ui.selectedIdeaId, "i1"); assert.equal(h.app.ui.selectedPaperId, "p1"); assert.equal(h.app.ui.selectedStageId, "stage-kept");
+  assert.equal(h.app.ui.mapZoom, 1); assert.equal(h.app.ui.ideaGraphZoom, 1);
 });
