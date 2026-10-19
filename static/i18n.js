@@ -1,6 +1,10 @@
 /* The original Chinese UI strings remain the source of truth. */
 (() => {
   const en = {
+    "共享方法": "Shared method",
+    "打开思想图": "Open idea graph",
+    "单击查看，双击进入思想图": "Click to inspect; double-click to open idea graph",
+    "同名方法在各阶段重复显示，编辑内容会同步到同一个思想图实体。": "Methods appear in several stages; edits sync to the same idea graph entity",
     "可加入的已有方法关系": "Existing method relationships available to add",
     "加入本阶段": "Add to this stage",
     "保存后显示于阶段": "Saving will show this method in stage",

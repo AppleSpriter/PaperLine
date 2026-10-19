@@ -62,7 +62,7 @@ function createApp(storage = new Map(), clock = { now: 0 }, bootFetch = () => ne
     PaperLineI18n: { translate: (value) => value, apply() {} },
   });
   vm.runInContext(appSource, context);
-  const app = vm.runInContext(`({ ui, openDialog, openIdeaDialog, ideaDialogDraftKey, captureDialogDraft, openSession, closeDialog, stopTimer, sessionSeconds, captureIdeaDraft, searchIdeas, selectIdea, latestSession, readingRecap, sessionHistory,
+  const app = vm.runInContext(`({ ui, inspectMethod, inspectedMethod, syncTimelineMethodSelection, openDialog, openIdeaDialog, ideaDialogDraftKey, captureDialogDraft, openSession, closeDialog, stopTimer, sessionSeconds, captureIdeaDraft, searchIdeas, selectIdea, latestSession, readingRecap, sessionHistory,
     revealStageCalendar, validateStageDateInput, stageDateParts, stageDateISO, stageDateToday, stageDateField, stageCalendarMarkup, updateStageDate, closeStageCalendar, newStageEditor, stageEditor, enhanceDirectChoices, paperStageForm, paperMethodForm, methodStageOccurrences, methodMatchChoices, paperRelationRank, editableEdge, timelineLayout, stageContributions, selectTimelineStage, renderStageInspector, rememberTimelineViewport, restoreTimelineViewport, paperPickerResults, removeStageContribution, queueContributionAction, fitMethodGraph, switchWorkspaceView, methods, methodChoices, paperIdeaEdges, stagePaperEdges, workspaceDraft, submitWorkspaceForm, renderMethodsWorkspace, renderStageLine, renderPaperInspector, openStageSession, sessionDraftKey, graphZoomHint, setPageZoom, zoomGraph, zoomGraphWheel, graphMarkup, orderedMapPapers, paperMapLayout, updatePaperSelection, syncInspectorLayout, syncSelection, graphNode, displayAuthors, paperInstitution, libraryCitationCounts, rankedRecommendations, renderRecommendations, openPaperLineDialog, paperReadStatus, mapPapers, validCitations, renderPaperMap, renderPaperMapResults, renderMapInspector, renderZoteroSync, applyZoteroSync, refreshZoteroSync, startZoteroSync, markPaper, renderIdeaInspector, renderInspector, renderIdeas, renderPaperResults, searchResult, searchPapers, searchLines, searchEverything, markIdea, toast, readDraft, act, refreshState, formatDuration, readingTotal, renderOutline, setState(value) { state = value; } })`, context);
   app.setState(fixture());
   app.ui.selectedLineId = "l1";
@@ -1630,4 +1630,201 @@ test("reorder and annotation requests stay in order and do not steal editor focu
   assert.equal(h.context.document.activeElement, input);
   assert.deepEqual(Array.from(h.app.stagePaperEdges("s1")[0].contributionRefs), ["e1"]);
   assert.ok(h.node("#line-list").innerHTML.indexOf("Family") < h.node("#line-list").innerHTML.indexOf("Research"));
+});
+
+function methodInspectionFixture(h) {
+  const data = learningFixture(); data.edges.find((edge) => edge.id === "membership").contributionRefs = ["e1"];
+  data.stages.push({ id: "s2", title: "Second stage" }); data.lines[1].stageIds.push("s2");
+  data.edges.push({ id: "member2", fromType: "paper", fromId: "p1", toType: "stage", toId: "s2", relation: "documents", contributionRefs: ["e1"] });
+  h.app.setState(data); h.app.ui.view = "outline"; h.app.ui.selectedLineId = "family"; h.app.ui.selectedStageId = "s1";
+  return data;
+}
+async function actionClick(h, dataset) {
+  const button = { dataset, closest() { return null; } };
+  await Promise.all(h.documentListeners.get("click").callbacks.map((listener) => listener({ target: { closest: (selector) => selector === "[data-action]" ? button : null } })));
+}
+
+test("timeline method clicks inspect in place and select only the clicked stage occurrence", async () => {
+  const h = createApp(), data = methodInspectionFixture(h);
+  h.app.ui.selectedPaperId = "p1"; h.app.ui.stageInspect = true;
+  h.app.renderStageLine(data.lines[1]);
+  const original = h.node("#main-view").innerHTML;
+  assert.match(original, /data-id="i1" data-stage-id="s1"/); assert.match(original, /单击查看，双击进入思想图/);
+  let mainWrites = 0;
+  Object.defineProperty(h.node("#main-view"), "innerHTML", { get: () => original, set: () => { mainWrites++; } });
+  const scroll = h.node(".timeline-scroll"); scroll.dataset.lineId = "family"; scroll.scrollLeft = 310; scroll.scrollTop = 75; h.app.ui.timelineZoom = 1.4;
+  const nodes = ["s1", "s2"].map((stageId) => ({ dataset: { workspaceAction: "timeline-method", id: "i1", stageId }, classList: { toggle(name, value) { this[name] = value; } }, setAttribute(name, value) { this[name] = value; } }));
+  h.context.document.querySelectorAll = (selector) => selector === ".timeline-node" ? nodes : [];
+  await workspaceClick(h, { workspaceAction: "timeline-method", id: "i1", stageId: "s2" });
+  assert.equal(mainWrites, 0); assert.equal(h.app.ui.view, "outline"); assert.equal(h.app.ui.selectedPaperId, ""); assert.equal(h.app.ui.stageInspect, false);
+  assert.equal(h.app.ui.selectedStageId, "s2"); assert.equal(h.app.ui.selectedLineId, "family");
+  assert.equal(scroll.scrollLeft, 310); assert.equal(scroll.scrollTop, 75); assert.equal(h.app.ui.timelineZoom, 1.4);
+  assert.equal(nodes[0].classList.selected, false); assert.equal(nodes[1].classList.selected, true); assert.equal(nodes[1]["aria-pressed"], "true");
+  assert.match(h.node("#inspector").innerHTML, /id="idea-edit-form"/); assert.match(h.node("#inspector").innerHTML, /打开思想图/);
+  assert.equal(h.node(".workspace").dataset.inspectorVisible, "true");
+});
+
+test("two timeline clicks preserve the target for one native double click and graph opening clears old paper selection", async () => {
+  const h = createApp(); methodInspectionFixture(h);
+  h.node("#main-view").innerHTML = "Same SVG";
+  await workspaceClick(h, { workspaceAction: "timeline-method", id: "i1", stageId: "s1" });
+  await workspaceClick(h, { workspaceAction: "timeline-method", id: "i1", stageId: "s1" });
+  assert.equal(h.node("#main-view").innerHTML, "Same SVG");
+  let graphWrites = 0; let html = "Same SVG";
+  Object.defineProperty(h.node("#main-view"), "innerHTML", { get: () => html, set: (value) => { graphWrites++; html = value; } });
+  h.app.ui.selectedPaperId = "p1";
+  const button = { dataset: { id: "i1" } };
+  for (const listener of h.documentListeners.get("dblclick").callbacks) listener({ preventDefault() {}, target: { closest: () => button } });
+  assert.equal(graphWrites, 1); assert.equal(h.app.ui.view, "graph"); assert.equal(h.app.ui.selectedIdeaId, "i1"); assert.equal(h.app.ui.selectedPaperId, ""); assert.equal(h.app.ui.methodInspect, null);
+  assert.match(html, /id="idea-edit-form"/);
+});
+
+test("method inspector saves the global draft while keeping its reading line, stage, and viewport", async () => {
+  const h = createApp(), data = methodInspectionFixture(h);
+  h.app.inspectMethod("i1", "s1");
+  const values = { title: "GRPO edited", aliases: "Alias", kind: "concept", status: "learning", entityType: "method", summary: "Global shared definition", mechanism: "Mechanism", thoughts: "Thoughts" };
+  const form = { id: "idea-edit-form", dataset: { id: "i1" }, values };
+  h.app.captureIdeaDraft(form); h.app.renderInspector();
+  assert.match(h.node("#inspector").innerHTML, /Global shared definition/);
+  const scroll = h.node(".timeline-scroll"); scroll.dataset.lineId = "family"; scroll.scrollLeft = 300; scroll.scrollTop = 60; h.app.ui.timelineZoom = 1.2;
+  let request;
+  h.context.fetch = async (path, options) => { request = JSON.parse(options.body); Object.assign(data.ideas[0], request.payload); return { ok: true, json: async () => ({ state: data, result: { ideaId: "i1" } }) }; };
+  await Promise.all(h.documentListeners.get("submit").callbacks.map((listener) => listener({ target: form, preventDefault() {} })));
+  assert.equal(request.action, "idea.update"); assert.equal(request.payload.summary, values.summary);
+  assert.equal(h.app.ui.view, "outline"); assert.equal(h.app.ui.selectedLineId, "family"); assert.equal(h.app.ui.selectedStageId, "s1"); assert.equal(h.app.inspectedMethod().id, "i1");
+  assert.equal(scroll.scrollLeft, 300); assert.equal(scroll.scrollTop, 60); assert.equal(h.app.ui.timelineZoom, 1.2);
+  assert.equal(h.app.readDraft("idea:i1"), null); assert.match(h.node("#inspector").innerHTML, /value="GRPO edited"/);
+});
+
+test("stage, paper, line, view, close, and removed contribution clear method inspection while retaining drafts", async () => {
+  for (const change of ["stage", "new-stage", "paper", "line", "view", "close", "removed"]) {
+    const h = createApp(), data = methodInspectionFixture(h); h.app.inspectMethod("i1", "s1");
+    h.app.captureIdeaDraft({ dataset: { id: "i1" }, values: { title: "Kept draft", summary: "Keep me" } });
+    if (change === "stage") h.app.selectTimelineStage("s2");
+    if (change === "new-stage") h.app.selectTimelineStage("", true);
+    if (change === "paper") h.app.updatePaperSelection("p1");
+    if (change === "line") await actionClick(h, { action: "select-line", id: "l1" });
+    if (change === "view") h.app.switchWorkspaceView("map");
+    if (change === "close") await actionClick(h, { action: "close-paper-inspector" });
+    if (change === "removed") { data.edges.find((edge) => edge.id === "membership").contributionRefs = []; h.app.syncSelection(); h.app.renderInspector(); }
+    assert.equal(h.app.ui.methodInspect, null, change); assert.equal(h.app.inspectedMethod(), null, change);
+    assert.equal(h.app.readDraft("idea:i1").summary, "Keep me", change);
+  }
+});
+
+test("paper method links inspect externally, graph tabs keep switching the graph, and the direct graph button works", async () => {
+  const h = createApp(); methodInspectionFixture(h);
+  h.app.ui.view = "papers"; h.app.ui.selectedPaperId = "p1"; h.node("#main-view").innerHTML = "Library";
+  await actionClick(h, { action: "paper-view-idea", id: "i1" });
+  assert.equal(h.app.ui.view, "papers"); assert.equal(h.node("#main-view").innerHTML, "Library"); assert.equal(h.app.inspectedMethod().id, "i1");
+  await workspaceClick(h, { workspaceAction: "open-method-graph", id: "i1" });
+  assert.equal(h.app.ui.view, "graph"); assert.equal(h.app.ui.selectedPaperId, "");
+  await actionClick(h, { action: "paper-view-idea", id: "i1" }); assert.equal(h.app.ui.methodInspect, null);
+  await actionClick(h, { action: "paper-view-idea", id: "i2" }); assert.equal(h.app.ui.view, "graph"); assert.equal(h.app.ui.selectedIdeaId, "i2");
+});
+
+test("saving a method opened in the paper library keeps its details instead of auto-selecting the first paper", async () => {
+  const h = createApp(), data = methodInspectionFixture(h);
+  h.app.ui.view = "papers"; h.app.ui.selectedPaperId = "p1";
+  await actionClick(h, { action: "paper-view-idea", id: "i1" });
+  const values = { title: "Library method", aliases: "", entityType: "method", kind: "concept", status: "learning", summary: "Saved from library", mechanism: "", thoughts: "" };
+  const form = { id: "idea-edit-form", dataset: { id: "i1" }, values }; h.app.captureIdeaDraft(form);
+  h.context.fetch = async (path, options) => { Object.assign(data.ideas[0], JSON.parse(options.body).payload); return { ok: true, json: async () => ({ state: data, result: { ideaId: "i1" } }) }; };
+  await Promise.all(h.documentListeners.get("submit").callbacks.map((listener) => listener({ target: form, preventDefault() {} })));
+  assert.equal(h.app.ui.view, "papers"); assert.equal(h.app.ui.selectedPaperId, ""); assert.equal(h.app.inspectedMethod().id, "i1");
+  assert.match(h.node("#inspector").innerHTML, /Saved from library/); assert.equal(h.app.readDraft("idea:i1"), null);
+});
+
+test("opening another method context starts its inspector at the top while repeated clicks keep its scroll", async () => {
+  const h = createApp(), data = methodInspectionFixture(h); data.ideas[1].entityType = "method";
+  const inspector = h.node("#inspector"); inspector.scrollTop = 800;
+  h.app.inspectMethod("i1", "s1"); assert.equal(inspector.scrollTop, 0);
+  inspector.scrollTop = 500; h.app.inspectMethod("i1", "s1"); assert.equal(inspector.scrollTop, 500);
+  h.app.inspectMethod("i1", "s2"); assert.equal(inspector.scrollTop, 0);
+  inspector.scrollTop = 450; h.app.inspectMethod("i2"); assert.equal(inspector.scrollTop, 0);
+});
+
+test("the first pointer click waits before opening a hidden inspector so native double clicks keep the same target", async () => {
+  const h = createApp(); methodInspectionFixture(h);
+  h.app.ui.inspectorOpen = true; h.node(".workspace").dataset.inspectorVisible = "false";
+  const timers = new Map(); let nextTimer = 0;
+  h.context.setTimeout = (callback, delay) => { const id = ++nextTimer; timers.set(id, { callback, delay }); return id; };
+  h.context.clearTimeout = (id) => timers.delete(id);
+  const button = { dataset: { workspaceAction: "timeline-method", id: "i1", stageId: "s1" }, closest() { return null; } };
+  const click = (detail) => Promise.all(h.documentListeners.get("click").callbacks.map((listener) => listener({ detail, target: { closest: (selector) => selector === "[data-workspace-action]" ? button : null } })));
+  h.node("#main-view").innerHTML = "Original SVG";
+  await click(1);
+  assert.equal(h.app.ui.methodInspect, null); assert.equal(h.node(".workspace").dataset.inspectorVisible, "false"); assert.equal(timers.size, 1);
+  await click(2); assert.equal(timers.size, 0); assert.equal(h.node("#main-view").innerHTML, "Original SVG");
+  for (const listener of h.documentListeners.get("dblclick").callbacks) listener({ preventDefault() {}, target: { closest: () => button } });
+  assert.equal(h.app.ui.view, "graph"); assert.equal(h.app.ui.selectedPaperId, "");
+});
+
+test("a single pointer click opens details after its wait and navigation cancels stale pending inspection", async () => {
+  const h = createApp(); methodInspectionFixture(h);
+  const timers = new Map(); let nextTimer = 0;
+  h.context.setTimeout = (callback) => { const id = ++nextTimer; timers.set(id, callback); return id; };
+  h.context.clearTimeout = (id) => timers.delete(id);
+  const button = { dataset: { workspaceAction: "timeline-method", id: "i1", stageId: "s1" } };
+  const click = () => Promise.all(h.documentListeners.get("click").callbacks.map((listener) => listener({ detail: 1, target: { closest: (selector) => selector === "[data-workspace-action]" ? button : null } })));
+  await click(); const show = [...timers.values()][0]; show();
+  assert.equal(h.app.inspectedMethod().id, "i1");
+  await actionClick(h, { action: "close-paper-inspector" });
+  await click(); const stale = [...timers.values()].at(-1);
+  h.app.selectTimelineStage("s2"); stale();
+  assert.equal(h.app.ui.methodInspect, null); assert.equal(h.app.ui.stageInspect, true); assert.equal(h.app.ui.selectedStageId, "s2");
+});
+
+test("rapid pointer targets keep only the last pending method and keyboard activation inspects immediately", async () => {
+  const h = createApp(); methodInspectionFixture(h);
+  const timers = new Map(); let nextTimer = 0;
+  h.context.setTimeout = (callback) => { const id = ++nextTimer; timers.set(id, callback); return id; };
+  h.context.clearTimeout = (id) => timers.delete(id);
+  const click = (stageId, detail) => {
+    const button = { dataset: { workspaceAction: "timeline-method", id: "i1", stageId } };
+    return Promise.all(h.documentListeners.get("click").callbacks.map((listener) => listener({ detail, target: { closest: (selector) => selector === "[data-workspace-action]" ? button : null } })));
+  };
+  await click("s1", 1); const stale = [...timers.values()][0];
+  await click("s2", 1); const latest = [...timers.values()][0];
+  assert.equal(timers.size, 1); stale(); assert.equal(h.app.ui.methodInspect, null);
+  latest(); assert.equal(h.app.ui.methodInspect.stageId, "s2");
+  await actionClick(h, { action: "close-paper-inspector" });
+  await click("s1", 0); assert.equal(h.app.ui.methodInspect.stageId, "s1");
+});
+
+test("a delayed method whose contribution was removed does not open stale details", async () => {
+  const h = createApp(), data = methodInspectionFixture(h); let callback;
+  h.context.setTimeout = (operation) => { callback = operation; return 1; };
+  const button = { dataset: { workspaceAction: "timeline-method", id: "i1", stageId: "s1" } };
+  await Promise.all(h.documentListeners.get("click").callbacks.map((listener) => listener({ detail: 1, target: { closest: (selector) => selector === "[data-workspace-action]" ? button : null } })));
+  data.edges.find((edge) => edge.id === "membership").contributionRefs = [];
+  callback(); assert.equal(h.app.ui.methodInspect, null);
+});
+
+test("pointer links inside an open inspector wait for double clicks without replacing their target", async () => {
+  for (const entry of ["stage-contribution", "paper-method"]) {
+    const h = createApp(); methodInspectionFixture(h);
+    h.app.ui.inspectorOpen = true; h.node(".workspace").dataset.inspectorVisible = "true";
+    if (entry === "stage-contribution") h.app.ui.stageInspect = true;
+    else { h.app.ui.view = "papers"; h.app.ui.selectedPaperId = "p1"; }
+    h.node("#inspector").innerHTML = "Original method link";
+    const timers = new Map(); let nextTimer = 0;
+    h.context.setTimeout = (callback) => { const id = ++nextTimer; timers.set(id, callback); return id; };
+    h.context.clearTimeout = (id) => timers.delete(id);
+    const button = { dataset: entry === "stage-contribution" ? { workspaceAction: "timeline-method", id: "i1", stageId: "s1" } : { action: "paper-view-idea", id: "i1" }, matches: () => false };
+    const click = (detail) => Promise.all(h.documentListeners.get("click").callbacks.map((listener) => listener({ detail, target: { closest: (selector) => selector === (entry === "stage-contribution" ? "[data-workspace-action]" : "[data-action]") ? button : null } })));
+    await click(1); assert.equal(timers.size, 1); assert.equal(h.node("#inspector").innerHTML, "Original method link");
+    await click(2); assert.equal(timers.size, 0); assert.equal(h.node("#inspector").innerHTML, "Original method link");
+    for (const listener of h.documentListeners.get("dblclick").callbacks) listener({ preventDefault() {}, target: { closest: () => button } });
+    assert.equal(h.app.ui.view, "graph"); assert.equal(h.app.ui.selectedPaperId, "");
+  }
+});
+
+test("a timeline node with an existing inspector can inspect immediately without waiting", async () => {
+  const h = createApp(); methodInspectionFixture(h);
+  h.app.ui.inspectorOpen = true; h.node(".workspace").dataset.inspectorVisible = "true";
+  let timers = 0; h.context.setTimeout = () => { timers++; return 1; };
+  const button = { dataset: { workspaceAction: "timeline-method", id: "i1", stageId: "s1" }, matches: (selector) => selector === ".timeline-node" };
+  await Promise.all(h.documentListeners.get("click").callbacks.map((listener) => listener({ detail: 1, target: { closest: (selector) => selector === "[data-workspace-action]" ? button : null } })));
+  assert.equal(timers, 0); assert.equal(h.app.inspectedMethod().id, "i1");
 });
