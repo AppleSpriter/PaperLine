@@ -20,7 +20,7 @@ function fixture() {
 }
 
 // Small fixtures for application logic; these tests do not run a browser or check layout.
-function createApp(storage = new Map(), clock = { now: 0 }) {
+function createApp(storage = new Map(), clock = { now: 0 }, bootFetch = () => new Promise(() => {})) {
   const nodes = new Map();
   const documentListeners = new Map();
   function node(selector) {
@@ -28,6 +28,8 @@ function createApp(storage = new Map(), clock = { now: 0 }) {
       id: selector.slice(1), value: "", innerHTML: "", textContent: "", dataset: {}, open: false,
       listeners: {}, classList: { toggle() {}, add() {}, remove() {} },
       addEventListener(type, callback) { this.listeners[type] = callback; },
+      focus() {},
+      click() { this.clickCount = (this.clickCount || 0) + 1; },
       close() { this.open = false; this.listeners.close?.(); },
       showModal() { this.open = true; },
     });
@@ -51,12 +53,12 @@ function createApp(storage = new Map(), clock = { now: 0 }) {
     },
     FormData: class { constructor(form) { this.form = form; } entries() { return Object.entries(this.form.values); } },
     Date: class extends Date { static now() { return clock.now; } },
-    fetch: () => new Promise(() => {}),
+    fetch: bootFetch,
     setInterval: () => 1, clearInterval() {}, setTimeout: () => 1, clearTimeout() {},
     PaperLineI18n: { translate: (value) => value, apply() {} },
   });
   vm.runInContext(appSource, context);
-  const app = vm.runInContext(`({ ui, openSession, closeDialog, stopTimer, sessionSeconds, captureIdeaDraft, searchIdeas, selectIdea, latestSession, readingRecap, sessionHistory,
+  const app = vm.runInContext(`({ ui, openDialog, openIdeaDialog, ideaDialogDraftKey, captureDialogDraft, openSession, closeDialog, stopTimer, sessionSeconds, captureIdeaDraft, searchIdeas, selectIdea, latestSession, readingRecap, sessionHistory,
     paperRelationRank, editableEdge, timelineLayout, stageContributions, selectTimelineStage, renderStageInspector, rememberTimelineViewport, restoreTimelineViewport, paperPickerResults, removeStageContribution, queueContributionAction, fitMethodGraph, switchWorkspaceView, methods, methodChoices, paperIdeaEdges, stagePaperEdges, workspaceDraft, submitWorkspaceForm, renderMethodsWorkspace, renderStageLine, renderPaperInspector, openStageSession, sessionDraftKey, graphZoomHint, setPageZoom, zoomGraph, zoomGraphWheel, graphMarkup, orderedMapPapers, paperMapLayout, updatePaperSelection, syncInspectorLayout, syncSelection, graphNode, displayAuthors, paperInstitution, libraryCitationCounts, rankedRecommendations, renderRecommendations, openPaperLineDialog, paperReadStatus, mapPapers, validCitations, renderPaperMap, renderPaperMapResults, renderMapInspector, renderZoteroSync, applyZoteroSync, refreshZoteroSync, startZoteroSync, markPaper, renderIdeaInspector, renderInspector, renderIdeas, renderPaperResults, searchResult, searchPapers, searchLines, searchEverything, markIdea, toast, readDraft, act, refreshState, formatDuration, readingTotal, renderOutline, setState(value) { state = value; } })`, context);
   app.setState(fixture());
   app.ui.selectedLineId = "l1";
@@ -992,4 +994,162 @@ test("idea graph and relationship cards consistently display proposes, improves,
   assert.deepEqual(Array.from(h.app.paperIdeaEdges("p1"), (item) => item.relation), ["improves", "uses"]);
   data.edges.pop();
   assert.equal(JSON.stringify(data), before);
+});
+
+
+test("ordinary, paper annotation, and derived card drafts keep separate creation contexts", () => {
+  const h = createApp();
+  const capture = (title) => {
+    h.node("#idea-title").value = title;
+    h.app.captureDialogDraft({ id: "idea-form" });
+  };
+  h.app.openIdeaDialog(); capture("Ordinary draft");
+  const source = { paperId: "p1", sourceUrl, text: "Original excerpt" };
+  h.app.openIdeaDialog(source); capture("Annotation draft");
+  h.node("#idea-source-relation").value = "proposes";
+  h.app.captureDialogDraft({ id: "idea-form" });
+  h.app.openIdeaDialog(null, "i1"); capture("Derived draft");
+  h.app.openIdeaDialog();
+  assert.equal(h.node("#idea-title").value, "Ordinary draft");
+  h.app.openIdeaDialog(source);
+  assert.equal(h.node("#idea-title").value, "Annotation draft");
+  assert.equal(h.node("#idea-source-relation").value, "proposes");
+  h.app.openIdeaDialog({ ...source, sourceUrl: sourceUrl + "2" });
+  assert.equal(h.node("#idea-title").value, "");
+  h.app.openIdeaDialog(null, "i1");
+  assert.equal(h.node("#idea-title").value, "Derived draft");
+  const reloaded = createApp(h.storage);
+  reloaded.app.openIdeaDialog(source);
+  assert.equal(reloaded.node("#idea-title").value, "Annotation draft");
+});
+
+test("new card, paper and reading line submits ignore repeated clicks until the request finishes", async () => {
+  for (const name of ["idea", "paper", "line"]) {
+    const h = createApp();
+    let finish, count = 0;
+    h.context.fetch = () => { count++; return new Promise((resolve) => { finish = resolve; }); };
+    const submit = () => h.node(`#${name}-form`).listeners.submit({ preventDefault() {} });
+    const pending = submit();
+    await submit();
+    assert.equal(count, 1, name);
+    finish({ ok: false, json: async () => ({ error: "offline" }) });
+    await pending;
+    const retry = submit();
+    assert.equal(count, 2, name);
+    finish({ ok: true, json: async () => ({ state: fixture(), result: {} }) });
+    await retry;
+  }
+});
+
+test("a repeated stage creation request runs once and a failed request remains retryable", async () => {
+  const h = createApp();
+  const form = { dataset: { workspaceForm: "new-stage", workspaceDraft: "stage-new:l1", id: "l1" }, values: { title: "Stage draft", date: "", summary: "Keep me" } };
+  h.app.workspaceDraft(form);
+  let finish, count = 0;
+  h.context.fetch = () => { count++; return new Promise((resolve) => { finish = resolve; }); };
+  const pending = h.app.submitWorkspaceForm(form);
+  await h.app.submitWorkspaceForm(form);
+  assert.equal(count, 1);
+  finish({ ok: false, json: async () => ({ error: "offline" }) });
+  await assert.rejects(pending, /offline/);
+  assert.equal(h.app.readDraft("stage-new:l1").summary, "Keep me");
+  const retry = h.app.submitWorkspaceForm(form);
+  assert.equal(count, 2);
+  finish({ ok: true, json: async () => ({ state: fixture(), result: {} }) });
+  await retry;
+  assert.equal(h.app.readDraft("stage-new:l1"), null);
+});
+
+test("saving an annotation card clears only that source draft after acceptance", async () => {
+  const h = createApp();
+  h.app.openIdeaDialog();
+  h.node("#idea-title").value = "Ordinary draft";
+  h.app.captureDialogDraft({ id: "idea-form" });
+  h.app.openIdeaDialog({ paperId: "p1", sourceUrl });
+  h.node("#idea-title").value = "Annotation draft";
+  h.app.captureDialogDraft({ id: "idea-form" });
+  const sourceKey = h.app.ideaDialogDraftKey();
+  let finish;
+  h.context.fetch = () => new Promise((resolve) => { finish = resolve; });
+  const save = h.node("#idea-form").listeners.submit({ preventDefault() {} });
+  assert.equal(h.app.readDraft(sourceKey).title, "Annotation draft");
+  finish({ ok: true, json: async () => ({ state: fixture(), result: {} }) });
+  await save;
+  assert.equal(h.app.readDraft(sourceKey), null);
+  assert.equal(h.app.readDraft("idea-new").title, "Ordinary draft");
+});
+
+
+test("a failed initial state load exposes restore and recovers through the real file change handler", async () => {
+  const requests = [];
+  const h = createApp(new Map(), { now: 0 }, async (path) => {
+    requests.push(path);
+    return { ok: false, status: 500, json: async () => ({ error: "Corrupt JSON" }) };
+  });
+  h.app.setState(null);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.match(h.node("#main-view").innerHTML, /data-action="restore-backup">从备份恢复/);
+  assert.match(h.node("#main-view").innerHTML, /Corrupt JSON/);
+  assert.deepEqual(requests, ["/api/state"]);
+  const button = { dataset: { action: "restore-backup" } };
+  await h.documentListeners.get("click").callbacks[0]({ target: { closest: () => button } });
+  assert.equal(h.node("#restore-file").clickCount, 1);
+  let confirmed = 0;
+  h.context.PaperLineDesktop = { unpack: (backup) => ({ backup, drafts: null }), confirm: async (message) => { confirmed++; assert.match(message, /替换当前数据/); return true; } };
+  h.context.fetch = async (path, options) => {
+    requests.push(path);
+    assert.deepEqual(JSON.parse(options.body).backup, fixture());
+    return { ok: true, json: async () => ({ state: fixture(), result: { kept: "damaged-original.json" } }) };
+  };
+  await h.node("#restore-file").listeners.change({ target: { files: [{ size: 100, text: async () => JSON.stringify(fixture()) }] } });
+  assert.equal(confirmed, 1);
+  assert.deepEqual(requests, ["/api/state", "/api/restore"]);
+  assert.doesNotMatch(h.node("#main-view").innerHTML, /无法读取应用数据/);
+  assert.equal(h.app.ui.selectedLineId, "l1");
+});
+
+
+test("an accepted slow card save does not close a reopened source dialog or clear its draft", async () => {
+  const h = createApp();
+  h.app.openIdeaDialog({ paperId: "p1", sourceUrl });
+  h.node("#idea-title").value = "First annotation";
+  h.app.captureDialogDraft({ id: "idea-form" });
+  const firstKey = h.app.ideaDialogDraftKey();
+  let finish;
+  h.context.fetch = () => new Promise((resolve) => { finish = resolve; });
+  const save = h.node("#idea-form").listeners.submit({ preventDefault() {} });
+  h.app.closeDialog(h.node("#idea-dialog"));
+  const secondSource = { paperId: "p1", sourceUrl: sourceUrl + "2" };
+  h.app.openIdeaDialog(secondSource);
+  h.node("#idea-title").value = "Second annotation draft";
+  h.app.captureDialogDraft({ id: "idea-form" });
+  const secondKey = h.app.ideaDialogDraftKey();
+  finish({ ok: true, json: async () => ({ state: fixture(), result: {} }) });
+  await save;
+  assert.equal(h.node("#idea-dialog").open, true);
+  assert.equal(h.node("#idea-title").value, "Second annotation draft");
+  assert.equal(h.app.readDraft(firstKey), null);
+  assert.equal(h.app.readDraft(secondKey).title, "Second annotation draft");
+  h.app.closeDialog(h.node("#idea-dialog"));
+  h.app.openIdeaDialog(secondSource);
+  assert.equal(h.node("#idea-title").value, "Second annotation draft");
+});
+
+test("a slow method annotation save leaves a newer paper picker open with its draft", async () => {
+  const h = createApp();
+  h.app.openDialog("#paper-picker-dialog");
+  const form = { dataset: { workspaceForm: "annotate-method", workspaceDraft: "paper-method:p1", id: "p1" }, values: { title: "First method", note: "Evidence", sourceUrl } };
+  h.app.workspaceDraft(form);
+  let finish;
+  h.context.fetch = () => new Promise((resolve) => { finish = resolve; });
+  const save = h.app.submitWorkspaceForm(form, { value: "uses" });
+  h.app.closeDialog(h.node("#paper-picker-dialog"));
+  h.app.openDialog("#paper-picker-dialog");
+  const newer = { dataset: { workspaceDraft: "paper-method:p2" }, values: { title: "Newer method", note: "Second evidence", sourceUrl: "" } };
+  h.app.workspaceDraft(newer);
+  finish({ ok: true, json: async () => ({ state: fixture(), result: {} }) });
+  await save;
+  assert.equal(h.node("#paper-picker-dialog").open, true);
+  assert.equal(h.app.readDraft("paper-method:p1"), null);
+  assert.equal(h.app.readDraft("paper-method:p2").note, "Second evidence");
 });

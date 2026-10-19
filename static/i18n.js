@@ -510,6 +510,7 @@
     "页面不存在。": "Page not found.",
     "请求格式无效。": "Invalid request format.",
     "请求内容过大或为空。": "The request is too large or empty.",
+    "请求内容过大（上限 20 MB）。请缩小备份或操作内容后重试。": "The request is too large (20 MB limit). Reduce the backup or operation size and try again.",
     "请求内容无效。": "Invalid request body.",
     "操作内容无效。": "Invalid action payload.",
     "帮助": "Help",

@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import threading
 import unittest
@@ -251,6 +252,78 @@ class ReadingGraphTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "数据文件已损坏"):
                     app.load_state()
                 self.assertEqual(json.loads(backup.read_text(encoding="utf-8"))["lines"], [])
+
+    def test_restore_damaged_current_preserves_raw_and_last_good_with_local_settings(self):
+        incoming = app.default_state()
+        app.apply_action(incoming, "line.create", {"title": "Recovered"})
+        incoming["settings"].update(vaultPath="/remote/device", language="zh")
+        for damaged in (b"{broken", b"\xff\xfe", b'{"version":2}'):
+            with self.subTest(damaged=damaged), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                data, previous = root / "state-v2.json", root / "state-v2.backup.json"
+                last_good = app.default_state()
+                last_good["settings"].update(vaultPath="/local/vault", language="en")
+                previous.write_text(json.dumps(last_good))
+                previous_bytes = previous.read_bytes()
+                data.write_bytes(damaged)
+                with patch.object(app, "DATA_FILE", data), patch.object(app, "BACKUP_FILE", previous):
+                    with self.assertRaises(app.StateCorruptionError):
+                        app.load_state()
+                    result = app.restore_state(incoming)
+                    self.assertEqual((root / result["kept"]).read_bytes(), damaged)
+                    if os.name != "nt":
+                        self.assertEqual((root / result["kept"]).stat().st_mode & 0o777, 0o600)
+                    self.assertEqual(previous.read_bytes(), previous_bytes)
+                    restored = app.load_state()
+                    self.assertEqual(restored["lines"][0]["title"], "Recovered")
+                    self.assertEqual(restored["settings"]["vaultPath"], "/local/vault")
+                    self.assertEqual(restored["settings"]["language"], "en")
+
+    def test_restore_damaged_current_uses_defaults_without_valid_local_v2_backup(self):
+        for previous_content in (None, b"broken", b"\xff", b'{"version":2}', b'{"version":3}'):
+            with self.subTest(previous=previous_content), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                data, previous = root / "state-v2.json", root / "state-v2.backup.json"
+                data.write_bytes(b"broken")
+                if previous_content is not None:
+                    previous.write_bytes(previous_content)
+                incoming = app.default_state()
+                incoming["settings"].update(vaultPath="/remote/device", language="en")
+                with patch.object(app, "DATA_FILE", data), patch.object(app, "BACKUP_FILE", previous):
+                    app.restore_state(incoming)
+                    self.assertEqual(app.load_state()["settings"], app.default_state()["settings"])
+                    self.assertEqual(previous.read_bytes() if previous.exists() else None, previous_content)
+
+    def test_restore_never_writes_for_invalid_import_future_current_or_io_failure(self):
+        for current, incoming in ((b"broken", {"version": 2}), (b'{"version":3}', app.default_state())):
+            with self.subTest(current=current), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                data, previous = root / "state-v2.json", root / "state-v2.backup.json"
+                data.write_bytes(current)
+                previous.write_bytes(b"last-good")
+                with patch.object(app, "DATA_FILE", data), patch.object(app, "BACKUP_FILE", previous):
+                    with self.assertRaises(ValueError):
+                        app.restore_state(incoming)
+                self.assertEqual(data.read_bytes(), current)
+                self.assertEqual(previous.read_bytes(), b"last-good")
+                self.assertEqual(len(list(root.iterdir())), 2)
+        with patch.object(app, "load_state", side_effect=PermissionError("denied")):
+            with self.assertRaises(PermissionError):
+                app.restore_state(app.default_state())
+
+    def test_restore_damaged_current_requires_successful_raw_isolation(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            data, previous = root / "state-v2.json", root / "state-v2.backup.json"
+            data.write_bytes(b"broken")
+            previous.write_text(json.dumps(app.default_state()))
+            previous_bytes = previous.read_bytes()
+            with patch.object(app, "DATA_FILE", data), patch.object(app, "BACKUP_FILE", previous), \
+                    patch.object(app.os, "open", side_effect=PermissionError("cannot isolate")):
+                with self.assertRaises(PermissionError):
+                    app.restore_state(app.default_state())
+            self.assertEqual(data.read_bytes(), b"broken")
+            self.assertEqual(previous.read_bytes(), previous_bytes)
 
     def test_zotero_search_and_annotations_survive_malformed_items(self):
         def fake_get(path, params=None):

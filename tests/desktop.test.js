@@ -198,3 +198,20 @@ test("method draft migration preserves explicit legacy edges and rejects inconsi
     { title: '', edgeId: 'legacy', ideaId: 'i2' }, { title: '', edgeId: 'x'.repeat(41) },
   ]) assert.equal(Object.keys(unpackDraft(draft)).length, 0);
 });
+
+
+test("migration preserves scoped creation drafts only while their source still exists", () => {
+  const h = harness(), backup = data();
+  backup.papers = [{ id: "p1" }];
+  const draft = { title: "Annotation draft", kind: "concept", entityType: "concept", lineId: "", relation: "uses" };
+  const paperKey = 'paperline-draft:idea-new-paper:p1:' + encodeURIComponent(JSON.stringify(["zotero://open-pdf/library/items/A", "1", "excerpt", ""]));
+  h.stored.set(paperKey, JSON.stringify(draft));
+  h.stored.set('paperline-draft:idea-new-parent:i1', JSON.stringify(draft));
+  h.stored.set('paperline-draft:idea-new', JSON.stringify({ ...draft, title: "Ordinary" }));
+  h.stored.set('paperline-draft:idea-new-paper:missing:context', JSON.stringify(draft));
+  const migration = h.bridge.migration(backup);
+  assert.equal(Object.keys(migration.drafts).length, 3);
+  assert.equal(migration.drafts[paperKey].title, "Annotation draft");
+  h.bridge.installDrafts(h.bridge.unpack(migration).drafts, backup);
+  assert.equal(JSON.parse(h.stored.get(paperKey)).title, "Annotation draft");
+});

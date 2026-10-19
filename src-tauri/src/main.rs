@@ -151,6 +151,9 @@ struct Backend {
     next_id: u64,
 }
 
+// Includes the trailing newline, matching desktop_backend.MAX_REQUEST_BYTES.
+const MAX_REQUEST_BYTES: usize = 20_000_000;
+
 impl Backend {
     fn start(data_dir: &std::path::Path) -> Result<Self, String> {
         let executable = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -188,9 +191,15 @@ impl Backend {
         let id = self.next_id;
         self.next_id += 1;
         let request = json!({"id": id, "method": method, "path": path, "body": body});
+        let mut encoded = serde_json::to_vec(&request).map_err(|e| e.to_string())?;
+        encoded.push(b'\n');
+        if encoded.len() > MAX_REQUEST_BYTES {
+            // Reject locally: the sidecar cannot identify an oversized request in
+            // its error reply, which would otherwise invalidate this IPC session.
+            return Err("请求内容过大（上限 20 MB）。请缩小备份或操作内容后重试。".into());
+        }
         let input = self.input.as_mut().ok_or("PaperLine backend has stopped")?;
-        serde_json::to_writer(&mut *input, &request).map_err(|e| e.to_string())?;
-        input.write_all(b"\n").and_then(|_| input.flush()).map_err(|e| e.to_string())?;
+        input.write_all(&encoded).and_then(|_| input.flush()).map_err(|e| e.to_string())?;
         // A timed-out response must never be matched to a later request.
         let reply = match self.output.recv_timeout(Duration::from_secs(120)) {
             Ok(reply) => reply?,
@@ -264,9 +273,30 @@ async fn save_backup(contents: String) -> Result<Option<String>, String> {
         .save_file().await else { return Ok(None); };
     let path = file.path().to_path_buf();
     tauri::async_runtime::spawn_blocking(move || {
-        std::fs::write(&path, contents).map_err(|e| format!("Cannot save backup: {e}"))?;
+        atomic_save_backup(&path, |file| file.write_all(contents.as_bytes()))
+            .map_err(|e| format!("Cannot save backup: {e}"))?;
         Ok(Some(path.to_string_lossy().into_owned()))
     }).await.map_err(|e| e.to_string())?
+}
+
+fn atomic_save_backup(path: &std::path::Path, write: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>) -> std::io::Result<()> {
+    let parent = path.parent().ok_or_else(|| std::io::Error::other("Missing backup directory"))?;
+    let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos();
+    let temporary = parent.join(format!(".paperline-backup-{}-{nonce}.tmp", std::process::id()));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&temporary)?;
+    let result = write(&mut file).and_then(|_| file.sync_all());
+    drop(file);
+    // Same-directory rename replaces the selected file only after a full write.
+    let result = result.and_then(|_| std::fs::rename(&temporary, path));
+    if result.is_err() { let _ = std::fs::remove_file(&temporary); }
+    result
 }
 
 fn internal_allowed(url: &url::Url) -> bool {
@@ -424,6 +454,50 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn backup_save_preserves_previous_file_after_write_failure() {
+        let directory = std::env::temp_dir().join(format!("paperline-backup-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir(&directory).unwrap();
+        let destination = directory.join("backup.json");
+        std::fs::write(&destination, b"previous backup").unwrap();
+        let result = atomic_save_backup(&destination, |file| {
+            file.write_all(b"partial")?;
+            Err(std::io::Error::other("disk full"))
+        });
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&destination).unwrap(), b"previous backup");
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
+        atomic_save_backup(&destination, |file| file.write_all(b"complete backup")).unwrap();
+        assert_eq!(std::fs::read(&destination).unwrap(), b"complete backup");
+        // A failed rename also removes the completed temporary file.
+        let blocked = directory.join("directory.json");
+        std::fs::create_dir(&blocked).unwrap();
+        assert!(atomic_save_backup(&blocked, |file| file.write_all(b"new")).is_err());
+        assert!(blocked.is_dir());
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 2);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn oversized_utf8_request_keeps_backend_available() {
+        let mut command = Command::new("/bin/cat");
+        command.stdin(Stdio::piped()).stdout(Stdio::null());
+        let mut process = spawn_owned(&mut command).unwrap();
+        let input = process.child.stdin.take();
+        let (tx, output) = mpsc::channel();
+        let mut backend = Backend { child: Arc::new(Mutex::new(process)), input, output, next_id: 1 };
+        // Character counts fit; UTF-8 bytes exceed the protocol limit.
+        let error = backend.request("POST", "/api/restore", json!({"backup": "中".repeat(MAX_REQUEST_BYTES / 3)})).err().unwrap();
+        assert!(error.contains("20 MB"));
+        assert!(backend.input.is_some());
+        assert!(backend.child.lock().unwrap().try_wait().unwrap().is_none());
+        let overhead = serde_json::to_vec(&json!({"id": 2, "method": "POST", "path": "/api/restore", "body": {"backup": ""}})).unwrap().len() + 1;
+        tx.send(Ok(json!({"id": 2, "status": 200, "data": {"ok": true}}))).unwrap();
+        assert_eq!(backend.request("POST", "/api/restore", json!({"backup": "x".repeat(MAX_REQUEST_BYTES - overhead)})).unwrap().status, 200);
+        tx.send(Ok(json!({"id": 3, "status": 200, "data": {"ok": true}}))).unwrap();
+        assert_eq!(backend.request("GET", "/api/state", json!({})).unwrap().status, 200);
+        assert!(backend.shutdown());
+    }
     #[cfg(target_os = "macos")]
     #[test]
     fn forced_shutdown_terminates_owned_descendants() {

@@ -284,6 +284,52 @@ class WebDavTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "还没有"):
             app.restore_from_cloud("")
 
+    def test_restore_waits_for_inflight_upload_then_rechecks_cloud_confirmation(self):
+        app.save_webdav(self.config())
+        local = self.saved_state("Local", "2050-01-01T00:00:00+00:00")
+        app.save_state(local, stamp=False)
+        old_cloud = self.saved_state("Old cloud", "2020-01-01T00:00:00+00:00")
+        self.put_cloud(old_cloud)
+        entered = threading.Event()
+
+        class UploadLock:
+            def __init__(self):
+                self.lock = threading.Lock()
+
+            def __enter__(self):
+                entered.set()
+                self.lock.acquire()
+
+            def __exit__(self, *_):
+                self.lock.release()
+
+        sync = app.WebDavSync()
+        sync.upload_lock = UploadLock()
+        errors = []
+
+        def restore():
+            try:
+                app.restore_from_cloud(old_cloud["savedAt"])
+            except Exception as error:
+                errors.append(error)
+
+        # Model an upload which already owns the lock and will replace the cloud.
+        sync.upload_lock.lock.acquire()
+        with patch.object(app, "SYNC", sync):
+            worker = threading.Thread(target=restore)
+            worker.start()
+            try:
+                self.assertTrue(entered.wait(2), "Restore did not wait for the active upload")
+                self.put_cloud(local)
+            finally:
+                sync.upload_lock.lock.release()
+                worker.join(timeout=3)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(len(errors), 1)
+        self.assertIsInstance(errors[0], ValueError)
+        self.assertIn("刚刚有更新", str(errors[0]))
+        self.assertEqual(app.load_state()["lines"][0]["title"], "Local")
+
     def test_v2_sync_never_changes_legacy_cloud_and_uses_independent_history(self):
         app.save_webdav(self.config())
         legacy = b'{"version":1,"privateLegacy":"untouched"}'

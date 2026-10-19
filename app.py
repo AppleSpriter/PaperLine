@@ -86,6 +86,10 @@ def default_state() -> dict[str, Any]:
     }
 
 
+class StateCorruptionError(ValueError):
+    """The current v2 file cannot be decoded or fails its known schema."""
+
+
 def load_state() -> dict[str, Any]:
     source = DATA_FILE
     migrating = False
@@ -101,11 +105,18 @@ def load_state() -> dict[str, Any]:
             raw = json.load(handle)
             stat = os.fstat(handle.fileno())
             cache_key = (str(source), stat.st_ino, stat.st_mtime_ns, stat.st_size)
-    except json.JSONDecodeError as error:
-        raise ValueError(f"数据文件已损坏，未修改任何内容；上一份备份：{BACKUP_FILE}") from error
-    if not isinstance(raw, dict) or raw.get("version") != (1 if migrating else 2):
+    except (json.JSONDecodeError, UnicodeDecodeError) as error:
+        error_type = ValueError if migrating else StateCorruptionError
+        raise error_type(f"数据文件已损坏，未修改任何内容；上一份备份：{BACKUP_FILE}") from error
+    if (not isinstance(raw, dict) or type(raw.get("version")) is not int
+            or raw.get("version") != (1 if migrating else 2)):
         raise ValueError("数据版本不受支持，未修改任何内容。")
-    state = validate_backup(raw)
+    try:
+        state = validate_backup(raw)
+    except ValueError as error:
+        if migrating:
+            raise
+        raise StateCorruptionError(f"数据文件内容已损坏，未修改任何内容；上一份备份：{BACKUP_FILE}") from error
     state.setdefault("citations", [])
     state.setdefault("recommendations", [])
     state.setdefault("zoteroSync", {})
@@ -204,27 +215,40 @@ def restore_state(data: Any, keep_stamp: bool = False, label: str = "before-rest
     backup = validate_backup(data)
     if importing_v1:
         backup["_migration"] = {"fromVersion": 1, "pendingCloudConfirmation": True}
-    current = load_state()
+    damaged = None
+    try:
+        current = load_state()
+    except StateCorruptionError:
+        damaged = DATA_FILE.read_bytes()
+        current = default_state()
+        if BACKUP_FILE.parent == DATA_FILE.parent and BACKUP_FILE.exists():
+            try:
+                previous = json.loads(BACKUP_FILE.read_text(encoding="utf-8"))
+                if isinstance(previous, dict) and type(previous.get("version")) is int and previous["version"] == 2:
+                    current = validate_backup(previous)
+            except ValueError:
+                pass  # Invalid last-good contents cannot supply device settings.
     DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     # 覆盖前单独留一份恢复前的数据，恢复错了还能退回去。
     keep = DATA_FILE.parent / f"state-v2.{label}-{stamp}-{secrets.token_hex(3)}.json"
-    keep.write_text(json.dumps(current, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    os.chmod(keep, 0o600)
+    kept_bytes = damaged if damaged is not None else (json.dumps(current, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    with os.fdopen(os.open(keep, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as handle:
+        handle.write(kept_bytes)
     # 设备相关的设置沿用本机，不从别的电脑的备份里带过来。
     backup["settings"] = {**default_state()["settings"], **current.get("settings", {})}
     ensure_recommendations(backup)
-    save_state(backup, stamp=not keep_stamp)
+    save_state(backup, stamp=not keep_stamp, keep_previous=damaged is None)
     return {"kept": keep.name, "counts": {key: len(backup[key]) for key in RESTORE_COLLECTIONS}}
 
 
-def save_state(state: dict[str, Any], stamp: bool = True) -> None:
+def save_state(state: dict[str, Any], stamp: bool = True, keep_previous: bool = True) -> None:
     if not isinstance(state, dict) or state.get("version") != 2:
         raise ValueError("只允许写入版本 2 数据；旧数据保持只读。")
     if stamp or not state.get("savedAt"):
         state["savedAt"] = stamp_now()
     DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
-    if DATA_FILE.exists():
+    if keep_previous and DATA_FILE.exists():
         # 写入前留下上一份可用数据，文件损坏时还能找回来。
         shutil.copy2(DATA_FILE, BACKUP_FILE)
     with tempfile.NamedTemporaryFile(
@@ -1658,16 +1682,19 @@ def compare_with_cloud() -> dict[str, Any]:
 
 
 def restore_from_cloud(expect: str) -> dict[str, Any]:
-    cloud = cloud_snapshot(require_webdav())
-    if cloud is None:
-        raise ValueError("云端还没有 PaperLine 备份。")
-    if expect and cloud["savedAt"] != expect:
-        raise ValueError("云端的数据刚刚有更新，请重新确认后再恢复。")
-    if cloud["savedAt"]:
-        cloud["data"]["savedAt"] = cloud["savedAt"]  # 恢复后两边时间一致，不会被当成冲突
-    with LOCK:
-        result = restore_state(cloud["data"], keep_stamp=True, label="before-cloud-restore")
-    SYNC.clear_conflict()
+    # An active upload may still replace the cloud with its earlier local snapshot.
+    # Read and confirm only after it finishes, using the same lock order as sync.
+    with SYNC.upload_lock:
+        cloud = cloud_snapshot(require_webdav())
+        if cloud is None:
+            raise ValueError("云端还没有 PaperLine 备份。")
+        if expect and cloud["savedAt"] != expect:
+            raise ValueError("云端的数据刚刚有更新，请重新确认后再恢复。")
+        if cloud["savedAt"]:
+            cloud["data"]["savedAt"] = cloud["savedAt"]  # 恢复后两边时间一致，不会被当成冲突
+        with LOCK:
+            result = restore_state(cloud["data"], keep_stamp=True, label="before-cloud-restore")
+        SYNC.clear_conflict()
     return result
 
 

@@ -17,7 +17,7 @@ installer = script('install-macos')
 
 class PlatformVersionTests(unittest.TestCase):
     def test_platforms_have_independent_versions(self):
-        self.assertEqual(version.platform_version('macos'), '0.3.2')
+        self.assertEqual(version.platform_version('macos'), '0.3.3')
         self.assertEqual(version.platform_version('windows'), '0.3.0')
 
 @unittest.skipUnless(sys.platform == 'darwin', 'macOS filesystem exchange API')

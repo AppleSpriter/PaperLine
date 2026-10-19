@@ -18,6 +18,7 @@
     const reference = (id, collection) => id === undefined || id === "" || collection.has(id);
     const date = (value) => value === undefined || value === "" || (/^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value);
     const session = (draft) => !Object.keys(draft).some((field) => !["elapsed", "note", "nextQuestion"].includes(field)) && Number.isInteger(draft.elapsed) && draft.elapsed >= 0 && draft.elapsed <= 86400 && typeof draft.note === "string" && draft.note.length <= 4000 && typeof draft.nextQuestion === "string" && draft.nextQuestion.length <= 1000;
+    const decodedId = (value) => { try { return decodeURIComponent(value); } catch { return ""; } };
     const result = Object.create(null);
     const limits = { title: 120, aliases: 1500, summary: 4000, mechanism: 6000, thoughts: 6000, baseUpdatedAt: 100, kind: 20, status: 20, entityType: 20 };
     for (const [key, draft] of Object.entries(drafts)) {
@@ -52,7 +53,9 @@
         if (draft.lineId && draft.stageId && !lines.get(draft.lineId)?.stageIds?.includes(draft.stageId)) continue;
       } else if (parts[0] === "line-new" && parts.length === 1) {
         if (!strings(draft, { title: 120, question: 1000, kind: 20 })) continue;
-      } else if (parts[0] === "idea-new" && parts.length === 1) {
+      } else if ((parts[0] === "idea-new" && parts.length === 1) ||
+        (parts[0] === "idea-new-parent" && parts.length === 2 && ideas.has(decodedId(parts[1]))) ||
+        (parts[0] === "idea-new-paper" && parts.length === 3 && papers.has(decodedId(parts[1])))) {
         if (!strings(draft, { title: 120, aliases: 1500, summary: 4000, kind: 20, entityType: 20, lineId: 150, relation: 30 }) || !reference(draft.lineId, new Set(lines.keys()))) continue;
         if (draft.entityType !== undefined && !["method", "concept", "question", "unclassified"].includes(draft.entityType)) continue;
       } else continue;

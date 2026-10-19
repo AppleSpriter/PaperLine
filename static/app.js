@@ -262,12 +262,14 @@ async function act(action, payload) {
   noteLocalChange();
   return data.result;
 }
-function closeDialog(dialog = document.querySelector("dialog[open]")) {
+function closeDialog(dialog = document.querySelector("dialog[open]"), generation) {
+  if (generation !== undefined && dialog?.dataset.generation !== generation) return;
   if (dialog?.id === "session-dialog" && ui.session?.saving) return;
   if (dialog) dialog.close();
   if (dialog?.id === "session-dialog") stopTimer();
 }
-function openDialog(id) { const dialog = $(id); localize(dialog); if (!dialog.open) dialog.showModal(); }
+let dialogGeneration = 0;
+function openDialog(id) { const dialog = $(id); dialog.dataset.generation = String(++dialogGeneration); localize(dialog); if (!dialog.open) dialog.showModal(); }
 function options(items, selected = "", blank = "") {
   let html = blank ? `<option value="">${esc(blank)}</option>` : "";
   return html + items.map((item) => `<option data-user-content value="${esc(item.id)}" ${item.id === selected ? "selected" : ""}>${esc(truncate(item.title, 58))}</option>`).join("");
@@ -941,6 +943,13 @@ function ideaKind() {
 function setIdeaKind(value) {
   document.querySelectorAll('input[name="idea-kind"]').forEach((input) => { input.checked = input.value === value; });
 }
+function ideaDialogDraftKey() {
+  if (ui.pendingSource) {
+    const source = ui.pendingSource;
+    return `idea-new-paper:${encodeURIComponent(source.paperId)}:${encodeURIComponent(source.sourceUrl || JSON.stringify([source.page || "", source.text || "", source.comment || ""]))}`;
+  }
+  return ui.pendingParentId ? `idea-new-parent:${encodeURIComponent(ui.pendingParentId)}` : "idea-new";
+}
 function openIdeaDialog(source = null, parentId = "") {
   ui.pendingSource = source;
   ui.pendingParentId = parentId;
@@ -959,10 +968,8 @@ function openIdeaDialog(source = null, parentId = "") {
     $("#idea-source-context").textContent = `来源：${target?.title || "论文"}${source.page ? ` · 第 ${source.page} 页` : ""}${source.text ? ` · ${truncate(source.text, 110)}` : ""}`;
     $("#idea-source-relation").value = "uses";
   }
-  if (!source && !parentId) {
-    const saved = readDraft("idea-new");
-    if (saved) { $("#idea-title").value = saved.title || ""; $("#idea-aliases").value = saved.aliases || ""; $("#idea-summary").value = saved.summary || ""; $("#idea-entity-type").value = saved.entityType || "concept"; $("#idea-line").value = saved.lineId || ""; setIdeaKind(saved.kind || "concept"); }
-  }
+  const saved = readDraft(ideaDialogDraftKey());
+  if (saved) { $("#idea-title").value = saved.title || ""; $("#idea-aliases").value = saved.aliases || ""; $("#idea-summary").value = saved.summary || ""; $("#idea-entity-type").value = saved.entityType || "concept"; $("#idea-line").value = saved.lineId || ""; setIdeaKind(saved.kind || "concept"); if (source) $("#idea-source-relation").value = saved.relation || "uses"; }
   renderIdeaMatches();
   openDialog("#idea-dialog");
   $("#idea-title").focus();
@@ -1434,6 +1441,9 @@ $("#session-dialog").addEventListener("cancel", (event) => { if (ui.session?.sav
 
 $("#line-form").addEventListener("submit", async (event) => {
   event.preventDefault();
+  const form = $("#line-form"), generation = $("#line-dialog").dataset.generation;
+  if (form.dataset.saving) return;
+  form.dataset.saving = "true";
   try {
     const id = $("#line-id").value;
     const payload = { title: $("#line-title").value, question: $("#line-question").value, kind: $("#line-kind").value };
@@ -1442,12 +1452,16 @@ $("#line-form").addEventListener("submit", async (event) => {
     await act(id ? "line.update" : "line.create", payload);
     if (JSON.stringify(readDraft(draftKey)) === snapshot) forgetDraft(draftKey);
     ui.view = "outline"; render();
-    closeDialog($("#line-dialog"));
+    closeDialog($("#line-dialog"), generation);
     toast(id ? "阅读线已更新。" : "阅读线已创建。");
   } catch (error) { toast(error.message, true); }
+  finally { delete form.dataset.saving; }
 });
 $("#idea-form").addEventListener("submit", async (event) => {
   event.preventDefault();
+  const form = $("#idea-form"), generation = $("#idea-dialog").dataset.generation;
+  if (form.dataset.saving) return;
+  form.dataset.saving = "true";
   try {
     const payload = {
       title: $("#idea-title").value, kind: ideaKind(), entityType: $("#idea-entity-type").value,
@@ -1455,12 +1469,13 @@ $("#idea-form").addEventListener("submit", async (event) => {
       aliases: $("#idea-aliases").value, ...ideaSourcePayload(),
     };
     ui.view = "graph";
-    const snapshot = JSON.stringify(readDraft("idea-new"));
+    const draftKey = ideaDialogDraftKey(), snapshot = JSON.stringify(readDraft(draftKey));
     await act("idea.create", payload);
-    if (JSON.stringify(readDraft("idea-new")) === snapshot) forgetDraft("idea-new");
-    closeDialog($("#idea-dialog"));
+    if (JSON.stringify(readDraft(draftKey)) === snapshot) forgetDraft(draftKey);
+    closeDialog($("#idea-dialog"), generation);
     toast("思想卡已创建。");
   } catch (error) { toast(error.message, true); }
+  finally { delete form.dataset.saving; }
 });
 $("#paper-line-form").addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -1475,12 +1490,16 @@ $("#paper-line-form").addEventListener("submit", async (event) => {
 });
 $("#paper-form").addEventListener("submit", async (event) => {
   event.preventDefault();
+  const form = $("#paper-form"), generation = $("#paper-dialog").dataset.generation;
+  if (form.dataset.saving) return;
+  form.dataset.saving = "true";
   try {
     ui.view = "papers";
     await act("paper.create", { title: $("#paper-title").value, authors: $("#paper-authors").value, year: $("#paper-year").value, doi: $("#paper-doi").value });
-    closeDialog($("#paper-dialog"));
+    closeDialog($("#paper-dialog"), generation);
     toast("论文已加入论文库。");
   } catch (error) { toast(error.message, true); }
+  finally { delete form.dataset.saving; }
 });
 $("#attach-form").addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -1774,32 +1793,37 @@ function openStageSession(id) {
   updateClock(); ui.timer = setInterval(updateClock, 1000); openDialog("#session-dialog");
 }
 async function submitWorkspaceForm(form, submitter) {
-  const values = Object.fromEntries(new FormData(form).entries()), kind = form.dataset.workspaceForm;
-  const draftKey = form.dataset.workspaceDraft, snapshot = draftKey ? JSON.stringify(readDraft(draftKey)) : "";
-  let action, payload;
-  if (kind === "annotate-method") {
-    if (!["proposes","uses","improves"].includes(submitter?.value)) throw new Error("请选择提出、使用或改进。");
-    if (!values.edgeId && !values.ideaId && !values.title.trim()) throw new Error("请输入方法名称或明确选择已有方法。");
-    action = "paper.annotate_method"; payload = { paperId: form.dataset.id, ...(form.dataset.stageId ? { stageId: form.dataset.stageId } : {}), ...(values.edgeId ? { edgeId: values.edgeId, ideaId: edge(values.edgeId)?.toId } : values.ideaId ? { ideaId: values.ideaId } : { title: values.title }), relation: submitter.value, ...(values.note.trim() ? { note: values.note } : {}), ...(values.sourceUrl.trim() ? { sourceUrl: values.sourceUrl } : {}) };
-  } else if (kind === "edge") { action = "edge.update"; payload = { id: form.dataset.id, note: values.note, sourceUrl: values.sourceUrl }; }
-  else if (kind === "stage") { action = "stage.update"; payload = { id: form.dataset.id, ...values }; }
-  else if (kind === "new-stage") { action = "stage.create"; payload = { ...values, lineId: form.dataset.id }; }
-  else if (kind === "stage-paper") { action = "paper.add_to_stage"; payload = { paperId: values.paperId, lineId: ui.selectedLineId, stageId: form.dataset.id }; }
-  else if (kind === "join-stage") {
-    if (!values.lineId && !values.lineTitle.trim()) throw new Error("请选择演进线或填写新线名称。");
-    if (!values.stageId && !values.stageTitle.trim()) throw new Error("请选择阶段或填写新阶段名称。");
-    action = "paper.add_to_stage"; payload = { paperId: form.dataset.id, ...(values.lineId ? {lineId: values.lineId} : {lineTitle: values.lineTitle}), ...(values.stageId ? {stageId: values.stageId} : {stageTitle: values.stageTitle}), ...(values.date ? {date: values.date} : {}), ...(values.summary ? {summary: values.summary} : {}) };
-  } else return;
-  if (kind === "annotate-method" && form.dataset.stageId) await queueContributionAction(() => act(action, payload));
-  else await act(action, payload);
-  if (kind === "new-stage") { ui.newStage = false; ui.stageInspect = true; ui.inspectorOpen = true; }
-  if (kind === "annotate-method" && $("#paper-picker-dialog")?.open) closeDialog($("#paper-picker-dialog"));
-  if (draftKey && JSON.stringify(readDraft(draftKey)) === snapshot) forgetDraft(draftKey);
-  render(); toast("已保存，关联内容保持同步。");
+  if (form.dataset.saving) return;
+  const picker = $("#paper-picker-dialog"), pickerWasOpen = picker?.open, pickerGeneration = picker?.dataset.generation;
+  form.dataset.saving = "true";
+  try {
+    const values = Object.fromEntries(new FormData(form).entries()), kind = form.dataset.workspaceForm;
+    const draftKey = form.dataset.workspaceDraft, snapshot = draftKey ? JSON.stringify(readDraft(draftKey)) : "";
+    let action, payload;
+    if (kind === "annotate-method") {
+      if (!["proposes","uses","improves"].includes(submitter?.value)) throw new Error("请选择提出、使用或改进。");
+      if (!values.edgeId && !values.ideaId && !values.title.trim()) throw new Error("请输入方法名称或明确选择已有方法。");
+      action = "paper.annotate_method"; payload = { paperId: form.dataset.id, ...(form.dataset.stageId ? { stageId: form.dataset.stageId } : {}), ...(values.edgeId ? { edgeId: values.edgeId, ideaId: edge(values.edgeId)?.toId } : values.ideaId ? { ideaId: values.ideaId } : { title: values.title }), relation: submitter.value, ...(values.note.trim() ? { note: values.note } : {}), ...(values.sourceUrl.trim() ? { sourceUrl: values.sourceUrl } : {}) };
+    } else if (kind === "edge") { action = "edge.update"; payload = { id: form.dataset.id, note: values.note, sourceUrl: values.sourceUrl }; }
+    else if (kind === "stage") { action = "stage.update"; payload = { id: form.dataset.id, ...values }; }
+    else if (kind === "new-stage") { action = "stage.create"; payload = { ...values, lineId: form.dataset.id }; }
+    else if (kind === "stage-paper") { action = "paper.add_to_stage"; payload = { paperId: values.paperId, lineId: ui.selectedLineId, stageId: form.dataset.id }; }
+    else if (kind === "join-stage") {
+      if (!values.lineId && !values.lineTitle.trim()) throw new Error("请选择演进线或填写新线名称。");
+      if (!values.stageId && !values.stageTitle.trim()) throw new Error("请选择阶段或填写新阶段名称。");
+      action = "paper.add_to_stage"; payload = { paperId: form.dataset.id, ...(values.lineId ? {lineId: values.lineId} : {lineTitle: values.lineTitle}), ...(values.stageId ? {stageId: values.stageId} : {stageTitle: values.stageTitle}), ...(values.date ? {date: values.date} : {}), ...(values.summary ? {summary: values.summary} : {}) };
+    } else return;
+    if (kind === "annotate-method" && form.dataset.stageId) await queueContributionAction(() => act(action, payload));
+    else await act(action, payload);
+    if (kind === "new-stage") { ui.newStage = false; ui.stageInspect = true; ui.inspectorOpen = true; }
+    if (kind === "annotate-method" && pickerWasOpen && picker?.open) closeDialog(picker, pickerGeneration);
+    if (draftKey && JSON.stringify(readDraft(draftKey)) === snapshot) forgetDraft(draftKey);
+    render(); toast("已保存，关联内容保持同步。");
+  } finally { delete form.dataset.saving; }
 }
 function captureDialogDraft(form) {
   if (form?.id === "line-form") writeDraft($("#line-id").value ? `line:${$("#line-id").value}` : "line-new", { title: $("#line-title").value, question: $("#line-question").value, kind: $("#line-kind").value });
-  if (form?.id === "idea-form") writeDraft("idea-new", { title: $("#idea-title").value, aliases: $("#idea-aliases").value, summary: $("#idea-summary").value, kind: ideaKind(), entityType: $("#idea-entity-type").value, lineId: $("#idea-line").value, relation: $("#idea-source-relation").value });
+  if (form?.id === "idea-form") writeDraft(ideaDialogDraftKey(), { title: $("#idea-title").value, aliases: $("#idea-aliases").value, summary: $("#idea-summary").value, kind: ideaKind(), entityType: $("#idea-entity-type").value, lineId: $("#idea-line").value, relation: $("#idea-source-relation").value });
 }
 document.addEventListener("input", (event) => {
   const form = event.target.form;
@@ -1883,6 +1907,6 @@ document.addEventListener("click", async (event) => {
 });
 
 api("/api/state").then((data) => { state = data; render(); checkReminder(); setInterval(checkReminder, 30_000); refreshWebdav(); setInterval(refreshWebdav, 30_000); refreshZoteroSync(); }).catch((error) => {
-  $("#main-view").innerHTML = `<div class="welcome"><h1>无法读取应用数据</h1><p>${esc(error.message)}</p></div>`;
+  $("#main-view").innerHTML = `<div class="welcome"><h1>无法读取应用数据</h1><p>${esc(error.message)}</p><button type="button" class="button primary" data-action="restore-backup">从备份恢复</button></div>`;
   localize($("#main-view"));
 });
