@@ -63,7 +63,7 @@ function createApp(storage = new Map(), clock = { now: 0 }, bootFetch = () => ne
   });
   vm.runInContext(appSource, context);
   const app = vm.runInContext(`({ ui, openDialog, openIdeaDialog, ideaDialogDraftKey, captureDialogDraft, openSession, closeDialog, stopTimer, sessionSeconds, captureIdeaDraft, searchIdeas, selectIdea, latestSession, readingRecap, sessionHistory,
-    enhanceDirectChoices, paperStageForm, paperMethodForm, methodStageOccurrences, methodMatchChoices, paperRelationRank, editableEdge, timelineLayout, stageContributions, selectTimelineStage, renderStageInspector, rememberTimelineViewport, restoreTimelineViewport, paperPickerResults, removeStageContribution, queueContributionAction, fitMethodGraph, switchWorkspaceView, methods, methodChoices, paperIdeaEdges, stagePaperEdges, workspaceDraft, submitWorkspaceForm, renderMethodsWorkspace, renderStageLine, renderPaperInspector, openStageSession, sessionDraftKey, graphZoomHint, setPageZoom, zoomGraph, zoomGraphWheel, graphMarkup, orderedMapPapers, paperMapLayout, updatePaperSelection, syncInspectorLayout, syncSelection, graphNode, displayAuthors, paperInstitution, libraryCitationCounts, rankedRecommendations, renderRecommendations, openPaperLineDialog, paperReadStatus, mapPapers, validCitations, renderPaperMap, renderPaperMapResults, renderMapInspector, renderZoteroSync, applyZoteroSync, refreshZoteroSync, startZoteroSync, markPaper, renderIdeaInspector, renderInspector, renderIdeas, renderPaperResults, searchResult, searchPapers, searchLines, searchEverything, markIdea, toast, readDraft, act, refreshState, formatDuration, readingTotal, renderOutline, setState(value) { state = value; } })`, context);
+    revealStageCalendar, validateStageDateInput, stageDateParts, stageDateISO, stageDateToday, stageDateField, stageCalendarMarkup, updateStageDate, closeStageCalendar, newStageEditor, stageEditor, enhanceDirectChoices, paperStageForm, paperMethodForm, methodStageOccurrences, methodMatchChoices, paperRelationRank, editableEdge, timelineLayout, stageContributions, selectTimelineStage, renderStageInspector, rememberTimelineViewport, restoreTimelineViewport, paperPickerResults, removeStageContribution, queueContributionAction, fitMethodGraph, switchWorkspaceView, methods, methodChoices, paperIdeaEdges, stagePaperEdges, workspaceDraft, submitWorkspaceForm, renderMethodsWorkspace, renderStageLine, renderPaperInspector, openStageSession, sessionDraftKey, graphZoomHint, setPageZoom, zoomGraph, zoomGraphWheel, graphMarkup, orderedMapPapers, paperMapLayout, updatePaperSelection, syncInspectorLayout, syncSelection, graphNode, displayAuthors, paperInstitution, libraryCitationCounts, rankedRecommendations, renderRecommendations, openPaperLineDialog, paperReadStatus, mapPapers, validCitations, renderPaperMap, renderPaperMapResults, renderMapInspector, renderZoteroSync, applyZoteroSync, refreshZoteroSync, startZoteroSync, markPaper, renderIdeaInspector, renderInspector, renderIdeas, renderPaperResults, searchResult, searchPapers, searchLines, searchEverything, markIdea, toast, readDraft, act, refreshState, formatDuration, readingTotal, renderOutline, setState(value) { state = value; } })`, context);
   app.setState(fixture());
   app.ui.selectedLineId = "l1";
   return { app, node, context, storage, clock, documentListeners, windowListeners };
@@ -1370,4 +1370,101 @@ test("direct options have distinct explicit accessible names and protect user-ti
   data.settings.language = "zh"; h.app.enhanceDirectChoices(root);
   assert.match(results.innerHTML, /data-direct-value="0"[^>]*aria-label="方法"/);
   assert.equal(select.value, "method");
+});
+
+
+test("stage dates reject impossible days and retain years 0001 through 9999", () => {
+  const { app } = createApp();
+  for (const value of ["2025-02-29", "1900-02-29", "2024-04-31", "0000-01-01", "2024-13-01", "2024-1-01", "2024-01-00"]) assert.equal(app.stageDateParts(value), null, value);
+  for (const value of ["0001-01-01", "0099-12-31", "2000-02-29", "2024-02-29", "9999-12-31"]) assert.ok(app.stageDateParts(value), value);
+  assert.equal(app.stageDateISO(1, 2, 3), "0001-02-03");
+  const leap = app.stageCalendarMarkup(2000, 2, "2000-02-29");
+  assert.match(leap, /data-date="2000-02-29"[^>]*aria-pressed="true"/);
+  assert.doesNotMatch(app.stageCalendarMarkup(1900, 2, ""), /1900-02-29/);
+  assert.match(app.stageCalendarMarkup(1, 1, ""), /data-date-action="previous"[^>]*disabled/);
+  assert.match(app.stageCalendarMarkup(9999, 12, ""), /data-date-action="next"[^>]*disabled/);
+  assert.match(app.stageCalendarMarkup(99, 1, ""), /data-date="0099-01-01"/);
+});
+
+test("all stage forms preserve ISO drafts and use the same scalable calendar", () => {
+  const h = createApp(), data = learningFixture(); h.app.setState(data);
+  const current = data.lines.find((line) => line.id === "family"), item = data.stages[0];
+  h.app.workspaceDraft({ dataset: { workspaceDraft: "stage-new:family" }, values: { title: "Draft", date: "2000-02-29" } });
+  h.app.workspaceDraft({ dataset: { workspaceDraft: `stage:${item.id}` }, values: { title: item.title, date: "0099-12-31" } });
+  h.app.workspaceDraft({ dataset: { workspaceDraft: "paper-stage:p1" }, values: { stageId: "", date: "2024-02-29" } });
+  const forms = [h.app.newStageEditor(current), h.app.stageEditor(item, current, 0), h.app.paperStageForm(data.papers[0])];
+  for (const [index, value] of ["2000-02-29", "0099-12-31", "2024-02-29"].entries()) {
+    assert.match(forms[index], new RegExp(`name="date" type="text"[^>]*value="${value}"`));
+    assert.match(forms[index], /data-stage-calendar hidden/); assert.doesNotMatch(forms[index], /type="date"/);
+  }
+  h.app.setPageZoom(1.4);
+  assert.equal(h.app.newStageEditor(current), forms[0]);
+  assert.equal(h.app.readDraft("stage-new:family").date, "2000-02-29");
+});
+
+test("calendar selection and clearing dispatch draft events without submitting", () => {
+  const h = createApp(), events = [], input = { value: "2024-02-29", setCustomValidity(value) { this.validity = value; }, dispatchEvent(event) { events.push(event); } };
+  const panel = { hidden: false }, toggle = { setAttribute(key, value) { this[key] = value; }, focus() { this.focused = true; } };
+  const field = { querySelector(selector) { return selector === "[data-stage-date-input]" ? input : selector === "[data-stage-calendar]" ? panel : toggle; } };
+  h.app.updateStageDate(field, "2000-02-29"); assert.equal(input.value, "2000-02-29");
+  assert.deepEqual(events.map((event) => [event.type, event.bubbles]), [["input", true], ["change", true]]);
+  assert.equal(panel.hidden, true); assert.equal(toggle.focused, true); assert.equal(toggle["aria-expanded"], "false");
+  events.length = 0; h.app.updateStageDate(field, ""); assert.equal(input.value, ""); assert.equal(input.validity, ""); assert.equal(events.length, 2);
+  const markup = h.app.stageCalendarMarkup(2024, 2, "");
+  assert.doesNotMatch(markup, /<button(?! type="button")/); assert.doesNotMatch(markup, /<select|type="date"|type="month"|type="number"|name=| min=| max=| pattern=/);
+  for (const button of markup.matchAll(/<button[^>]*>/g)) assert.match(button[0], /aria-label=/);
+});
+
+test("invalid manually entered stage dates are rejected before an API write", async () => {
+  const h = createApp(); let writes = 0; h.context.fetch = async () => { writes++; throw new Error("unexpected write"); };
+  for (const kind of ["stage", "new-stage", "join-stage"]) {
+    const form = { dataset: { workspaceForm: kind, id: "s1" }, values: { date: "2025-02-29", stageId: "", lineId: "family", stageTitle: "Draft" } };
+    await assert.rejects(h.app.submitWorkspaceForm(form), /YYYY-MM-DD/);
+    assert.equal(form.dataset.saving, undefined);
+  }
+  assert.equal(writes, 0);
+});
+
+
+test("joining an existing stage suspends date validation while preserving its raw draft", () => {
+  const { app } = createApp(), attributes = new Map(), form = { dataset: { workspaceForm: "join-stage" }, elements: { stageId: { value: "" } } };
+  const input = { form, value: "2026-", setAttribute(key, value) { attributes.set(key, value); }, removeAttribute(key) { attributes.delete(key); }, setCustomValidity(value) { this.error = value; } };
+  app.validateStageDateInput(input); assert.ok(input.error); assert.ok(attributes.has("pattern"));
+  form.elements.stageId.value = "s1"; app.validateStageDateInput(input);
+  assert.equal(input.error, ""); assert.equal(attributes.has("pattern"), false); assert.equal(input.value, "2026-");
+  form.elements.stageId.value = ""; app.validateStageDateInput(input);
+  assert.ok(input.error); assert.ok(attributes.has("pattern")); assert.equal(input.value, "2026-");
+  assert.doesNotMatch(app.stageDateField("2026-", false), /pattern=/);
+});
+
+
+test("compact inspector stays below the visible header through zoom, resize and scroll", () => {
+  const h = createApp(); let bottom = 84;
+  h.node(".topbar").getBoundingClientRect = () => ({ bottom });
+  h.app.setPageZoom(1.2);
+  assert.equal(h.node(".workspace").dataset.compact, "true");
+  assert.equal(h.context.document.documentElement.style["--inspector-header-inset"], "70px");
+  bottom = 140; h.app.setPageZoom(1.4);
+  assert.equal(h.context.document.documentElement.style["--inspector-header-inset"], "100px");
+  bottom = 56;
+  for (const callback of h.windowListeners.get("resize")) callback();
+  assert.equal(h.context.document.documentElement.style["--inspector-header-inset"], "40px");
+  bottom = -10;
+  for (const callback of h.windowListeners.get("scroll")) callback();
+  assert.equal(h.context.document.documentElement.style["--inspector-header-inset"], "0px");
+  const css = readFileSync(resolve(__dirname, "../static/style.css"), "utf8");
+  assert.equal((css.match(/top: calc\(var\(--inspector-header-inset, 0px\) \+ 12px\)/g) || []).length, 2);
+  assert.equal((css.match(/max-height: calc\(100dvh \/ var\(--page-scale, 1\) - var\(--inspector-header-inset, 0px\) - 24px\)/g) || []).length, 2);
+});
+
+
+test("page zoom reveals only an open calendar without changing its date or rebuilding it", () => {
+  const h = createApp(), calls = [], date = "2024-02-29";
+  const open = { hidden: false, innerHTML: date, scrollIntoView(options) { calls.push({ ...options }); } };
+  const closed = { hidden: true, scrollIntoView() { throw new Error("closed calendar scrolled"); } };
+  h.context.document.querySelectorAll = (selector) => selector === "[data-stage-calendar]" ? [closed, open] : [];
+  h.app.setPageZoom(1.4);
+  assert.deepEqual(calls, [{ block: "nearest", behavior: "instant" }]); assert.equal(open.innerHTML, date);
+  open.hidden = true; h.app.setPageZoom(1); assert.equal(calls.length, 1);
+  h.context.document.querySelectorAll = () => []; h.app.setPageZoom(1.4); assert.equal(calls.length, 1);
 });

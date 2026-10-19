@@ -144,7 +144,7 @@ test("schema2 migration keeps stage, annotation, and creation drafts alongside l
   assert.deepEqual(Object.keys(h.bridge.migration(backup).drafts).sort(), Object.keys(drafts).sort());
 });
 
-test("schema2 draft migration discards orphan references and invalid dates without losing valid drafts", () => {
+test("schema2 draft migration discards orphan references and clears invalid dates without losing valid drafts", () => {
   const h = harness();
   const backup = { ...data(), version: 2, stages: [{ id: 's1' }], papers: [{ id: 'p1' }] };
   const drafts = {
@@ -156,7 +156,8 @@ test("schema2 draft migration discards orphan references and invalid dates witho
     'paperline-draft:edge:missing': { note: 'Orphan' },
   };
   const result = h.bridge.unpack({ format: 'paperline-desktop-migration', version: 1, backup, drafts });
-  assert.deepEqual(Object.keys(result.drafts), ['paperline-draft:stage:s1']);
+  assert.deepEqual(Object.keys(result.drafts), ['paperline-draft:stage:s1', 'paperline-draft:paper-stage:p1']);
+  assert.equal(result.drafts['paperline-draft:paper-stage:p1'].date, '');
 });
 
 test("timeline method drafts keep global and stage contexts separate and require membership", () => {
@@ -214,4 +215,25 @@ test("migration preserves scoped creation drafts only while their source still e
   assert.equal(migration.drafts[paperKey].title, "Annotation draft");
   h.bridge.installDrafts(h.bridge.unpack(migration).drafts, backup);
   assert.equal(JSON.parse(h.stored.get(paperKey)).title, "Annotation draft");
+});
+
+
+test("stage draft migration preserves titles and summaries when partially typed dates are invalid", () => {
+  const h = harness(), backup = { ...data(), stages: [{ id: 's1' }], papers: [{ id: 'p1' }] };
+  backup.lines[0].kind = 'model_family'; backup.lines[0].stageIds = ['s1'];
+  for (const date of ['2026-', '2025-02-29', '0000-01-01']) {
+    const drafts = {
+      'paperline-draft:stage:s1': { title: 'Existing title', summary: 'Existing summary', date },
+      'paperline-draft:stage-new:l1': { title: 'New title', summary: 'New summary', date },
+      'paperline-draft:paper-stage:p1': { lineId: 'l1', stageId: '', stageTitle: 'Paper title', summary: 'Paper summary', date },
+    };
+    const result = h.bridge.unpack({ format: 'paperline-desktop-migration', version: 1, backup, drafts });
+    for (const [key, draft] of Object.entries(drafts)) assert.deepEqual(json(result.drafts[key]), { ...draft, date: '' });
+  }
+  const rejected = h.bridge.unpack({ format: 'paperline-desktop-migration', version: 1, backup, drafts: {
+    'paperline-draft:stage:s1': { title: 'Invalid field', date: '2026-', injected: 'no' },
+    'paperline-draft:stage-new:l1': { title: 'Invalid length', date: 'x'.repeat(11) },
+    'paperline-draft:paper-stage:p1': { stageTitle: 'Invalid reference', stageId: 'missing', date: '2026-' },
+  } });
+  assert.deepEqual(Object.keys(rejected.drafts), []);
 });

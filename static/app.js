@@ -356,11 +356,17 @@ function centerGraph() {
   }
 }
 window.addEventListener("resize", centerGraph);
+function updateInspectorHeaderInset() {
+  const bottom = $(".topbar")?.getBoundingClientRect?.().bottom;
+  const inset = Number.isFinite(bottom) ? Math.max(0, bottom / ui.pageZoom) : 0;
+  document.documentElement?.style?.setProperty?.("--inspector-header-inset", `${inset}px`);
+}
+window.addEventListener("scroll", updateInspectorHeaderInset, { passive: true });
 function updateHeaderLayout() {
   const workspace = $(".workspace");
   if (workspace?.dataset && Number.isFinite(window.innerWidth)) workspace.dataset.compact = String(window.innerWidth / ui.pageZoom <= 1100);
   const bar = $(".topbar"), nav = $(".top-nav"), actions = $(".top-actions"), brand = $(".brand");
-  if (!bar?.clientWidth || !nav?.children || !actions?.children || typeof getComputedStyle !== "function") return;
+  if (!bar?.clientWidth || !nav?.children || !actions?.children || typeof getComputedStyle !== "function") { updateInspectorHeaderInset(); return; }
   const rowWidth = (element) => {
     const style = getComputedStyle(element), widths = [...element.children].map((child) => child.offsetWidth).filter(Boolean);
     return widths.reduce((sum, width) => sum + width, 0) + (parseFloat(style.columnGap) || 0) * Math.max(0, widths.length - 1) + (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0) + (parseFloat(style.borderLeftWidth) || 0) + (parseFloat(style.borderRightWidth) || 0);
@@ -368,6 +374,7 @@ function updateHeaderLayout() {
   const style = getComputedStyle(bar);
   const available = bar.clientWidth - (parseFloat(style.paddingLeft) || 0) - (parseFloat(style.paddingRight) || 0);
   bar.classList.toggle("header-wrap", brand.offsetWidth + rowWidth(nav) + rowWidth(actions) + (parseFloat(style.columnGap) || 0) * 2 > available);
+  updateInspectorHeaderInset();
 }
 window.addEventListener("resize", updateHeaderLayout);
 function setPageZoom(value, persist = true) {
@@ -382,6 +389,7 @@ function setPageZoom(value, persist = true) {
   if (persist) { try { localStorage.setItem("paperline-page-zoom", String(ui.pageZoom)); } catch { /* Zoom still works without local storage. */ } }
   updateHeaderLayout();
   syncInspectorLayout();
+  revealStageCalendar();
 }
 try { setPageZoom(Number(localStorage.getItem("paperline-page-zoom") || 1), false); }
 catch { setPageZoom(1, false); }
@@ -1779,14 +1787,112 @@ function selectTimelineStage(id, create = false) {
     node.classList.toggle("selected", selected); node.setAttribute?.("aria-pressed", String(selected));
   });
 }
+function revealStageCalendar() {
+  for (const panel of document.querySelectorAll("[data-stage-calendar]")) {
+    if (!panel.hidden) panel.scrollIntoView?.({ block: "nearest", behavior: "instant" });
+  }
+}
+function stageDateParts(value) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value || "");
+  if (!match) return null;
+  const [year, month, day] = match.slice(1).map(Number);
+  const days = [31, year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return year >= 1 && year <= 9999 && month >= 1 && month <= 12 && day >= 1 && day <= days[month - 1] ? { year, month, day } : null;
+}
+function stageDateISO(year, month, day) { return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`; }
+function stageDateToday() { const now = new Date(); return stageDateISO(now.getFullYear(), now.getMonth() + 1, now.getDate()); }
+function stageDateField(value, active = true) {
+  return `<div class="stage-date" data-stage-date><label>阶段日期<input name="date" type="text" inputmode="numeric" placeholder="YYYY-MM-DD" maxlength="10" ${active ? 'pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}"' : ""} value="${esc(value || "")}" autocomplete="off" data-stage-date-input></label><button type="button" class="button secondary stage-date-toggle" data-date-action="toggle" aria-expanded="false" aria-label="选择日期">选择日期</button><div class="stage-calendar" data-stage-calendar hidden role="group" aria-label="阶段日期日历"></div></div>`;
+}
+function stageCalendarMarkup(year, month, selected) {
+  // setFullYear also handles years 0001–0099 without JavaScript's 1900 offset.
+  const first = new Date(2000, 0, 1); first.setFullYear(year, month - 1, 1);
+  const last = new Date(first); last.setMonth(last.getMonth() + 1, 0);
+  const weekdays = language() === "en" ? ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"] : ["日", "一", "二", "三", "四", "五", "六"];
+  const days = Array.from({ length: first.getDay() }, () => `<span></span>`).join("") + Array.from({ length: last.getDate() }, (_, index) => {
+    const date = stageDateISO(year, month, index + 1);
+    return `<button type="button" class="stage-calendar-day" data-date-action="choose" data-date="${date}" aria-label="${date}" aria-pressed="${date === selected}" ${date === stageDateToday() ? 'aria-current="date"' : ""}>${index + 1}</button>`;
+  }).join("");
+  return `<div class="stage-calendar-head"><button type="button" class="button quiet" data-date-action="previous" aria-label="上个月" ${year === 1 && month === 1 ? "disabled" : ""}>‹</button><label class="stage-calendar-year">${tr("年份")}<input type="text" inputmode="numeric" maxlength="4" value="${year}" data-stage-date-year></label><label class="stage-calendar-month">${tr("月份")}<input type="text" inputmode="numeric" maxlength="2" value="${month}" data-stage-date-month></label><button type="button" class="button quiet" data-date-action="next" aria-label="下个月" ${year === 9999 && month === 12 ? "disabled" : ""}>›</button></div><div class="stage-calendar-grid">${weekdays.map((day) => `<span class="stage-calendar-weekday">${day}</span>`).join("")}${days}</div><div class="stage-calendar-actions"><button type="button" class="button quiet" data-date-action="today" aria-label="今天">今天</button><button type="button" class="button quiet" data-date-action="clear" aria-label="清空日期">清空日期</button><button type="button" class="button quiet" data-date-action="close" aria-label="关闭日历">关闭日历</button></div>`;
+}
+function renderStageCalendar(field, year, month) {
+  field.dataset.dateYear = String(year); field.dataset.dateMonth = String(month);
+  const panel = field.querySelector("[data-stage-calendar]");
+  panel.innerHTML = stageCalendarMarkup(year, month, field.querySelector("[data-stage-date-input]").value);
+  i18n.apply(panel, language());
+}
+function closeStageCalendar(field, focus = false) {
+  field.querySelector("[data-stage-calendar]").hidden = true;
+  const toggle = field.querySelector('[data-date-action="toggle"]'); toggle.setAttribute("aria-expanded", "false");
+  if (focus) toggle.focus();
+}
+function updateStageDate(field, value) {
+  const input = field.querySelector("[data-stage-date-input]"); input.value = value; input.setCustomValidity("");
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  input.dispatchEvent(new Event("change", { bubbles: true }));
+  closeStageCalendar(field, true);
+}
+document.addEventListener("click", (event) => {
+  const control = event.target.closest?.("[data-date-action]");
+  if (!control) return;
+  const field = control.closest("[data-stage-date]"), action = control.dataset.dateAction;
+  const panel = field.querySelector("[data-stage-calendar]"), input = field.querySelector("[data-stage-date-input]");
+  if (action === "close") { closeStageCalendar(field, true); return; }
+  if (["choose", "today", "clear"].includes(action)) { updateStageDate(field, action === "choose" ? control.dataset.date : action === "today" ? stageDateToday() : ""); return; }
+  if (action === "toggle") {
+    if (!panel.hidden) { closeStageCalendar(field); return; }
+    const date = stageDateParts(input.value) || stageDateParts(stageDateToday());
+    renderStageCalendar(field, date.year, date.month); panel.hidden = false; control.setAttribute("aria-expanded", "true");
+    (panel.querySelector('[aria-pressed="true"]') || panel.querySelector('[data-date-action="choose"]')).focus();
+    revealStageCalendar();
+  } else {
+    let year = Number(field.dataset.dateYear), month = Number(field.dataset.dateMonth) + (action === "next" ? 1 : -1);
+    if (month === 0) { year--; month = 12; } else if (month === 13) { year++; month = 1; }
+    if (year < 1 || year > 9999) return;
+    renderStageCalendar(field, year, month); field.querySelector(`[data-date-action="${action}"]`).focus();
+  }
+});
+document.addEventListener("change", (event) => {
+  if (!event.target.matches?.("[data-stage-date-year], [data-stage-date-month]")) return;
+  const field = event.target.closest("[data-stage-date]"), isYear = event.target.matches("[data-stage-date-year]"), value = Number(event.target.value);
+  if (!Number.isInteger(value) || value < 1 || value > (isYear ? 9999 : 12)) { event.target.value = isYear ? field.dataset.dateYear : field.dataset.dateMonth; return; }
+  renderStageCalendar(field, isYear ? value : Number(field.dataset.dateYear), isYear ? Number(field.dataset.dateMonth) : value);
+  field.querySelector(isYear ? "[data-stage-date-year]" : "[data-stage-date-month]").focus();
+});
+function validateStageDateInput(input) {
+  if (!input) return;
+  const active = input.form?.dataset.workspaceForm !== "join-stage" || !input.form.elements.stageId.value;
+  if (active) input.setAttribute("pattern", "[0-9]{4}-[0-9]{2}-[0-9]{2}"); else input.removeAttribute("pattern");
+  input.setCustomValidity(active && input.value && !stageDateParts(input.value) ? tr("请输入有效日期（YYYY-MM-DD）。") : "");
+}
+document.addEventListener("input", (event) => {
+  if (event.target.matches?.("[data-stage-date-input]")) validateStageDateInput(event.target);
+});
+document.addEventListener("keydown", (event) => {
+  const field = event.target.closest?.("[data-stage-date]");
+  if (!field || field.querySelector("[data-stage-calendar]").hidden) return;
+  if (event.key === "Escape") { event.preventDefault(); event.stopImmediatePropagation(); closeStageCalendar(field, true); return; }
+  if (event.key === "Enter" && event.target.matches?.("[data-stage-date-year], [data-stage-date-month]")) { event.preventDefault(); event.target.dispatchEvent(new Event("change", { bubbles: true })); return; }
+  if (!event.target.dataset.date || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"].includes(event.key)) return;
+  event.preventDefault();
+  const parts = stageDateParts(event.target.dataset.date), date = new Date(2000, 0, 1); date.setFullYear(parts.year, parts.month - 1, parts.day);
+  if (["PageUp", "PageDown"].includes(event.key)) {
+    date.setDate(1); date.setMonth(date.getMonth() + (event.key === "PageUp" ? -1 : 1));
+    const end = new Date(date); end.setMonth(end.getMonth() + 1, 0); date.setDate(Math.min(parts.day, end.getDate()));
+  } else date.setDate(date.getDate() + ({ ArrowLeft: -1, ArrowRight: 1, ArrowUp: -7, ArrowDown: 7, Home: -date.getDay(), End: 6 - date.getDay() })[event.key]);
+  if (date.getFullYear() < 1 || date.getFullYear() > 9999) return;
+  renderStageCalendar(field, date.getFullYear(), date.getMonth() + 1);
+  field.querySelector(`[data-date="${stageDateISO(date.getFullYear(), date.getMonth() + 1, date.getDate())}"]`).focus();
+}, true);
+
 function newStageEditor(current) {
   const key = `stage-new:${current.id}`, edit = draftValues(key);
-  return `<section class="stage-panel"><h2>新增独立阶段</h2><form class="workspace-form" data-workspace-form="new-stage" data-workspace-draft="${esc(key)}" data-id="${esc(current.id)}"><label>阶段名称<input name="title" maxlength="120" value="${esc(edit.title || "")}" required></label><label>阶段日期<input name="date" type="date" value="${esc(edit.date || "")}"></label><label>本阶段贡献<textarea name="summary" maxlength="4000">${esc(edit.summary || "")}</textarea></label><button type="submit" class="button primary">新增阶段</button></form></section>`;
+  return `<section class="stage-panel"><h2>新增独立阶段</h2><form class="workspace-form" data-workspace-form="new-stage" data-workspace-draft="${esc(key)}" data-id="${esc(current.id)}"><label>阶段名称<input name="title" maxlength="120" value="${esc(edit.title || "")}" required></label>${stageDateField(edit.date)}<label>本阶段贡献<textarea name="summary" maxlength="4000">${esc(edit.summary || "")}</textarea></label><button type="submit" class="button primary">新增阶段</button></form></section>`;
 }
 function stageEditor(item, current, index) {
   const key = `stage:${item.id}`, edit = draftValues(key, item), memberships = stagePaperEdges(item.id), refs = stageContributions(item.id);
   const methodPaper = memberships.some((member) => member.fromId === ui.stageMethodPaperId) ? paper(ui.stageMethodPaperId) : null;
-  return `<section class="stage-panel"><div class="inspector-section-head"><span class="eyebrow">${index + 1} · ${tr("阶段顺序")}</span><div class="stage-actions"><button type="button" class="button quiet" data-workspace-action="move-stage" data-id="${esc(item.id)}" data-offset="-1" ${index === 0 ? "disabled" : ""}>上移</button><button type="button" class="button quiet" data-workspace-action="move-stage" data-id="${esc(item.id)}" data-offset="1" ${index === current.stageIds.length - 1 ? "disabled" : ""}>下移</button><button type="button" class="button quiet" data-workspace-action="detach-stage" data-id="${esc(item.id)}">移出本线</button></div></div><h2 data-user-content>${esc(item.title)}</h2><form class="workspace-form" data-workspace-form="stage" data-workspace-draft="${esc(key)}" data-id="${esc(item.id)}"><label>阶段名称<input name="title" maxlength="120" value="${esc(edit.title)}" required></label><label>阶段日期<input name="date" type="date" value="${esc(edit.date || "")}"></label><label>本阶段贡献<textarea name="summary" maxlength="4000" rows="3">${esc(edit.summary || "")}</textarea></label><button type="submit" class="button secondary">保存阶段</button></form><h3>阶段论文</h3>${memberships.map((membership) => `<div class="stage-paper-row"><button type="button" class="button quiet" data-action="select-paper" data-id="${esc(membership.fromId)}" data-user-content>${esc(paper(membership.fromId).title)}</button><button type="button" class="mini-action" data-workspace-action="remove-stage-paper" data-id="${esc(item.id)}" data-paper-id="${esc(membership.fromId)}">移出阶段</button></div>`).join("") || `<p class="field-help">此阶段还没有论文，可以直接添加。</p>`}<button type="button" class="button secondary" data-workspace-action="stage-papers" data-id="${esc(item.id)}">＋ 论文</button><h3>明确标注的方法贡献</h3>${refs.map(({ membership, connection }) => `<div class="stage-contribution-row"><button type="button" class="button quiet" data-workspace-action="timeline-method" data-id="${esc(connection.toId)}"><span data-user-content>${esc(paper(connection.fromId).title)} · ${tr(labels.paper[connection.relation])} · ${esc(idea(connection.toId).title)}</span></button><button type="button" class="mini-action" data-workspace-action="remove-contribution" data-id="${esc(membership.id)}" data-edge-id="${esc(connection.id)}">移出贡献展示</button></div>`).join("") || `<p class="field-help">尚无明确方法贡献；不会从阶段摘要或全部论文关系自动推断。</p>`}<button type="button" class="button secondary" data-workspace-action="stage-methods" data-id="${esc(item.id)}">＋ 方法</button>${methodPaper ? `<h3>${tr("为成员论文标注方法")}</h3><p data-user-content>${esc(methodPaper.title)}</p>${paperMethodForm(methodPaper, item.id)}` : ""}<button type="button" class="button secondary" data-workspace-action="read-stage" data-id="${esc(item.id)}">开始阶段阅读</button>${sessionHistory(item.id, "stage")}</section>`;
+  return `<section class="stage-panel"><div class="inspector-section-head"><span class="eyebrow">${index + 1} · ${tr("阶段顺序")}</span><div class="stage-actions"><button type="button" class="button quiet" data-workspace-action="move-stage" data-id="${esc(item.id)}" data-offset="-1" ${index === 0 ? "disabled" : ""}>上移</button><button type="button" class="button quiet" data-workspace-action="move-stage" data-id="${esc(item.id)}" data-offset="1" ${index === current.stageIds.length - 1 ? "disabled" : ""}>下移</button><button type="button" class="button quiet" data-workspace-action="detach-stage" data-id="${esc(item.id)}">移出本线</button></div></div><h2 data-user-content>${esc(item.title)}</h2><form class="workspace-form" data-workspace-form="stage" data-workspace-draft="${esc(key)}" data-id="${esc(item.id)}"><label>阶段名称<input name="title" maxlength="120" value="${esc(edit.title)}" required></label>${stageDateField(edit.date)}<label>本阶段贡献<textarea name="summary" maxlength="4000" rows="3">${esc(edit.summary || "")}</textarea></label><button type="submit" class="button secondary">保存阶段</button></form><h3>阶段论文</h3>${memberships.map((membership) => `<div class="stage-paper-row"><button type="button" class="button quiet" data-action="select-paper" data-id="${esc(membership.fromId)}" data-user-content>${esc(paper(membership.fromId).title)}</button><button type="button" class="mini-action" data-workspace-action="remove-stage-paper" data-id="${esc(item.id)}" data-paper-id="${esc(membership.fromId)}">移出阶段</button></div>`).join("") || `<p class="field-help">此阶段还没有论文，可以直接添加。</p>`}<button type="button" class="button secondary" data-workspace-action="stage-papers" data-id="${esc(item.id)}">＋ 论文</button><h3>明确标注的方法贡献</h3>${refs.map(({ membership, connection }) => `<div class="stage-contribution-row"><button type="button" class="button quiet" data-workspace-action="timeline-method" data-id="${esc(connection.toId)}"><span data-user-content>${esc(paper(connection.fromId).title)} · ${tr(labels.paper[connection.relation])} · ${esc(idea(connection.toId).title)}</span></button><button type="button" class="mini-action" data-workspace-action="remove-contribution" data-id="${esc(membership.id)}" data-edge-id="${esc(connection.id)}">移出贡献展示</button></div>`).join("") || `<p class="field-help">尚无明确方法贡献；不会从阶段摘要或全部论文关系自动推断。</p>`}<button type="button" class="button secondary" data-workspace-action="stage-methods" data-id="${esc(item.id)}">＋ 方法</button>${methodPaper ? `<h3>${tr("为成员论文标注方法")}</h3><p data-user-content>${esc(methodPaper.title)}</p>${paperMethodForm(methodPaper, item.id)}` : ""}<button type="button" class="button secondary" data-workspace-action="read-stage" data-id="${esc(item.id)}">开始阶段阅读</button>${sessionHistory(item.id, "stage")}</section>`;
 }
 function renderStageInspector() {
   const current = line(ui.selectedLineId), target = stage(ui.selectedStageId);
@@ -1839,7 +1945,7 @@ function paperStageForm(item) {
   const saved = readDraft(`paper-stage:${item.id}`);
   const edit = saved ?? { lineId: current?.id || "", stageId: current?.stageIds?.includes(ui.selectedStageId) ? ui.selectedStageId : "" };
   const selectedLine = paths.find((path) => path.id === edit.lineId);
-  return `<form class="workspace-form" data-workspace-form="join-stage" data-workspace-draft="paper-stage:${esc(item.id)}" data-id="${esc(item.id)}"><label>选择演进线或新建<select name="lineId" data-direct-choice data-choice-search><option value="">＋ 新建演进线</option>${options(paths, edit.lineId)}</select></label><div class="creation-fields" data-create-line ${selectedLine ? "hidden" : ""}><label>新演进线名称<input name="lineTitle" maxlength="120" value="${esc(edit.lineTitle || "")}" placeholder="例如：DeepSeek 模型演进"></label></div><label>选择阶段或新建<select name="stageId" data-direct-choice data-choice-search><option value="">＋ 新增阶段</option>${options((selectedLine?.stageIds || []).map(stage).filter(Boolean), edit.stageId)}</select></label><div class="creation-fields" data-create-stage ${edit.stageId && selectedLine?.stageIds.includes(edit.stageId) ? "hidden" : ""}><label>新阶段名称<input name="stageTitle" maxlength="120" value="${esc(edit.stageTitle || "")}" placeholder="例如：R1 · 推理强化学习"></label><label>阶段日期<input name="date" type="date" value="${esc(edit.date || "")}"></label><label>本阶段贡献<textarea name="summary" maxlength="4000" rows="2">${esc(edit.summary || "")}</textarea></label></div><button type="submit" class="button primary">保存论文阶段</button></form>`;
+  return `<form class="workspace-form" data-workspace-form="join-stage" data-workspace-draft="paper-stage:${esc(item.id)}" data-id="${esc(item.id)}"><label>选择演进线或新建<select name="lineId" data-direct-choice data-choice-search><option value="">＋ 新建演进线</option>${options(paths, edit.lineId)}</select></label><div class="creation-fields" data-create-line ${selectedLine ? "hidden" : ""}><label>新演进线名称<input name="lineTitle" maxlength="120" value="${esc(edit.lineTitle || "")}" placeholder="例如：DeepSeek 模型演进"></label></div><label>选择阶段或新建<select name="stageId" data-direct-choice data-choice-search><option value="">＋ 新增阶段</option>${options((selectedLine?.stageIds || []).map(stage).filter(Boolean), edit.stageId)}</select></label><div class="creation-fields" data-create-stage ${edit.stageId && selectedLine?.stageIds.includes(edit.stageId) ? "hidden" : ""}><label>新阶段名称<input name="stageTitle" maxlength="120" value="${esc(edit.stageTitle || "")}" placeholder="例如：R1 · 推理强化学习"></label>${stageDateField(edit.date, !(edit.stageId && selectedLine?.stageIds.includes(edit.stageId)))}<label>本阶段贡献<textarea name="summary" maxlength="4000" rows="2">${esc(edit.summary || "")}</textarea></label></div><button type="submit" class="button primary">保存论文阶段</button></form>`;
 }
 function renderPaperInspector(item) {
   if (!item) return;
@@ -1872,6 +1978,7 @@ async function submitWorkspaceForm(form, submitter) {
   try {
     const values = Object.fromEntries(new FormData(form).entries()), kind = form.dataset.workspaceForm;
     const draftKey = form.dataset.workspaceDraft, snapshot = draftKey ? JSON.stringify(readDraft(draftKey)) : "";
+    if (["stage", "new-stage", "join-stage"].includes(kind) && values.date && !(kind === "join-stage" && values.stageId) && !stageDateParts(values.date)) throw new Error("请输入有效日期（YYYY-MM-DD）。");
     let action, payload;
     if (kind === "annotate-method") {
       if (!["proposes","uses","improves"].includes(submitter?.value)) throw new Error("请选择提出、使用或改进。");
@@ -1929,6 +2036,7 @@ document.addEventListener("change", (event) => {
   if (form.dataset.workspaceForm === "join-stage") {
     form.querySelector("[data-create-line]").hidden = Boolean(form.elements.lineId.value);
     form.querySelector("[data-create-stage]").hidden = Boolean(form.elements.stageId.value);
+    validateStageDateInput(form.elements.date);
     localize(form);
   }
 });

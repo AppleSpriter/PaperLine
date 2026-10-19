@@ -478,7 +478,7 @@ kbd { display: inline-block; min-width: 21px; padding: 2px 6px; border: 1px soli
 /* One breakpoint sequence owns the shell at every page zoom level. */
 .workspace:where([data-compact="true"]) { grid-template-columns: 210px minmax(0, 1fr); }
 :where(.workspace[data-compact="true"]) .main-view { padding: 24px 24px 40px; }
-:where(.workspace[data-compact="true"]) .inspector { display: none; position: fixed; z-index: 10; top: 12px; right: 12px; bottom: 12px; width: min(360px, calc(100vw / var(--page-scale, 1) - 24px)); height: calc(100dvh / var(--page-scale, 1) - 24px); max-height: calc(100dvh / var(--page-scale, 1) - 24px); margin: 0; padding: 18px 20px 28px; border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 12px 48px #19382c2e; }
+:where(.workspace[data-compact="true"]) .inspector { display: none; position: fixed; z-index: 10; top: calc(var(--inspector-header-inset, 0px) + 12px); right: 12px; bottom: 12px; width: min(360px, calc(100vw / var(--page-scale, 1) - 24px)); height: calc(100dvh / var(--page-scale, 1) - var(--inspector-header-inset, 0px) - 24px); max-height: calc(100dvh / var(--page-scale, 1) - var(--inspector-header-inset, 0px) - 24px); margin: 0; padding: 18px 20px 28px; border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 12px 48px #19382c2e; }
 :where(.workspace[data-compact="true"]) .inspector.is-open { display: block; }
 :where(.workspace[data-compact="true"]) .paper-inspector-close { display: flex; position: sticky; top: -18px; margin: -4px 0 14px auto; background: var(--paper); z-index: 1; }
 :where(.workspace[data-compact="true"]) .page-head { flex-wrap: wrap; gap: 12px; }
@@ -486,7 +486,7 @@ kbd { display: inline-block; min-width: 21px; padding: 2px 6px; border: 1px soli
 @media (max-width: 1100px) {
   .workspace, .workspace:where([data-inspector-visible="false"]) { grid-template-columns: 210px minmax(0, 1fr); }
   .main-view { padding: 24px 24px 40px; }
-  .inspector { display: none; position: fixed; z-index: 10; top: 12px; right: 12px; bottom: 12px; width: min(360px, calc(100vw / var(--page-scale, 1) - 24px)); height: calc(100dvh / var(--page-scale, 1) - 24px); max-height: calc(100dvh / var(--page-scale, 1) - 24px); margin: 0; padding: 18px 20px 28px; border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 12px 48px #19382c2e; }
+  .inspector { display: none; position: fixed; z-index: 10; top: calc(var(--inspector-header-inset, 0px) + 12px); right: 12px; bottom: 12px; width: min(360px, calc(100vw / var(--page-scale, 1) - 24px)); height: calc(100dvh / var(--page-scale, 1) - var(--inspector-header-inset, 0px) - 24px); max-height: calc(100dvh / var(--page-scale, 1) - var(--inspector-header-inset, 0px) - 24px); margin: 0; padding: 18px 20px 28px; border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 12px 48px #19382c2e; }
   .inspector.is-open { display: block; }
   .paper-inspector-close { display: flex; position: sticky; top: -18px; margin: -4px 0 14px auto; background: var(--paper); z-index: 1; }
   .page-head { flex-wrap: wrap; gap: 12px; }
@@ -544,3 +544,21 @@ kbd { display: inline-block; min-width: 21px; padding: 2px 6px; border: 1px soli
   .editable-edge { padding: 11px; }
   .picker-paper-row { align-items: flex-start; }
 }
+
+.stage-date { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 8px; }
+.stage-date-toggle { margin-bottom: 0; }
+.stage-calendar { scroll-margin-block: 52px 12px; grid-column: 1 / -1; width: min(100%, 300px); padding: 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); }
+.stage-calendar[hidden] { display: none; }
+.stage-calendar-head { display: flex; align-items: center; justify-content: space-between; gap: 4px; margin-bottom: 8px; }
+.stage-calendar-head .button { min-width: 30px; padding: 4px; font-size: 22px; }
+.stage-calendar .stage-calendar-year, .stage-calendar .stage-calendar-month { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); }
+.stage-calendar-year input, .stage-calendar-month input { width: 76px; padding: 5px; margin: 0; font-size: 16px; }
+.stage-calendar-month input { width: 50px; }
+.stage-calendar-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 2px; text-align: center; }
+.stage-calendar-weekday { color: var(--muted); font-size: 12px; padding: 3px 0; }
+.stage-calendar-day { min-width: 0; min-height: 34px; padding: 3px 0; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--ink); font-size: 14px; }
+.stage-calendar-day:hover { background: var(--soft); }
+.stage-calendar-day[aria-current="date"] { border-color: var(--green); }
+.stage-calendar-day[aria-pressed="true"] { background: var(--green); color: white; }
+.stage-calendar-actions { display: flex; justify-content: space-between; gap: 2px; margin-top: 8px; }
+.stage-calendar-actions .button { padding: 5px; font-size: 12px; }

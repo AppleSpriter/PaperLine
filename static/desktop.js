@@ -16,7 +16,7 @@
     const edges = new Map((backup?.edges || []).map((item) => [item.id, item]));
     const strings = (draft, fields) => Object.entries(draft).every(([field, value]) => Object.hasOwn(fields, field) && typeof value === "string" && value.length <= fields[field]);
     const reference = (id, collection) => id === undefined || id === "" || collection.has(id);
-    const date = (value) => value === undefined || value === "" || (/^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value);
+    const date = (value) => value === undefined || value === "" || (/^\d{4}-\d{2}-\d{2}$/.test(value) && Number(value.slice(0, 4)) >= 1 && Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value);
     const session = (draft) => !Object.keys(draft).some((field) => !["elapsed", "note", "nextQuestion"].includes(field)) && Number.isInteger(draft.elapsed) && draft.elapsed >= 0 && draft.elapsed <= 86400 && typeof draft.note === "string" && draft.note.length <= 4000 && typeof draft.nextQuestion === "string" && draft.nextQuestion.length <= 1000;
     const decodedId = (value) => { try { return decodeURIComponent(value); } catch { return ""; } };
     const result = Object.create(null);
@@ -34,9 +34,9 @@
       } else if (parts[0] === "session" && parts.length === 4 && parts[1] === "stage" && stages.has(parts[2]) && (parts[3] === "" || lines.get(parts[3])?.stageIds?.includes(parts[2]))) {
         if (!session(draft)) continue;
       } else if (parts[0] === "stage" && parts.length === 2 && stages.has(parts[1])) {
-        if (!strings(draft, { title: 120, date: 10, summary: 4000, baseUpdatedAt: 100 }) || !date(draft.date)) continue;
+        if (!strings(draft, { title: 120, date: 10, summary: 4000, baseUpdatedAt: 100 })) continue;
       } else if (parts[0] === "stage-new" && parts.length === 2 && lines.get(parts[1])?.kind === "model_family") {
-        if (!strings(draft, { title: 120, date: 10, summary: 4000 }) || !date(draft.date)) continue;
+        if (!strings(draft, { title: 120, date: 10, summary: 4000 })) continue;
       } else if (parts[0] === "line" && parts.length === 2 && lines.has(parts[1])) {
         if (!strings(draft, { title: 120, question: 1000, kind: 20 })) continue;
       } else if (parts[0] === "edge" && parts.length === 2 && edges.has(parts[1])) {
@@ -49,7 +49,7 @@
           if (!edge || edge.fromType !== "paper" || edge.fromId !== parts[1] || (edge.toType === undefined ? "idea" : edge.toType) !== "idea" || !ideas.has(edge.toId) || (draft.ideaId && draft.ideaId !== edge.toId)) continue;
         }
       } else if (parts[0] === "paper-stage" && parts.length === 2 && papers.has(parts[1])) {
-        if (!strings(draft, { lineId: 150, lineTitle: 120, stageId: 150, stageTitle: 120, date: 10, summary: 4000 }) || !reference(draft.lineId, new Set(lines.keys())) || !reference(draft.stageId, stages) || !date(draft.date)) continue;
+        if (!strings(draft, { lineId: 150, lineTitle: 120, stageId: 150, stageTitle: 120, date: 10, summary: 4000 }) || !reference(draft.lineId, new Set(lines.keys())) || !reference(draft.stageId, stages)) continue;
         if (draft.lineId && draft.stageId && !lines.get(draft.lineId)?.stageIds?.includes(draft.stageId)) continue;
       } else if (parts[0] === "line-new" && parts.length === 1) {
         if (!strings(draft, { title: 120, question: 1000, kind: 20 })) continue;
@@ -60,6 +60,7 @@
         if (draft.entityType !== undefined && !["method", "concept", "question", "unclassified"].includes(draft.entityType)) continue;
       } else continue;
       result[key] = { ...draft };
+      if (["stage", "stage-new", "paper-stage"].includes(parts[0]) && !date(draft.date)) result[key].date = "";
     }
     return result;
   }
