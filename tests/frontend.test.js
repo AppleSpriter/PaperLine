@@ -1345,3 +1345,29 @@ test("whole-page zoom and resize use the effective viewport for compact inspecto
   assert.equal(h.app.ui.selectedIdeaId, "i1"); assert.equal(h.app.ui.selectedPaperId, "p1"); assert.equal(h.app.ui.selectedStageId, "stage-kept");
   assert.equal(h.app.ui.mapZoom, 1); assert.equal(h.app.ui.ideaGraphZoom, 1);
 });
+
+
+test("direct options have distinct explicit accessible names and protect user-title labels from translation", () => {
+  const h = createApp(), data = fixture(); h.app.setState(data);
+  const labels = { "方法": "Method", "概念": "Concept", "问题": "Question", "尚未分类": "Unclassified" };
+  h.context.PaperLineI18n.translate = (value) => labels[value] || value;
+  const results = { innerHTML: "", setAttribute() {} };
+  const group = { classList: { contains: () => true }, querySelector: (selector) => selector === ".choice-search" ? null : results };
+  const select = {
+    value: "method", nextElementSibling: group, parentElement: { firstChild: { textContent: "内容分类" } },
+    hasAttribute: () => false, getAttribute: () => null,
+    options: Object.keys(labels).map((textContent, index) => ({ value: String(index), textContent, hasAttribute: () => false })),
+  };
+  select.options.push({ value: "user-method-title", textContent: "方法", hasAttribute: (name) => name === "data-user-content" });
+  const root = { querySelectorAll: () => [select] };
+  h.app.enhanceDirectChoices(root);
+  for (const label of Object.keys(labels)) assert.match(results.innerHTML, new RegExp(`aria-label="${label}"`));
+  assert.doesNotMatch(results.innerHTML, /aria-label="内容分类"/);
+  data.settings.language = "en"; h.app.enhanceDirectChoices(root);
+  for (const label of Object.values(labels)) assert.match(results.innerHTML, new RegExp(`aria-label="${label}"`));
+  assert.match(results.innerHTML, /data-direct-value="user-method-title"[^>]*aria-label="方法" data-user-content/);
+  select.options[0].textContent = "Method";
+  data.settings.language = "zh"; h.app.enhanceDirectChoices(root);
+  assert.match(results.innerHTML, /data-direct-value="0"[^>]*aria-label="方法"/);
+  assert.equal(select.value, "method");
+});

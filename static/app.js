@@ -44,7 +44,7 @@ function enhanceDirectChoices(root = document.body) {
     const bounded = searchable ? shown.slice(0, 8) : shown;
     const selected = choices.find((option) => option.value === select.value);
     if (selected && !bounded.includes(selected)) { if (bounded.length === 8) bounded.pop(); bounded.push(selected); }
-    results.innerHTML = bounded.map((option) => `<button type="button" class="choice-button" data-direct-value="${esc(option.value)}" aria-pressed="${option.value === select.value}" ${option.disabled || select.disabled ? "disabled" : ""}><span ${option.hasAttribute("data-user-content") ? "data-user-content" : ""}>${esc(optionLabel(option))}</span></button>`).join("");
+    results.innerHTML = bounded.map((option) => `<button type="button" class="choice-button" data-direct-value="${esc(option.value)}" aria-pressed="${option.value === select.value}" aria-label="${esc(optionLabel(option))}" ${option.hasAttribute("data-user-content") ? "data-user-content" : ""} ${option.disabled || select.disabled ? "disabled" : ""}><span ${option.hasAttribute("data-user-content") ? "data-user-content" : ""}>${esc(optionLabel(option))}</span></button>`).join("");
     select.hidden = true;
   }
 }
