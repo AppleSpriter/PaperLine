@@ -1707,7 +1707,6 @@ function clearMethodInspection() {
   cancelPendingMethodInspection();
   if (ui.methodInspect) ui.selectedIdeaId = "";
   ui.methodInspect = null;
-  syncLineIdeaSelection();
 }
 function inspectedMethod() {
   const context = ui.methodInspect;
@@ -1717,14 +1716,7 @@ function inspectedMethod() {
   if (context.stageId && (ui.view !== "outline" || ui.selectedStageId !== context.stageId || !line(context.lineId)?.stageIds?.includes(context.stageId) || !stageContributions(context.stageId).some(({ connection }) => connection.toId === context.ideaId))) return null;
   return target;
 }
-function syncLineIdeaSelection() {
-  document.querySelectorAll(".line-ideas .idea-catalog-card").forEach((node) => {
-    const selected = Boolean(inspectedMethod()) && !ui.methodInspect.stageId && node.dataset.id === ui.methodInspect.ideaId;
-    node.classList.toggle("active", selected); node.setAttribute?.("aria-pressed", String(selected));
-  });
-}
 function syncTimelineMethodSelection() {
-  syncLineIdeaSelection();
   document.querySelectorAll(".timeline-node").forEach((node) => {
     const selected = Boolean(inspectedMethod()) && node.dataset.workspaceAction === "timeline-method" && node.dataset.id === ui.methodInspect.ideaId && node.dataset.stageId === ui.methodInspect.stageId;
     node.classList.toggle("selected", selected); node.setAttribute?.("aria-pressed", String(selected));
@@ -1883,7 +1875,7 @@ function renderStageLine(current) {
   if (!ui.newStage && !(current.stageIds || []).includes(ui.selectedStageId)) ui.stageInspect = false;
   const layout = timelineLayout(current), { width, height } = layout;
   const lineIdeas = (current.ideaIds || []).map((id) => idea(id)).filter(Boolean);
-  const lineIdeasMarkup = `<section class="line-ideas"><div class="section-title"><h2>本线思想卡（未指定阶段）</h2><div><button type="button" class="button secondary" data-action="new-idea">＋ 思想卡</button><button type="button" class="button quiet" data-action="attach-idea">关联已有卡片</button></div></div>${lineIdeas.length ? `<div class="idea-catalog">${ideaCardsMarkup(lineIdeas, !ui.methodInspect?.stageId ? inspectedMethod()?.id : "")}</div>` : `<p class="empty-small">还没有思想卡</p>`}</section>`;
+  const lineIdeasMarkup = `<section class="line-ideas"><div class="section-title"><h2>本线思想卡（未指定阶段）</h2><div><button type="button" class="button secondary" data-action="new-idea">＋ 思想卡</button><button type="button" class="button quiet" data-action="attach-idea">关联已有卡片</button></div></div>${lineIdeas.length ? `<div class="card-tabs">${lineIdeas.map((item) => `<button type="button" class="card-tab" data-action="${item.entityType === "method" ? "paper-view-idea" : "select-idea"}" data-id="${esc(item.id)}" data-user-content>${esc(item.title)}</button>`).join("")}</div>` : `<p class="empty-small">还没有思想卡</p>`}</section>`;
   ui.timelineZoom = ui.timelineViews?.[current.id]?.zoom || 1;
   const paperPositions = new Map(), methodPositions = new Map();
   let route = "", branches = "", nodes = "", methodsMarkup = "";

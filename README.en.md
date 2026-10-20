@@ -6,7 +6,7 @@ PaperLine is a local research-learning workspace. Papers provide evidence for **
 
 ## Native macOS desktop app (0.3.10)
 
-Version 0.3.10 presents methods and path-level idea cards as browsable cards with titles, types, status, and summaries. The method catalog scrolls vertically and retains its position after selection. This display update preserves the existing save format and relationships.
+Version 0.3.10 presents methods at the top of the idea graph as browsable cards with titles, types, status, and summaries. The method catalog scrolls vertically and retains its position after selection. This display update preserves the existing save format and relationships.
 
 Version 0.3.9 lets new idea cards join model-family paths and shows path-level cards beneath the evolution timeline. These cards do not imply stage contributions. Existing save files use the same schema without migration.
 

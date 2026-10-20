@@ -2050,7 +2050,7 @@ test("model family line cards stay visible with or without stages and never infe
     h.app.renderStageLine(current);
     const html = h.node("#main-view").innerHTML, section = html.slice(html.indexOf('<section class="line-ideas">'));
     assert.match(section, /本线思想卡（未指定阶段）/);
-    assert.match(section, /class="idea-catalog"/); assert.doesNotMatch(section, /class="card-tabs"/);
+    assert.match(section, /class="card-tabs"/); assert.doesNotMatch(section, /class="idea-catalog"/);
     assert.match(section, /data-action="new-idea"/); assert.match(section, /data-action="attach-idea"/);
     assert.match(section, /data-action="paper-view-idea" data-id="i1"/);
     assert.match(section, /data-action="select-idea" data-id="i2"/);
@@ -2171,39 +2171,4 @@ test("method catalog restores only a previously focused catalog card after rebui
   h.app.renderMethodsWorkspace(); assert.equal(focusCalls, 1); assert.equal(focusOptions.preventScroll, true);
   h.context.document.activeElement = { closest: () => null };
   h.app.renderMethodsWorkspace(); assert.equal(focusCalls, 1);
-});
-
-
-test("line catalog highlights only valid line inspection and updates selection in place", () => {
-  const h = createApp(), data = methodInspectionFixture(h); data.lines[1].ideaIds = ["i1"];
-  h.app.ui.selectedIdeaId = "i1"; h.app.renderStageLine(data.lines[1]);
-  let html = h.node("#main-view").innerHTML.split('<section class="line-ideas">')[1];
-  assert.doesNotMatch(html, /idea-catalog-card active/);
-  let active = false, pressed = "false";
-  const card = { dataset: { id: "i1" }, classList: { toggle(name, value) { if (name === "active") active = value; } }, setAttribute(name, value) { if (name === "aria-pressed") pressed = value; } };
-  h.context.document.querySelectorAll = (selector) => selector === ".line-ideas .idea-catalog-card" ? [card] : [];
-  const main = h.node("#main-view").innerHTML;
-  h.app.inspectMethod("i1"); assert.equal(active, true); assert.equal(pressed, "true");
-  assert.equal(h.node("#main-view").innerHTML, main);
-  h.app.inspectMethod("i1", "s1"); assert.equal(active, false); assert.equal(pressed, "false");
-  h.app.ui.methodInspect = null; h.app.syncTimelineMethodSelection(); assert.equal(active, false);
-});
-
-
-test("selecting an existing or new stage clears line card selection without rebuilding the catalog", () => {
-  const h = createApp(), data = methodInspectionFixture(h); data.lines[1].ideaIds = ["i1"];
-  const makeSelectable = (id, kind) => {
-    const selected = new Set(); const attributes = {};
-    return { dataset: { id }, selected, attributes, classList: { contains: (name) => name === kind, toggle(name, value) { if (value) selected.add(name); else selected.delete(name); } }, setAttribute(name, value) { attributes[name] = value; } };
-  };
-  const card = makeSelectable("i1", "idea-catalog-card"), stageNode = makeSelectable("s1", "stage");
-  h.context.document.querySelectorAll = (selector) => selector === ".line-ideas .idea-catalog-card" ? [card] : selector === ".timeline-node" || selector === ".timeline-node.stage, .timeline-node.paper, .timeline-node.method" ? [stageNode] : [];
-  h.app.renderStageLine(data.lines[1]); const main = h.node("#main-view").innerHTML;
-  for (const create of [false, true]) {
-    h.app.inspectMethod("i1"); assert.equal(card.selected.has("active"), true); assert.equal(card.attributes["aria-pressed"], "true");
-    h.app.selectTimelineStage("s1", create);
-    assert.equal(card.selected.has("active"), false); assert.equal(card.attributes["aria-pressed"], "false");
-    assert.equal(stageNode.selected.has("selected"), !create); assert.equal(stageNode.attributes["aria-pressed"], String(!create));
-    assert.equal(h.app.ui.methodInspect, null); assert.equal(h.node("#main-view").innerHTML, main);
-  }
 });
