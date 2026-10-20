@@ -1,6 +1,7 @@
 /* The original Chinese UI strings remain the source of truth. */
 (() => {
   const en = {
+    "本线思想卡（未指定阶段）": "Idea cards on this path (no stage assigned)",
     "已有名称或别名会复用方法；新名称直接创建。请选择资料与方法的关系。": "Existing names or aliases reuse methods; new names create them. Choose the source-method relationship.",
     "保存资料阶段": "Save source stage",
     "为成员资料标注方法": "Annotate methods for a member source",

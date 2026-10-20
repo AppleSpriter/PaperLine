@@ -1997,3 +1997,86 @@ test("mixed sources never enter citation maps, paper counts or citation recommen
   h.app.renderPaperResults(); assert.match(h.node("#paper-search-results").innerHTML, /source-badge/);
   const graph = h.app.graphMarkup(data.ideas[0]); assert.match(graph, /项资料/); assert.match(graph, /网页/); assert.match(graph, /Release notes/);
 });
+
+test("new idea cards offer every reading line and preserve the selected model family and explicit draft choice", () => {
+  const h = createApp(), data = learningFixture();
+  data.lines.push({ id: "other-family", title: "Another family", kind: "model_family", ideaIds: [], stageIds: [] });
+  h.app.setState(data); h.app.ui.selectedLineId = "family";
+  h.app.openIdeaDialog();
+  const choices = h.node("#idea-line").innerHTML;
+  for (const path of data.lines) assert.match(choices, new RegExp(`value="${path.id}"`));
+  assert.match(choices, /value="family" selected/);
+  assert.match(choices, /value="">暂不加入阅读线/);
+  h.node("#idea-title").value = "Saved question";
+  h.node("#idea-line").value = "other-family";
+  h.app.captureDialogDraft({ id: "idea-form" });
+  h.app.openIdeaDialog();
+  assert.equal(h.node("#idea-line").value, "other-family");
+  assert.equal(h.node("#idea-title").value, "Saved question");
+  h.node("#idea-line").value = "";
+  h.app.captureDialogDraft({ id: "idea-form" });
+  h.app.openIdeaDialog();
+  assert.equal(h.node("#idea-line").value, "");
+});
+
+test("creating and reusing an idea send the chosen model family without creating a stage or another line", async () => {
+  for (const action of ["idea.create", "idea.reuse"]) {
+    const h = createApp(), data = learningFixture(); h.app.setState(data); h.app.ui.selectedLineId = "family";
+    h.app.openIdeaDialog(); h.node("#idea-title").value = "GRPO"; h.node("#idea-line").value = "family";
+    const requests = [];
+    h.context.fetch = async (path, options) => {
+      const request = JSON.parse(options.body); requests.push(request);
+      return { ok: true, json: async () => ({ state: data, result: { ideaId: "i1", lineId: "family" } }) };
+    };
+    const before = JSON.stringify(data);
+    if (action === "idea.create") await h.node("#idea-form").listeners.submit({ preventDefault() {} });
+    else await actionClick(h, { action: "reuse-idea", id: "i1" });
+    assert.equal(requests.length, 1); assert.equal(requests[0].action, action);
+    assert.equal(requests[0].payload.lineId, "family");
+    if (action === "idea.reuse") assert.equal(requests[0].payload.id, "i1");
+    assert.equal(JSON.stringify(data), before);
+  }
+});
+
+test("model family line cards stay visible with or without stages and never infer stage contributions", () => {
+  for (const hasStages of [true, false]) {
+    const h = createApp(), data = methodInspectionFixture(h), current = data.lines[1];
+    data.ideas[1].entityType = "concept"; data.ideas[1].title = "Line concept";
+    data.ideas.push({ ...data.ideas[1], id: "question", title: "Line question", entityType: "question" });
+    data.ideas.push({ ...data.ideas[1], id: "outside", title: "Unlinked idea" });
+    current.ideaIds = ["i1", "i2", "question"];
+    if (!hasStages) current.stageIds = [];
+    const before = JSON.stringify(data);
+    h.app.renderStageLine(current);
+    const html = h.node("#main-view").innerHTML, section = html.slice(html.indexOf('<section class="line-ideas">'));
+    assert.match(section, /本线思想卡（未指定阶段）/);
+    assert.match(section, /data-action="new-idea"/); assert.match(section, /data-action="attach-idea"/);
+    assert.match(section, /data-action="paper-view-idea" data-id="i1"/);
+    assert.match(section, /data-action="select-idea" data-id="i2"/);
+    assert.match(section, /data-action="select-idea" data-id="question"/);
+    assert.doesNotMatch(section, /Unlinked idea|data-stage-id|timeline-method/);
+    assert.ok(html.indexOf('<section class="line-ideas">') > html.indexOf(hasStages ? 'class="timeline-scroll"' : '这条阅读线还没有阶段'));
+    assert.equal(JSON.stringify(data), before);
+  }
+});
+
+test("line methods inspect on click and open the graph on double click while concepts and questions open their editor", async () => {
+  const h = createApp(), data = methodInspectionFixture(h); data.lines[1].ideaIds = ["i1", "i2", "question"];
+  data.ideas[1].entityType = "concept";
+  data.ideas.push({ ...data.ideas[1], id: "question", title: "Line question", entityType: "question" });
+  h.app.renderStageLine(data.lines[1]); const timeline = h.node("#main-view").innerHTML;
+  await actionClick(h, { action: "paper-view-idea", id: "i1" });
+  assert.equal(h.app.ui.view, "outline"); assert.equal(h.app.inspectedMethod().id, "i1");
+  assert.equal(h.app.ui.methodInspect.stageId, ""); assert.equal(h.node("#main-view").innerHTML, timeline);
+  const button = { dataset: { action: "paper-view-idea", id: "i1" } };
+  for (const listener of h.documentListeners.get("dblclick").callbacks) listener({ preventDefault() {}, target: { closest: () => button } });
+  assert.equal(h.app.ui.view, "graph"); assert.equal(h.app.ui.selectedIdeaId, "i1");
+  for (const id of ["i2", "question"]) {
+    h.app.ui.view = "outline"; h.app.ui.stageInspect = true;
+    await actionClick(h, { action: "select-idea", id });
+    assert.equal(h.app.ui.view, "graph"); assert.equal(h.app.ui.selectedIdeaId, id); assert.equal(h.app.ui.stageInspect, false);
+    assert.match(h.node("#main-view").innerHTML, new RegExp(`id="idea-edit-form"[^>]*data-id="${id}"`));
+    const draft = { dataset: { id }, values: { title: "Edited idea", summary: "Editable from this line" } };
+    h.app.captureIdeaDraft(draft); assert.equal(h.app.readDraft(`idea:${id}`).summary, "Editable from this line");
+  }
+});
