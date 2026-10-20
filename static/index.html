@@ -135,12 +135,14 @@
     </form>
   </dialog>
 
-  <dialog id="attach-dialog" class="modal">
-    <form id="attach-form" method="dialog">
-      <div class="modal-top"><div><span class="eyebrow">READING PATH</span><h2>加入已有思想卡</h2></div><button type="button" class="close-button" data-action="close-dialog" aria-label="关闭">×</button></div>
-      <label>选择思想卡<select id="attach-idea" required></select></label>
-      <div class="modal-actions"><button type="button" class="button quiet" data-action="close-dialog">取消</button><button type="submit" class="button primary">加入阅读线</button></div>
-    </form>
+  <dialog id="attach-dialog" class="modal attach-picker" aria-labelledby="attach-picker-title" aria-describedby="attach-picker-note">
+    <div class="modal-top"><div><span class="eyebrow">READING PATH</span><h2 id="attach-picker-title">加入已有思想卡</h2></div><button type="button" class="close-button" data-action="close-dialog" aria-label="关闭">×</button></div>
+    <p class="attach-picker-context"><span>加入阅读线</span><strong id="attach-line-title" data-user-content></strong></p>
+    <label class="attach-picker-search">搜索已有卡片<input id="attach-search" type="search" placeholder="搜索名称、别名或简介" autocomplete="off"></label>
+    <p id="attach-picker-note" class="field-help"></p>
+    <div id="attach-results" class="attach-picker-results"></div>
+    <p id="attach-feedback" class="attach-picker-feedback" role="status" aria-live="polite"></p>
+    <div class="modal-actions"><button type="button" class="button primary" data-action="close-dialog">完成</button></div>
   </dialog>
 
   <dialog id="session-dialog" class="modal">

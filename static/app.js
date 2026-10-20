@@ -49,6 +49,7 @@ function enhanceDirectChoices(root = document.body) {
   }
 }
 const ui = {
+  attachPicker: null,
   view: "graph", selectedLineId: "", selectedIdeaId: "", selectedPaperId: "",
   graphExpanded: false, annotations: null, annotationPaperId: "", pendingSource: null,
   zoteroResults: [], relationFocus: null, editingEdgeId: "", session: null, timer: null,
@@ -322,21 +323,101 @@ function closeDialog(dialog = document.querySelector("dialog[open]"), generation
 }
 let dialogGeneration = 0;
 function openDialog(id) { const dialog = $(id); dialog.dataset.generation = String(++dialogGeneration); localize(dialog); if (!dialog.open) dialog.showModal(); }
+// Transient picker context; attachments only write the existing line.attach action.
+const attachPending = new Set();
+let attachQueue = Promise.resolve();
+function attachPickerCurrent(context) {
+  const dialog = $("#attach-dialog");
+  return ui.attachPicker === context && dialog.open && dialog.dataset.generation === context.generation;
+}
+function openAttachPicker(lineId) {
+  const current = line(lineId);
+  if (!current) return;
+  const context = { lineId, query: "", generation: "" };
+  ui.attachPicker = context;
+  $("#attach-line-title").textContent = current.title;
+  $("#attach-search").value = "";
+  $("#attach-results").scrollTop = 0;
+  $("#attach-feedback").textContent = "";
+  openDialog("#attach-dialog");
+  context.generation = $("#attach-dialog").dataset.generation;
+  renderAttachPicker();
+  $("#attach-search").focus();
+}
+function renderAttachPicker() {
+  const context = ui.attachPicker;
+  if (!context || !attachPickerCurrent(context)) return;
+  const current = line(context.lineId);
+  const items = searchIdeas(context.query);
+  const results = $("#attach-results"), scrollTop = results.scrollTop;
+  const allJoined = state.ideas.length && state.ideas.every((item) => current?.ideaIds.includes(item.id));
+  $("#attach-picker-note").textContent = tr(allJoined ? "所有卡片都已加入这条阅读线。" : "可连续加入多张卡片，完成后关闭。" );
+  results.innerHTML = items.length ? items.map((item) => {
+    const joined = current?.ideaIds.includes(item.id);
+    const pending = attachPending.has(JSON.stringify([context.lineId, item.id]));
+    const label = tr(joined ? "已加入" : pending ? "加入中…" : "加入");
+    const category = ({ method: "方法", concept: "概念", question: "问题" })[item.entityType] || "尚未分类";
+    const preview = item.summary?.trim() || item.mechanism?.trim() || (item.aliases || []).join(" · ");
+    return `<article class="attach-picker-card ${joined ? "is-joined" : ""}"><div class="attach-picker-content"><h3 data-user-content>${esc(item.title)}</h3><div class="attach-picker-meta"><span>${tr(category)}</span><span>${tr(labels.status[item.status] || "待学")}</span></div><p class="attach-picker-preview"${preview ? " data-user-content" : ""}>${preview ? esc(preview) : tr("暂无摘要")}</p></div><button type="button" class="button ${joined ? "quiet" : "secondary"}" data-action="attach-picker-add" data-id="${esc(item.id)}" aria-label="${esc(label + "：" + item.title)}" data-user-label ${joined || pending ? "disabled" : ""}>${label}</button></article>`;
+  }).join("") : `<div class="attach-picker-empty"><strong>${tr(state.ideas.length ? "没有找到匹配的卡片" : "还没有可加入的卡片")}</strong><p>${tr(state.ideas.length ? "试试名称、别名或简介中的其他关键词。" : "先创建一张思想卡，再把它加入阅读线。")}</p></div>`;
+  results.scrollTop = scrollTop;
+  localize(results);
+}
+async function attachPickerIdea(ideaId, button) {
+  const context = ui.attachPicker;
+  if (!context || !attachPickerCurrent(context) || !idea(ideaId)) return;
+  const lineId = context.lineId;
+  const key = JSON.stringify([lineId, ideaId]);
+  if (attachPending.has(key) || line(lineId)?.ideaIds.includes(ideaId)) return;
+  attachPending.add(key);
+  button.disabled = true;
+  button.textContent = tr("加入中…");
+  button.setAttribute?.("aria-label", `${tr("加入中…")}：${idea(ideaId).title}`);
+  $("#attach-feedback").textContent = "";
+  // Serialize writes so a slower response cannot replace a newer attachment state.
+  const request = attachQueue.then(async () => {
+    let saved = false;
+    try {
+      const data = await postJson("/api/action", { action: "line.attach", payload: { lineId, ideaId } });
+      state = data.state;
+      saved = true;
+      render({ preserveSelection: true });
+      noteLocalChange();
+    } catch (error) {
+      if (attachPickerCurrent(context)) $("#attach-feedback").textContent = error.message;
+    } finally {
+      attachPending.delete(key);
+      if (attachPickerCurrent(context)) {
+        const restoreFocus = document.activeElement === button;
+        renderAttachPicker();
+        if (restoreFocus) {
+          const buttons = [...($("#attach-results").querySelectorAll?.("[data-action='attach-picker-add']") || [])];
+          const index = buttons.findIndex((item) => item.dataset.id === ideaId);
+          const next = saved ? [...buttons.slice(index + 1), ...buttons.slice(0, index)].find((item) => !item.disabled) : buttons[index];
+          next?.focus({ preventScroll: true });
+        }
+      }
+    }
+  });
+  attachQueue = request.catch(() => {});
+  await request;
+}
+
 function options(items, selected = "", blank = "") {
   let html = blank ? `<option value="">${esc(blank)}</option>` : "";
   return html + items.map((item) => `<option data-user-content value="${esc(item.id)}" ${item.id === selected ? "selected" : ""}>${esc(truncate(item.title, 58))}</option>`).join("");
 }
-function syncSelection() {
+function syncSelection(autoSelect = true) {
   if (ui.selectedLineId && !line(ui.selectedLineId)) ui.selectedLineId = "";
-  if (!ui.selectedLineId && !ui.selectedIdeaId && !ui.selectedPaperId && state.lines.length) ui.selectedLineId = state.lines[0].id;
+  if (autoSelect && !ui.selectedLineId && !ui.selectedIdeaId && !ui.selectedPaperId && state.lines.length) ui.selectedLineId = state.lines[0].id;
   const current = line(ui.selectedLineId);
-  if (ui.view === "papers" && !ui.selectedPaperId && !inspectedMethod() && state.papers.length) {
+  if (autoSelect && ui.view === "papers" && !ui.selectedPaperId && !inspectedMethod() && state.papers.length) {
     ui.selectedPaperId = state.papers[0].id;
     ui.selectedIdeaId = "";
     ui.inspectorOpen = true;
   }
   if (ui.selectedIdeaId && !idea(ui.selectedIdeaId)) ui.selectedIdeaId = "";
-  if (ui.view !== "graph" && !ui.selectedIdeaId && !ui.selectedPaperId && current?.kind !== "model_family" && current?.ideaIds.length) {
+  if (autoSelect && ui.view !== "graph" && !ui.selectedIdeaId && !ui.selectedPaperId && current?.kind !== "model_family" && current?.ideaIds.length) {
     ui.selectedIdeaId = current.activeIdeaId || current.ideaIds[0];
     ui.inspectorOpen = true;
   }
@@ -349,11 +430,11 @@ function markMainAnimation(animate) {
   const main = $("#main-view");
   if (main?.dataset) main.dataset.animate = animate ? "1" : "0";
 }
-function render() {
+function render({ preserveSelection = false } = {}) {
   rememberTimelineViewport();
   const mapScroll = ui.view === "map" ? $(".paper-map-scroll") : null;
   const mapPosition = mapScroll ? { left: mapScroll.scrollLeft, top: mapScroll.scrollTop } : ui.view === "map" ? ui.mapViewport : null;
-  syncSelection();
+  syncSelection(!preserveSelection);
   $(".workspace").dataset.view = ui.view;
   renderNav();
   renderSidebar();
@@ -1387,12 +1468,9 @@ document.addEventListener("click", async (event) => {
       render();
       toast("卡片已移出阅读线。");
     }
+    else if (action === "attach-picker-add") await attachPickerIdea(id, button);
     else if (action === "attach-idea") {
-      const current = line(ui.selectedLineId);
-      const choices = state.ideas.filter((item) => !current.ideaIds.includes(item.id));
-      if (!choices.length) { toast("没有可加入的已有卡片。", true); return; }
-      $("#attach-idea").innerHTML = options(choices, "", "请选择");
-      openDialog("#attach-dialog");
+      openAttachPicker(ui.selectedLineId);
     }
     else if (action === "expand-graph") { ui.graphExpanded = !ui.graphExpanded; markMainAnimation(false); renderMain(); localize($("#main-view")); centerGraph(); }
     else if (action === "open-settings") openSettings();
@@ -1489,6 +1567,7 @@ document.addEventListener("keydown", (event) => {
 document.addEventListener("input", (event) => {
   if (event.target.form?.id === "idea-edit-form" && !["kind", "status"].includes(event.target.name)) captureIdeaDraft(event.target.form);
   if (["session-note", "session-next-question"].includes(event.target.id)) checkpointSession();
+  if (event.target.id === "attach-search" && ui.attachPicker) { ui.attachPicker.query = event.target.value; renderAttachPicker(); }
   if (event.target.id === "idea-search") { ui.ideaQuery = event.target.value; renderSearchResults(); }
   if (event.target.id === "map-search") { ui.mapQuery = event.target.value; renderPaperMapResults(); }
   if (event.target.id === "paper-search") { ui.paperQuery = event.target.value; renderPaperResults(); }
@@ -1601,16 +1680,6 @@ $("#paper-form").addEventListener("submit", async (event) => {
     toast("论文已加入论文库。");
   } catch (error) { toast(error.message, true); }
   finally { delete form.dataset.saving; }
-});
-$("#attach-form").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  try {
-    const ideaId = $("#attach-idea").value;
-    if (!ideaId) { toast("请选择一张思想卡。", true); return; }
-    await act("line.attach", { lineId: ui.selectedLineId, ideaId });
-    closeDialog($("#attach-dialog"));
-    toast("卡片已加入阅读线。");
-  } catch (error) { toast(error.message, true); }
 });
 $("#relation-form").addEventListener("submit", async (event) => {
   event.preventDefault();

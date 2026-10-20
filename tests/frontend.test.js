@@ -62,7 +62,7 @@ function createApp(storage = new Map(), clock = { now: 0 }, bootFetch = () => ne
     PaperLineI18n: { translate: (value) => value, apply() {} },
   });
   vm.runInContext(appSource, context);
-  const app = vm.runInContext(`({ ui, ideaCardMarkup, ideaCardsMarkup, sourceType, isPaperSource, paperSources, renderPickerSourceControls, openPaperPicker, renderPaperPickerResults, submitSourceForm, inspectMethod, inspectedMethod, syncTimelineMethodSelection, openDialog, openIdeaDialog, ideaDialogDraftKey, captureDialogDraft, openSession, closeDialog, stopTimer, sessionSeconds, captureIdeaDraft, searchIdeas, selectIdea, latestSession, readingRecap, sessionHistory,
+  const app = vm.runInContext(`({ ui, openAttachPicker, renderAttachPicker, attachPickerIdea, ideaCardMarkup, ideaCardsMarkup, sourceType, isPaperSource, paperSources, renderPickerSourceControls, openPaperPicker, renderPaperPickerResults, submitSourceForm, inspectMethod, inspectedMethod, syncTimelineMethodSelection, openDialog, openIdeaDialog, ideaDialogDraftKey, captureDialogDraft, openSession, closeDialog, stopTimer, sessionSeconds, captureIdeaDraft, searchIdeas, selectIdea, latestSession, readingRecap, sessionHistory,
     revealStageCalendar, validateStageDateInput, stageDateParts, stageDateISO, stageDateToday, stageDateField, stageCalendarMarkup, updateStageDate, closeStageCalendar, newStageEditor, stageEditor, enhanceDirectChoices, paperStageForm, paperMethodForm, methodStageOccurrences, methodMatchChoices, paperRelationRank, editableEdge, timelineLayout, stageContributions, selectTimelineStage, renderStageInspector, rememberTimelineViewport, restoreTimelineViewport, paperPickerResults, removeStageContribution, queueContributionAction, fitMethodGraph, switchWorkspaceView, methods, methodChoices, paperIdeaEdges, stagePaperEdges, workspaceDraft, submitWorkspaceForm, renderMethodsWorkspace, renderStageLine, renderPaperInspector, openStageSession, sessionDraftKey, graphZoomHint, setPageZoom, zoomGraph, zoomGraphWheel, graphMarkup, orderedMapPapers, paperMapLayout, updatePaperSelection, syncInspectorLayout, syncSelection, graphNode, displayAuthors, paperInstitution, libraryCitationCounts, rankedRecommendations, renderRecommendations, openPaperLineDialog, paperReadStatus, mapPapers, validCitations, renderPaperMap, renderPaperMapResults, renderMapInspector, renderZoteroSync, applyZoteroSync, refreshZoteroSync, startZoteroSync, markPaper, renderIdeaInspector, renderInspector, renderIdeas, renderPaperResults, searchResult, searchPapers, searchLines, searchEverything, markIdea, toast, readDraft, act, refreshState, formatDuration, readingTotal, renderOutline, setState(value) { state = value; } })`, context);
   app.setState(fixture());
   app.ui.selectedLineId = "l1";
@@ -2171,4 +2171,204 @@ test("method catalog restores only a previously focused catalog card after rebui
   h.app.renderMethodsWorkspace(); assert.equal(focusCalls, 1); assert.equal(focusOptions.preventScroll, true);
   h.context.document.activeElement = { closest: () => null };
   h.app.renderMethodsWorkspace(); assert.equal(focusCalls, 1);
+});
+
+
+function attachPickerFixture() {
+  const h = createApp(), data = fixture();
+  data.ideas.push({ id: "i3", title: "Method <long> & name", aliases: ["Third alias"], entityType: "method", status: "learning", summary: "A searchable mechanism <script>" });
+  data.ideas.push({ id: "i4", title: "Question card", aliases: [], entityType: "question", status: "understood", summary: "A second searchable note" });
+  data.lines.push({ id: "l2", title: "Other <path>", ideaIds: [], activeIdeaId: "", stages: [] });
+  h.app.setState(data);
+  h.context.renderCalls = [];
+  vm.runInContext("const originalAttachRender = render; render = (options) => { renderCalls.push(options); };", h.context);
+  h.clickAttach = (id) => {
+    const button = { dataset: { action: "attach-picker-add", id }, disabled: false, setAttribute(key, value) { this[key] = value; } };
+    return { button, done: h.documentListeners.get("click").callbacks[0]({ target: { closest: () => button } }) };
+  };
+  h.searchAttach = (query) => {
+    const input = h.node("#attach-search"); input.value = query;
+    for (const listener of h.documentListeners.get("input").callbacks) listener({ target: input });
+  };
+  return { ...h, data };
+}
+
+test("attach picker searches titles aliases and summaries while keeping typed cards, escaped content and joined rows", () => {
+  const h = attachPickerFixture(), before = JSON.stringify(h.data);
+  h.app.openAttachPicker("l1");
+  assert.equal(h.node("#attach-line-title").textContent, "Research");
+  const html = h.node("#attach-results").innerHTML;
+  assert.match(html, /data-id="i1"[^>]*disabled/);
+  assert.match(html, /data-id="i2"[^>]*disabled/);
+  assert.match(html, /data-user-content>Method &lt;long&gt; &amp; name/);
+  assert.match(html, /data-user-content>A searchable mechanism &lt;script&gt;/);
+  assert.match(html, /<span>方法<\/span><span>正在学<\/span>/);
+  assert.match(html, /<span>问题<\/span><span>已理解<\/span>/);
+  assert.doesNotMatch(html, /data-action="(?:select-idea|paper-view-idea)"/);
+  for (const query of ["Method <long>", "third ALIAS", "searchable mechanism"]) {
+    h.searchAttach(query);
+    assert.match(h.node("#attach-results").innerHTML, /data-id="i3"/);
+    assert.doesNotMatch(h.node("#attach-results").innerHTML, /data-id="i4"/);
+    assert.equal(h.node("#attach-search").value, query);
+  }
+  h.searchAttach("unmatched"); assert.match(h.node("#attach-results").innerHTML, /没有找到匹配的卡片/);
+  assert.equal(JSON.stringify(h.data), before);
+  assert.equal(h.storage.size, 0);
+  assert.equal(h.context.renderCalls.length, 0);
+});
+
+test("attach picker exposes friendly empty and all joined states without a submitting form", () => {
+  const h = attachPickerFixture();
+  h.data.lines[0].ideaIds = h.data.ideas.map((item) => item.id);
+  h.app.openAttachPicker("l1");
+  assert.match(h.node("#attach-picker-note").textContent, /所有卡片都已加入/);
+  assert.equal((h.node("#attach-results").innerHTML.match(/ disabled/g) || []).length, 4);
+  h.data.ideas = [];
+  h.app.renderAttachPicker(); assert.match(h.node("#attach-results").innerHTML, /还没有可加入的卡片/);
+  const html = readFileSync(resolve(__dirname, "../static/index.html"), "utf8").split('<dialog id="attach-dialog"')[1].split("</dialog>")[0];
+  assert.doesNotMatch(html, /<form|type="submit"|<select/);
+  assert.match(html, /id="attach-search" type="search"/);
+  assert.match(html, /type="button"[^>]*>完成/);
+  assert.doesNotMatch(appSource, /#attach-form|#attach-idea/);
+});
+
+test("real attach clicks target the captured path once, permit sequential adds and retain query and scroll", async () => {
+  const h = attachPickerFixture(), original = JSON.parse(JSON.stringify(h.data));
+  const writes = []; let finish;
+  h.context.fetch = (url, options) => {
+    writes.push({ url, ...JSON.parse(options.body) });
+    return new Promise((resolve) => { finish = resolve; });
+  };
+  h.app.openAttachPicker("l1"); h.searchAttach("searchable");
+  h.node("#attach-search").selectionStart = 4;
+  h.node("#attach-results").scrollTop = 90;
+  const first = h.clickAttach("i3");
+  assert.equal(first.button.disabled, true);
+  await Promise.resolve(); await Promise.resolve();
+  await h.clickAttach("i3").done;
+  assert.equal(writes.length, 1);
+  assert.deepEqual(writes[0], { url: "/api/action", action: "line.attach", payload: { lineId: "l1", ideaId: "i3" } });
+  const persisted = JSON.parse(JSON.stringify(h.data)); persisted.lines[0].ideaIds.push("i3");
+  finish({ ok: true, json: async () => ({ state: persisted, result: { lineId: "WRONG", ideaId: "WRONG" } }) });
+  await first.done;
+  assert.equal(h.node("#attach-dialog").open, true);
+  assert.equal(h.app.ui.selectedLineId, "l1"); assert.equal(h.app.ui.selectedIdeaId, "");
+  assert.equal(h.node("#attach-search").value, "searchable");
+  assert.equal(h.node("#attach-search").selectionStart, 4);
+  assert.equal(h.node("#attach-results").scrollTop, 90);
+  assert.match(h.node("#attach-results").innerHTML, /data-id="i3"[^>]*disabled/);
+  h.context.fetch = async (url, options) => {
+    writes.push({ url, ...JSON.parse(options.body) });
+    const next = JSON.parse(JSON.stringify(persisted)); next.lines[0].ideaIds.push("i4");
+    return { ok: true, json: async () => ({ state: next, result: {} }) };
+  };
+  await h.clickAttach("i4").done;
+  assert.equal(writes.length, 2); assert.equal(h.node("#attach-dialog").open, true);
+  assert.equal(h.node("#attach-search").value, "searchable");
+  assert.deepEqual(h.context.renderCalls.map((value) => value.preserveSelection), [true, true]);
+  assert.equal(JSON.stringify(h.data), JSON.stringify(original));
+  assert.deepEqual(JSON.parse(JSON.stringify(h.app.searchIdeas("").map((item) => item))), original.ideas);
+  assert.equal(h.storage.size, 0);
+});
+
+test("failed attachment retains cards and query, releases the pending guard and allows retry", async () => {
+  const h = attachPickerFixture(); let writes = 0;
+  h.context.fetch = async () => { writes++; return { ok: false, json: async () => ({ error: "Connection failed" }) }; };
+  h.app.openAttachPicker("l1"); h.searchAttach("Third alias");
+  await h.clickAttach("i3").done;
+  assert.equal(h.node("#attach-feedback").textContent, "Connection failed");
+  assert.match(h.node("#attach-results").innerHTML, /data-id="i3"/);
+  assert.doesNotMatch(h.node("#attach-results").innerHTML, / disabled/);
+  await h.clickAttach("i3").done;
+  assert.equal(writes, 2); assert.equal(h.node("#attach-search").value, "Third alias");
+  assert.equal(h.node("#attach-dialog").open, true);
+});
+
+test("a slow path A attachment never hijacks reopened path B or its search and focus", async () => {
+  const h = attachPickerFixture(); let finish;
+  h.context.fetch = () => new Promise((resolve) => { finish = resolve; });
+  h.app.openAttachPicker("l1");
+  const first = h.clickAttach("i3"); await Promise.resolve(); await Promise.resolve();
+  h.app.closeDialog(h.node("#attach-dialog"));
+  h.app.ui.selectedLineId = "l2"; h.app.ui.view = "papers"; h.app.ui.selectedPaperId = "p1";
+  h.app.ui.selectedStageId = "new-stage";
+  h.app.openAttachPicker("l2"); h.searchAttach("Question");
+  const contextB = h.app.ui.attachPicker, htmlB = h.node("#attach-results").innerHTML;
+  h.context.document.activeElement = h.node("#attach-search");
+  const persisted = JSON.parse(JSON.stringify(h.data)); persisted.lines[0].ideaIds.push("i3");
+  finish({ ok: true, json: async () => ({ state: persisted, result: { lineId: "l1", ideaId: "i3" } }) });
+  await first.done;
+  assert.equal(h.app.ui.attachPicker, contextB);
+  assert.equal(h.node("#attach-dialog").open, true);
+  assert.equal(h.node("#attach-line-title").textContent, "Other <path>");
+  assert.equal(h.node("#attach-search").value, "Question");
+  assert.equal(h.node("#attach-results").innerHTML, htmlB);
+  assert.equal(h.app.ui.selectedLineId, "l2"); assert.equal(h.app.ui.view, "papers");
+  assert.equal(h.app.ui.selectedStageId, "new-stage"); assert.equal(h.app.ui.selectedPaperId, "p1");
+  assert.equal(h.context.document.activeElement, h.node("#attach-search"));
+  assert.deepEqual(persisted.ideas, h.data.ideas); assert.deepEqual(persisted.edges, h.data.edges);
+  assert.deepEqual(persisted.lines[1], h.data.lines[1]);
+});
+
+
+test("an attachment refresh clears deleted selections without auto selecting its original path", async () => {
+  const h = attachPickerFixture(); let finish;
+  vm.runInContext("render = originalAttachRender;", h.context);
+  h.context.fetch = () => new Promise((resolve) => { finish = resolve; });
+  h.app.openAttachPicker("l1");
+  const first = h.clickAttach("i3"); await Promise.resolve(); await Promise.resolve();
+  h.app.closeDialog(h.node("#attach-dialog"));
+  h.app.ui.selectedLineId = "l2"; h.app.ui.selectedPaperId = "removed-paper"; h.app.ui.selectedIdeaId = "removed-idea";
+  h.app.ui.view = "papers";
+  const persisted = JSON.parse(JSON.stringify(h.data)); persisted.lines = [persisted.lines[0]];
+  persisted.lines[0].ideaIds.push("i3");
+  finish({ ok: true, json: async () => ({ state: persisted, result: { lineId: "l1", ideaId: "i3" } }) });
+  await first.done;
+  assert.equal(h.app.ui.selectedLineId, ""); assert.equal(h.app.ui.selectedPaperId, ""); assert.equal(h.app.ui.selectedIdeaId, "");
+  assert.equal(h.app.ui.view, "papers");
+  assert.equal(h.node("#attach-feedback").textContent, "");
+});
+
+test("different attachment clicks queue writes and preserve every accepted membership", async () => {
+  const h = attachPickerFixture(), requests = [], resolvers = [];
+  h.context.fetch = (url, options) => {
+    requests.push(JSON.parse(options.body));
+    return new Promise((resolve) => resolvers.push(resolve));
+  };
+  h.app.openAttachPicker("l1");
+  const first = h.clickAttach("i3"), second = h.clickAttach("i4");
+  await Promise.resolve(); await Promise.resolve();
+  assert.equal(requests.length, 1); assert.equal(second.button.disabled, true);
+  const state1 = JSON.parse(JSON.stringify(h.data)); state1.lines[0].ideaIds.push("i3");
+  resolvers[0]({ ok: true, json: async () => ({ state: state1, result: {} }) });
+  await first.done; await Promise.resolve(); await Promise.resolve();
+  assert.equal(requests.length, 2);
+  assert.match(h.node("#attach-results").innerHTML, /data-id="i4"[^>]*disabled/);
+  const state2 = JSON.parse(JSON.stringify(state1)); state2.lines[0].ideaIds.push("i4");
+  resolvers[1]({ ok: true, json: async () => ({ state: state2, result: {} }) });
+  await second.done;
+  assert.equal((h.node("#attach-results").innerHTML.match(/>已加入<\/button>/g) || []).length, 4);
+  assert.equal(h.node("#attach-dialog").open, true);
+});
+
+test("attachment completion moves only its own remaining focus with preventScroll and leaves search focus alone", async () => {
+  const h = attachPickerFixture(); let finish, focused = [];
+  const retryButton = { dataset: { id: "i3" }, disabled: false, focus(options) { focused.push({ id: "i3", ...options }); } };
+  const nextButton = { dataset: { id: "i4" }, disabled: false, focus(options) { focused.push({ id: "i4", ...options }); } };
+  h.node("#attach-results").querySelectorAll = (selector) => selector === "[data-action='attach-picker-add']" ? [retryButton, nextButton] : [];
+  h.context.fetch = () => new Promise((resolve) => { finish = resolve; });
+  h.app.openAttachPicker("l1");
+  const first = h.clickAttach("i3"); await Promise.resolve(); await Promise.resolve();
+  h.context.document.activeElement = first.button;
+  const persisted = JSON.parse(JSON.stringify(h.data)); persisted.lines[0].ideaIds.push("i3");
+  retryButton.disabled = true;
+  finish({ ok: true, json: async () => ({ state: persisted, result: {} }) });
+  await first.done;
+  assert.deepEqual(focused, [{ id: "i4", preventScroll: true }]);
+  const second = h.clickAttach("i4"); await Promise.resolve(); await Promise.resolve();
+  h.context.document.activeElement = h.node("#attach-search");
+  finish({ ok: false, json: async () => ({ error: "Retry" }) });
+  await second.done;
+  assert.equal(focused.length, 1);
+  assert.equal(h.context.document.activeElement, h.node("#attach-search"));
 });

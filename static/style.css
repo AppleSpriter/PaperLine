@@ -584,3 +584,26 @@ kbd { display: inline-block; min-width: 21px; padding: 2px 6px; border: 1px soli
 #picker-source-tabs { margin-bottom: 16px; }
 #picker-source-editor:not(:empty) { border-top: 1px solid var(--line); margin-top: 20px; padding-top: 12px; }
 #picker-source-editor .workspace-form { margin-top: 10px; }
+
+/* Existing-card picker: scoped independently from the main card catalog. */
+.modal.attach-picker { width: min(calc(92vw / var(--page-scale, 1)), 740px); max-height: min(calc(92dvh / var(--page-scale, 1)), 850px); overflow: hidden; }
+.modal.attach-picker[open] { display: flex; flex-direction: column; }
+.attach-picker > :not(.attach-picker-results) { flex-shrink: 0; }
+.attach-picker-context { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; margin: -2px 0 20px; color: var(--muted); font-size: 12px; }
+.attach-picker-context strong { color: var(--green-dark); font-size: 14px; overflow-wrap: anywhere; white-space: pre-wrap; }
+.attach-picker-search { margin-bottom: 8px; }
+.attach-picker-results { display: grid; gap: 10px; flex: 0 1 auto; min-height: 0; max-height: min(calc(48dvh / var(--page-scale, 1)), 470px); overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.attach-picker-card { display: flex; align-items: center; gap: 20px; padding: 16px; border: 1px solid #dbe6d9; border-radius: 12px; background: #fffdf8; }
+.attach-picker-card.is-joined { background: #f2f6ee; }
+.attach-picker-content { flex: 1; min-width: 0; }
+.attach-picker-card h3 { margin: 0 0 7px; color: var(--green-dark); font-size: 14px; font-weight: 650; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.attach-picker-meta { display: flex; flex-wrap: wrap; gap: 10px; font-size: 11px; color: var(--muted); }
+.attach-picker-preview { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; margin: 8px 0 0; font-size: 12px; line-height: 1.6; color: var(--muted); white-space: pre-line; overflow-wrap: anywhere; }
+.attach-picker-card > button { flex-shrink: 0; min-width: 72px; }
+.attach-picker-card > button:disabled { opacity: .65; cursor: default; }
+.attach-picker-empty { padding: 24px 12px; text-align: center; color: var(--muted); font-size: 13px; }
+.attach-picker-empty p { margin: 8px 0 0; line-height: 1.7; }
+.attach-picker-feedback { margin: 10px 0 0; color: #9b442d; font-size: 12px; }
+.attach-picker-feedback:empty { display: none; }
+.attach-picker .modal-actions { margin-top: 18px; }
+@media (max-width: 520px) { .attach-picker-card { gap: 12px; padding: 12px; } }

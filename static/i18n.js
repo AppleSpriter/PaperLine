@@ -1,6 +1,17 @@
 /* The original Chinese UI strings remain the source of truth. */
 (() => {
   const en = {
+    "搜索已有卡片": "Search existing cards",
+    "搜索名称、别名或简介": "Search titles, aliases or summaries",
+    "所有卡片都已加入这条阅读线。": "All cards have been added to this reading path.",
+    "可连续加入多张卡片，完成后关闭。": "Add several cards, then close when you are done.",
+    "加入": "Add",
+    "已加入": "Added",
+    "加入中…": "Adding…",
+    "没有找到匹配的卡片": "No matching cards",
+    "还没有可加入的卡片": "No cards to add yet",
+    "试试名称、别名或简介中的其他关键词。": "Try other keywords from a title, alias or summary.",
+    "先创建一张思想卡，再把它加入阅读线。": "Create an idea card first, then add it to a reading path.",
     "项关联资料": "linked sources",
     "暂无摘要": "No summary yet",
     "本线思想卡（未指定阶段）": "Idea cards on this path (no stage assigned)",
