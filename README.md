@@ -4,7 +4,9 @@
 
 一个本地运行的论文学习工作台。以论文为证据维护**共享方法与概念**，用**模型家族演进线**组织独立阶段，并在阶段下记录论文与方法贡献；研究阅读线保留已有的知识与学习记录。
 
-## macOS 原生桌面版（0.3.9）
+## macOS 原生桌面版（0.3.10）
+
+0.3.10 将方法选择区和本线思想卡改为卡片列表，直接显示名称、分类、状态和简介；思想图的方法目录支持纵向浏览，选择方法后保留目录位置。此更新只调整展示，存档结构与现有关联保持不变。
 
 0.3.9 修复新建思想卡无法选择模型演进线的问题，并在演进时间线下显示本线思想卡。这些卡片不自动归入任何阶段；使用现有存档结构，无需数据迁移。
 
@@ -33,7 +35,7 @@ npm ci
 npm run desktop:package
 ```
 
-输出到 `dist/macos/0.3.9/`：`PaperLine_0.3.9_aarch64-apple-darwin.dmg` 和压缩的 `.app.zip`。不再保留可直接启动的版本目录 `.app`；构建目录的临时 bundle 在打包验证后清理。DMG 通过 `hdiutil` 无界面生成，包含应用与“应用程序”快捷方式。`npm run desktop:dev` 启动开发版。构建只打包 `static/` 与独立后端，不包含 `data/`、WebDAV 凭据或本地日志。首次构建会下载 Cargo 依赖与 PyInstaller。打包前会检查 Python 可执行文件与动态库的最低 macOS 版本；若高于 13.0 会终止构建。可以通过 `PAPERLINE_PYTHON=/path/to/python3.13 npm run desktop:package` 指定兼容的 Python；已有构建环境使用其他解释器时，须先重建 `.desktop-tools/venv`。当前默认使用本机 ad-hoc 签名并保留 Hardened Runtime；由于打包的 Python 动态库没有 Team ID，应用仅添加 `disable-library-validation` 例外（Tauri 对主程序与侧车共用同一 entitlement 文件）。打包脚本会再次运行已签名应用内的后端，检查启动、API 与退出；对外分发前需要 Developer ID 签名与 Apple 公证。
+输出到 `dist/macos/0.3.10/`：`PaperLine_0.3.10_aarch64-apple-darwin.dmg` 和压缩的 `.app.zip`。不再保留可直接启动的版本目录 `.app`；构建目录的临时 bundle 在打包验证后清理。DMG 通过 `hdiutil` 无界面生成，包含应用与“应用程序”快捷方式。`npm run desktop:dev` 启动开发版。构建只打包 `static/` 与独立后端，不包含 `data/`、WebDAV 凭据或本地日志。首次构建会下载 Cargo 依赖与 PyInstaller。打包前会检查 Python 可执行文件与动态库的最低 macOS 版本；若高于 13.0 会终止构建。可以通过 `PAPERLINE_PYTHON=/path/to/python3.13 npm run desktop:package` 指定兼容的 Python；已有构建环境使用其他解释器时，须先重建 `.desktop-tools/venv`。当前默认使用本机 ad-hoc 签名并保留 Hardened Runtime；由于打包的 Python 动态库没有 Team ID，应用仅添加 `disable-library-validation` 例外（Tauri 对主程序与侧车共用同一 entitlement 文件）。打包脚本会再次运行已签名应用内的后端，检查启动、API 与退出；对外分发前需要 Developer ID 签名与 Apple 公证。
 
 macOS 构建会把 Rust 二进制中的本机构建路径匿名化为通用 `/build` 前缀，并在打包前检查后端归档隐私。
 
@@ -41,7 +43,7 @@ macOS 构建会把 Rust 二进制中的本机构建路径匿名化为通用 `/bu
 
 ## Windows 桌面版（0.3.0）
 
-Mac 与 Windows 版本独立：Mac 为 0.3.9，Windows 为 0.3.0。Windows 同步使用时间线、模型阶段、全局方法与论文搜索的共享实现；其有效版本由 `src-tauri/tauri.windows.conf.json` 指定。
+Mac 与 Windows 版本独立：Mac 为 0.3.10，Windows 为 0.3.0。Windows 同步使用时间线、模型阶段、全局方法与论文搜索的共享实现；其有效版本由 `src-tauri/tauri.windows.conf.json` 指定。
 
 目标为 Windows 10/11 x64。安装器采用 NSIS，为当前用户安装，无需单独安装 Python 或 Node.js；可选择简体中文或英文。缺少 WebView2 时，安装器会下载微软官方 bootstrapper，因此首次安装可能需要联网。应用数据存放在 `%APPDATA%\io.github.applespriter.paperline\`，与安装目录分开。旧版 JSON 数据可以从“设置”导入。
 

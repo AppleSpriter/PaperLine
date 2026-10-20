@@ -1,6 +1,8 @@
 /* The original Chinese UI strings remain the source of truth. */
 (() => {
   const en = {
+    "项关联资料": "linked sources",
+    "暂无摘要": "No summary yet",
     "本线思想卡（未指定阶段）": "Idea cards on this path (no stage assigned)",
     "已有名称或别名会复用方法；新名称直接创建。请选择资料与方法的关系。": "Existing names or aliases reuse methods; new names create them. Choose the source-method relationship.",
     "保存资料阶段": "Save source stage",
@@ -805,7 +807,7 @@
       let saved = originalAttributes.get(element);
       if (!saved) { saved = {}; originalAttributes.set(element, saved); }
       for (const attr of ["placeholder", "aria-label", "title"]) {
-        if (!element.hasAttribute(attr)) continue;
+        if (!element.hasAttribute(attr) || (attr === "aria-label" && element.hasAttribute("data-user-label"))) continue;
         if (!(attr in saved)) saved[attr] = element.getAttribute(attr);
         element.setAttribute(attr, lang === "en" ? translate(saved[attr]) : saved[attr]);
       }

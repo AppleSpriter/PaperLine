@@ -62,7 +62,7 @@ function createApp(storage = new Map(), clock = { now: 0 }, bootFetch = () => ne
     PaperLineI18n: { translate: (value) => value, apply() {} },
   });
   vm.runInContext(appSource, context);
-  const app = vm.runInContext(`({ ui, sourceType, isPaperSource, paperSources, renderPickerSourceControls, openPaperPicker, renderPaperPickerResults, submitSourceForm, inspectMethod, inspectedMethod, syncTimelineMethodSelection, openDialog, openIdeaDialog, ideaDialogDraftKey, captureDialogDraft, openSession, closeDialog, stopTimer, sessionSeconds, captureIdeaDraft, searchIdeas, selectIdea, latestSession, readingRecap, sessionHistory,
+  const app = vm.runInContext(`({ ui, ideaCardMarkup, ideaCardsMarkup, sourceType, isPaperSource, paperSources, renderPickerSourceControls, openPaperPicker, renderPaperPickerResults, submitSourceForm, inspectMethod, inspectedMethod, syncTimelineMethodSelection, openDialog, openIdeaDialog, ideaDialogDraftKey, captureDialogDraft, openSession, closeDialog, stopTimer, sessionSeconds, captureIdeaDraft, searchIdeas, selectIdea, latestSession, readingRecap, sessionHistory,
     revealStageCalendar, validateStageDateInput, stageDateParts, stageDateISO, stageDateToday, stageDateField, stageCalendarMarkup, updateStageDate, closeStageCalendar, newStageEditor, stageEditor, enhanceDirectChoices, paperStageForm, paperMethodForm, methodStageOccurrences, methodMatchChoices, paperRelationRank, editableEdge, timelineLayout, stageContributions, selectTimelineStage, renderStageInspector, rememberTimelineViewport, restoreTimelineViewport, paperPickerResults, removeStageContribution, queueContributionAction, fitMethodGraph, switchWorkspaceView, methods, methodChoices, paperIdeaEdges, stagePaperEdges, workspaceDraft, submitWorkspaceForm, renderMethodsWorkspace, renderStageLine, renderPaperInspector, openStageSession, sessionDraftKey, graphZoomHint, setPageZoom, zoomGraph, zoomGraphWheel, graphMarkup, orderedMapPapers, paperMapLayout, updatePaperSelection, syncInspectorLayout, syncSelection, graphNode, displayAuthors, paperInstitution, libraryCitationCounts, rankedRecommendations, renderRecommendations, openPaperLineDialog, paperReadStatus, mapPapers, validCitations, renderPaperMap, renderPaperMapResults, renderMapInspector, renderZoteroSync, applyZoteroSync, refreshZoteroSync, startZoteroSync, markPaper, renderIdeaInspector, renderInspector, renderIdeas, renderPaperResults, searchResult, searchPapers, searchLines, searchEverything, markIdea, toast, readDraft, act, refreshState, formatDuration, readingTotal, renderOutline, setState(value) { state = value; } })`, context);
   app.setState(fixture());
   app.ui.selectedLineId = "l1";
@@ -2050,6 +2050,7 @@ test("model family line cards stay visible with or without stages and never infe
     h.app.renderStageLine(current);
     const html = h.node("#main-view").innerHTML, section = html.slice(html.indexOf('<section class="line-ideas">'));
     assert.match(section, /本线思想卡（未指定阶段）/);
+    assert.match(section, /class="idea-catalog"/); assert.doesNotMatch(section, /class="card-tabs"/);
     assert.match(section, /data-action="new-idea"/); assert.match(section, /data-action="attach-idea"/);
     assert.match(section, /data-action="paper-view-idea" data-id="i1"/);
     assert.match(section, /data-action="select-idea" data-id="i2"/);
@@ -2078,5 +2079,131 @@ test("line methods inspect on click and open the graph on double click while con
     assert.match(h.node("#main-view").innerHTML, new RegExp(`id="idea-edit-form"[^>]*data-id="${id}"`));
     const draft = { dataset: { id }, values: { title: "Edited idea", summary: "Editable from this line" } };
     h.app.captureIdeaDraft(draft); assert.equal(h.app.readDraft(`idea:${id}`).summary, "Editable from this line");
+  }
+});
+
+
+test("idea catalog cards safely show complete titles, metadata, previews and unique existing source counts", () => {
+  const h = createApp(), data = fixture();
+  Object.assign(data.ideas[0], { title: 'A very long method <title> & "quoted" '.repeat(8), entityType: "method", status: "learning", summary: '<img src=x onerror="bad"> Summary & explanation' });
+  data.papers.push({ id: "web", title: "Web", sourceType: "webpage" }, { id: "model", title: "Model", sourceType: "model" });
+  data.edges.push(
+    { fromType: "paper", fromId: "p1", toId: "i1", relation: "proposes" },
+    { fromType: "paper", fromId: "web", toType: "idea", toId: "i1", relation: "uses" },
+    { fromType: "paper", fromId: "model", toType: "idea", toId: "i1", relation: "improves" },
+    { fromType: "paper", fromId: "web", toType: "idea", toId: "i1", relation: "uses" },
+    { fromType: "paper", fromId: "missing", toId: "i1" },
+    { fromType: "paper", fromId: "p1", toType: "stage", toId: "i2" },
+    { fromType: "idea", fromId: "web", toId: "i2" },
+  );
+  h.app.setState(data); const before = JSON.stringify(data);
+  const cards = h.app.ideaCardsMarkup(data.ideas, "i1");
+  assert.match(cards, /class="idea-catalog-card active" data-action="paper-view-idea" data-id="i1"/);
+  assert.match(cards, /data-user-label aria-pressed="true"/);
+  assert.match(cards, /idea-catalog-title" data-user-content>A very long method &lt;title&gt; &amp; &quot;quoted&quot;/);
+  assert.match(cards, /<span>方法<\/span><span>正在学<\/span><span>3 项关联资料<\/span>/);
+  assert.match(cards, /idea-catalog-preview" data-user-content>&lt;img src=x onerror=&quot;bad&quot;&gt; Summary &amp; explanation/);
+  assert.match(cards, /<span>尚未分类<\/span><span>待学<\/span><span>0 项关联资料<\/span>/);
+  assert.match(cards, /data-action="select-idea" data-id="i2"/);
+  assert.doesNotMatch(cards, /<img|<title>/);
+  assert.equal(JSON.stringify(data), before);
+  assert.match(h.app.ideaCardMarkup({ ...data.ideas[1], summary: "  ", mechanism: "Mechanism <text>" }, 0), /data-user-content>Mechanism &lt;text&gt;/);
+  assert.match(h.app.ideaCardMarkup({ ...data.ideas[1], summary: "", aliases: ["Alias & name"] }, 0), /data-user-content>Alias &amp; name/);
+  assert.match(h.app.ideaCardMarkup({ ...data.ideas[1], summary: "" }, 0), /idea-catalog-preview">暂无摘要/);
+});
+
+test("method search updates shared catalog cards and keeps the input, caret, selection and graph context", () => {
+  const h = createApp(), data = methodInspectionFixture(h);
+  h.app.ui.view = "graph"; h.app.ui.selectedIdeaId = "i2";
+  data.ideas[1].entityType = "method"; data.ideas[1].aliases = ["Find Alias"]; data.ideas[1].summary = "Search preview";
+  h.app.renderMethodsWorkspace();
+  const main = h.node("#main-view").innerHTML, input = h.node("#method-search");
+  const context = JSON.stringify({ line: h.app.ui.selectedLineId, idea: h.app.ui.selectedIdeaId, stage: h.app.ui.selectedStageId });
+  input.value = "Find Alias"; input.selectionStart = 3; input.selectionEnd = 7;
+  h.node("#method-results").scrollTop = 90;
+  for (const listener of h.documentListeners.get("input").callbacks) listener({ target: input });
+  assert.equal(h.node("#method-search"), input); assert.equal(input.value, "Find Alias");
+  assert.equal(input.selectionStart, 3); assert.equal(input.selectionEnd, 7);
+  assert.equal(h.node("#main-view").innerHTML, main);
+  const cards = h.node("#method-results").innerHTML;
+  assert.equal(cards, h.app.ideaCardsMarkup([data.ideas[1]], "i2", "paper-view-idea"));
+  assert.match(cards, /idea-catalog-card active/); assert.match(cards, /aria-pressed="true"/);
+  assert.match(cards, /Search preview/); assert.doesNotMatch(cards, /data-id="i1"/);
+  assert.equal(h.node("#method-results").scrollTop, 90);
+  assert.equal(JSON.stringify({ line: h.app.ui.selectedLineId, idea: h.app.ui.selectedIdeaId, stage: h.app.ui.selectedStageId }), context);
+});
+
+test("selecting a method and rerendering preserves catalog scroll position", async () => {
+  const h = createApp(), data = methodInspectionFixture(h); data.ideas[1].entityType = "method"; h.app.ui.view = "graph";
+  h.app.renderMethodsWorkspace(); h.node("#method-results").scrollTop = 276;
+  const main = h.node("#main-view"); let html = main.innerHTML;
+  Object.defineProperty(main, "innerHTML", { get: () => html, set: (value) => { html = value; h.node("#method-results").scrollTop = 0; } });
+  await actionClick(h, { action: "paper-view-idea", id: "i2" });
+  assert.equal(h.app.ui.selectedIdeaId, "i2"); assert.equal(h.node("#method-results").scrollTop, 276);
+  assert.match(html, /idea-catalog-card active" data-action="paper-view-idea" data-id="i2"/);
+  h.app.renderMethodsWorkspace(); assert.equal(h.node("#method-results").scrollTop, 276);
+});
+
+test("catalog user labels stay literal while UI metadata translates between Chinese and English", () => {
+  const attributes = { "aria-label": "设置", "data-user-label": "" };
+  const card = { closest: () => null, hasAttribute: (name) => name in attributes, getAttribute: (name) => attributes[name], setAttribute: (name, value) => { attributes[name] = value; } };
+  const nodes = [
+    { nodeValue: "设置", parentElement: { closest: () => ({}) } },
+    { nodeValue: "方法", parentElement: { closest: () => null } },
+    { nodeValue: "暂无摘要", parentElement: { closest: () => null } },
+  ];
+  const context = vm.createContext({ document: { documentElement: {}, createTreeWalker() { let index = -1; return { nextNode: () => ++index < nodes.length, get currentNode() { return nodes[index]; } }; } }, NodeFilter: { SHOW_TEXT: 4 } });
+  vm.runInContext(i18nSource, context);
+  const root = { querySelectorAll: () => [card] };
+  context.PaperLineI18n.apply(root, "en");
+  assert.equal(attributes["aria-label"], "设置"); assert.deepEqual(nodes.map((node) => node.nodeValue), ["设置", "Method", "No summary yet"]);
+  context.PaperLineI18n.apply(root, "zh");
+  assert.equal(attributes["aria-label"], "设置"); assert.deepEqual(nodes.map((node) => node.nodeValue), ["设置", "方法", "暂无摘要"]);
+});
+
+
+test("method catalog restores only a previously focused catalog card after rebuilding", () => {
+  const h = createApp(); methodInspectionFixture(h); h.app.ui.view = "graph";
+  let focusOptions, focusCalls = 0;
+  const restored = { dataset: { id: "i1" }, focus(options) { focusCalls++; focusOptions = options; } };
+  h.context.document.querySelectorAll = (selector) => selector === "#method-results .idea-catalog-card" ? [restored] : [];
+  h.context.document.activeElement = { closest: (selector) => selector === "#method-results .idea-catalog-card" ? restored : null };
+  h.app.renderMethodsWorkspace(); assert.equal(focusCalls, 1); assert.equal(focusOptions.preventScroll, true);
+  h.context.document.activeElement = { closest: () => null };
+  h.app.renderMethodsWorkspace(); assert.equal(focusCalls, 1);
+});
+
+
+test("line catalog highlights only valid line inspection and updates selection in place", () => {
+  const h = createApp(), data = methodInspectionFixture(h); data.lines[1].ideaIds = ["i1"];
+  h.app.ui.selectedIdeaId = "i1"; h.app.renderStageLine(data.lines[1]);
+  let html = h.node("#main-view").innerHTML.split('<section class="line-ideas">')[1];
+  assert.doesNotMatch(html, /idea-catalog-card active/);
+  let active = false, pressed = "false";
+  const card = { dataset: { id: "i1" }, classList: { toggle(name, value) { if (name === "active") active = value; } }, setAttribute(name, value) { if (name === "aria-pressed") pressed = value; } };
+  h.context.document.querySelectorAll = (selector) => selector === ".line-ideas .idea-catalog-card" ? [card] : [];
+  const main = h.node("#main-view").innerHTML;
+  h.app.inspectMethod("i1"); assert.equal(active, true); assert.equal(pressed, "true");
+  assert.equal(h.node("#main-view").innerHTML, main);
+  h.app.inspectMethod("i1", "s1"); assert.equal(active, false); assert.equal(pressed, "false");
+  h.app.ui.methodInspect = null; h.app.syncTimelineMethodSelection(); assert.equal(active, false);
+});
+
+
+test("selecting an existing or new stage clears line card selection without rebuilding the catalog", () => {
+  const h = createApp(), data = methodInspectionFixture(h); data.lines[1].ideaIds = ["i1"];
+  const makeSelectable = (id, kind) => {
+    const selected = new Set(); const attributes = {};
+    return { dataset: { id }, selected, attributes, classList: { contains: (name) => name === kind, toggle(name, value) { if (value) selected.add(name); else selected.delete(name); } }, setAttribute(name, value) { attributes[name] = value; } };
+  };
+  const card = makeSelectable("i1", "idea-catalog-card"), stageNode = makeSelectable("s1", "stage");
+  h.context.document.querySelectorAll = (selector) => selector === ".line-ideas .idea-catalog-card" ? [card] : selector === ".timeline-node" || selector === ".timeline-node.stage, .timeline-node.paper, .timeline-node.method" ? [stageNode] : [];
+  h.app.renderStageLine(data.lines[1]); const main = h.node("#main-view").innerHTML;
+  for (const create of [false, true]) {
+    h.app.inspectMethod("i1"); assert.equal(card.selected.has("active"), true); assert.equal(card.attributes["aria-pressed"], "true");
+    h.app.selectTimelineStage("s1", create);
+    assert.equal(card.selected.has("active"), false); assert.equal(card.attributes["aria-pressed"], "false");
+    assert.equal(stageNode.selected.has("selected"), !create); assert.equal(stageNode.attributes["aria-pressed"], String(!create));
+    assert.equal(h.app.ui.methodInspect, null); assert.equal(h.node("#main-view").innerHTML, main);
   }
 });

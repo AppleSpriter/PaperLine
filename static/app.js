@@ -1707,6 +1707,7 @@ function clearMethodInspection() {
   cancelPendingMethodInspection();
   if (ui.methodInspect) ui.selectedIdeaId = "";
   ui.methodInspect = null;
+  syncLineIdeaSelection();
 }
 function inspectedMethod() {
   const context = ui.methodInspect;
@@ -1716,7 +1717,14 @@ function inspectedMethod() {
   if (context.stageId && (ui.view !== "outline" || ui.selectedStageId !== context.stageId || !line(context.lineId)?.stageIds?.includes(context.stageId) || !stageContributions(context.stageId).some(({ connection }) => connection.toId === context.ideaId))) return null;
   return target;
 }
+function syncLineIdeaSelection() {
+  document.querySelectorAll(".line-ideas .idea-catalog-card").forEach((node) => {
+    const selected = Boolean(inspectedMethod()) && !ui.methodInspect.stageId && node.dataset.id === ui.methodInspect.ideaId;
+    node.classList.toggle("active", selected); node.setAttribute?.("aria-pressed", String(selected));
+  });
+}
 function syncTimelineMethodSelection() {
+  syncLineIdeaSelection();
   document.querySelectorAll(".timeline-node").forEach((node) => {
     const selected = Boolean(inspectedMethod()) && node.dataset.workspaceAction === "timeline-method" && node.dataset.id === ui.methodInspect.ideaId && node.dataset.stageId === ui.methodInspect.stageId;
     node.classList.toggle("selected", selected); node.setAttribute?.("aria-pressed", String(selected));
@@ -1768,6 +1776,21 @@ function methodChoices(query = "") {
   const needle = normalized(query);
   return methods().filter((item) => !needle || normalized([item.title, ...(item.aliases || [])].join(" ")).includes(needle));
 }
+function ideaCardMarkup(item, sourceCount, selected = false, action = "") {
+  const category = ({ method: "方法", concept: "概念", question: "问题" })[item.entityType] || "尚未分类";
+  const preview = item.summary?.trim() || item.mechanism?.trim() || (item.aliases || []).join(" · ");
+  return `<button type="button" class="idea-catalog-card ${selected ? "active" : ""}" data-action="${action || (item.entityType === "method" ? "paper-view-idea" : "select-idea")}" data-id="${esc(item.id)}" aria-label="${esc(item.title)}" data-user-label aria-pressed="${selected}"><span class="idea-catalog-title" data-user-content>${esc(item.title)}</span><span class="idea-catalog-meta"><span>${tr(category)}</span><span>${tr(labels.status[item.status] || "待学")}</span><span>${sourceCount} ${tr("项关联资料")}</span></span><span class="idea-catalog-preview"${preview ? " data-user-content" : ""}>${preview ? esc(preview) : tr("暂无摘要")}</span></button>`;
+}
+function ideaCardsMarkup(items, selectedId = "", action = "") {
+  const sources = new Set(state.papers.map((item) => item.id));
+  const linked = new Map();
+  state.edges.forEach((connection) => {
+    if (connection.fromType !== "paper" || connection.toType === "stage" || !sources.has(connection.fromId)) return;
+    if (!linked.has(connection.toId)) linked.set(connection.toId, new Set());
+    linked.get(connection.toId).add(connection.fromId);
+  });
+  return items.map((item) => ideaCardMarkup(item, linked.get(item.id)?.size || 0, item.id === selectedId, action)).join("");
+}
 function methodEditor(item) {
   const edit = draftValues(`idea:${item.id}`, { ...item, entityType: item.entityType || "unclassified", aliases: (item.aliases || []).join(", ") });
   return `<form id="idea-edit-form" class="detail-form method-editor" data-id="${esc(item.id)}"><h3>编辑方法与笔记</h3><label>名称<input name="title" maxlength="120" value="${esc(edit.title)}" required></label><label>别名<input name="aliases" maxlength="1500" value="${esc(edit.aliases)}"></label><label>内容分类<select name="entityType" data-direct-choice>${[["method","方法"],["concept","概念"],["question","问题"],["unclassified","尚未分类"]].map(([value,label]) => `<option value="${value}" ${edit.entityType === value ? "selected" : ""}>${label}</option>`).join("")}</select></label><div class="choice-grid">${choiceField("kind", "类型", labels.kind, edit.kind, item.id)}${choiceField("status", "理解状态", labels.status, edit.status, item.id)}</div><label>方法定义<textarea name="summary" maxlength="4000" rows="3">${esc(edit.summary)}</textarea></label><label>核心机制<textarea name="mechanism" maxlength="6000" rows="3">${esc(edit.mechanism)}</textarea></label><label>我的思考<textarea name="thoughts" maxlength="6000" rows="3">${esc(edit.thoughts)}</textarea></label><p id="idea-draft-status" class="field-help" ${readDraft(`idea:${item.id}`) ? "" : "hidden"}>草稿已保留，点击保存卡片可写入笔记。</p><button type="submit" class="button primary">保存方法与笔记</button></form>`;
@@ -1788,11 +1811,16 @@ function fitMethodGraph(all = false) {
   zoomGraph(scroll, Math.min(1, scroll.clientWidth / box.width, all ? availableHeight / box.height : 1));
 }
 function renderMethodsWorkspace() {
+  const catalogScroll = $("#method-results")?.scrollTop || 0;
+  const focusedCardId = document.activeElement?.closest?.("#method-results .idea-catalog-card")?.dataset.id;
   const choices = methodChoices(ui.methodQuery);
   let selected = idea(ui.selectedIdeaId);
   if (!selected) { selected = choices[0]; if (selected) ui.selectedIdeaId = selected.id; }
   const header = pageHeader("METHODS / 思想图", "共享方法，连接不同论文", "同一个方法可被不同论文提出、使用或改进；这些关系独立于引用与阅读顺序。", `<button type="button" class="button primary" data-workspace-action="new-method">＋ 新建方法</button>${selected ? `<button type="button" class="button secondary" data-workspace-action="edit-method">编辑当前方法</button>` : ""}<button type="button" class="button secondary" data-action="new-paper">＋ 添加论文</button>`, false);
-  $("#main-view").innerHTML = header + `<label class="idea-search-label">搜索方法名称或别名<input id="method-search" type="search" value="${esc(ui.methodQuery)}" placeholder="例如：GRPO"></label><div id="method-results" class="card-tabs">${choices.map((item) => `<button type="button" class="card-tab ${selected?.id === item.id ? "active" : ""}" data-action="paper-view-idea" data-id="${esc(item.id)}" data-user-content>${esc(item.title)}</button>`).join("")}</div>` + (selected ? `${selected.entityType !== "method" ? `<p class="workspace-note">${!state.lines.some((path) => path.ideaIds.includes(selected.id)) ? tr("这张思想卡还没有加入阅读线。") : ""}${tr("这张旧卡尚未明确分类为方法。可在下方修改内容分类；旧笔记与关系保留。")}</p>` : ""}${graphMarkup(selected)}${methodOccurrenceLinks(methodStageOccurrences(selected.id))}<section class="method-relations"><h2>${state.edges.some((connection) => connection.fromType === "paper" && connection.toId === selected.id && !isPaperSource(paper(connection.fromId))) ? tr("资料与此方法的关系") : tr("论文与此方法的关系")}</h2>${state.edges.filter((item) => item.fromType === "paper" && item.toType !== "stage" && item.toId === selected.id).sort(comparePaperRelations).map((item) => editableEdge(item, true)).join("") || `<p class="field-help">还没有关联论文。选中右侧论文，直接添加已有方法或新方法。</p>`}</section>${methodEditor(selected)}` : `<div class="empty-main compact"><h2>还没有明确分类的方法</h2><p>新建共享方法，或从搜索中打开旧卡并手动确认分类。旧卡不会自动改成方法。</p><button type="button" class="button primary" data-workspace-action="new-method">新建方法</button></div>`);  if (selected && ui.methodFitId !== selected.id) {
+  $("#main-view").innerHTML = header + `<label class="idea-search-label">搜索方法名称或别名<input id="method-search" type="search" value="${esc(ui.methodQuery)}" placeholder="例如：GRPO"></label><div id="method-results" class="idea-catalog method-catalog">${ideaCardsMarkup(choices, selected?.id, "paper-view-idea")}</div>` + (selected ? `${selected.entityType !== "method" ? `<p class="workspace-note">${!state.lines.some((path) => path.ideaIds.includes(selected.id)) ? tr("这张思想卡还没有加入阅读线。") : ""}${tr("这张旧卡尚未明确分类为方法。可在下方修改内容分类；旧笔记与关系保留。")}</p>` : ""}${graphMarkup(selected)}${methodOccurrenceLinks(methodStageOccurrences(selected.id))}<section class="method-relations"><h2>${state.edges.some((connection) => connection.fromType === "paper" && connection.toId === selected.id && !isPaperSource(paper(connection.fromId))) ? tr("资料与此方法的关系") : tr("论文与此方法的关系")}</h2>${state.edges.filter((item) => item.fromType === "paper" && item.toType !== "stage" && item.toId === selected.id).sort(comparePaperRelations).map((item) => editableEdge(item, true)).join("") || `<p class="field-help">还没有关联论文。选中右侧论文，直接添加已有方法或新方法。</p>`}</section>${methodEditor(selected)}` : `<div class="empty-main compact"><h2>还没有明确分类的方法</h2><p>新建共享方法，或从搜索中打开旧卡并手动确认分类。旧卡不会自动改成方法。</p><button type="button" class="button primary" data-workspace-action="new-method">新建方法</button></div>`);
+  if (focusedCardId) [...document.querySelectorAll("#method-results .idea-catalog-card")].find((node) => node.dataset.id === focusedCardId)?.focus({ preventScroll: true });
+  $("#method-results").scrollTop = catalogScroll;
+  if (selected && ui.methodFitId !== selected.id) {
     fitMethodGraph();
     if ($(".graph-scroll")?.clientWidth) ui.methodFitId = selected.id;
   }
@@ -1855,7 +1883,7 @@ function renderStageLine(current) {
   if (!ui.newStage && !(current.stageIds || []).includes(ui.selectedStageId)) ui.stageInspect = false;
   const layout = timelineLayout(current), { width, height } = layout;
   const lineIdeas = (current.ideaIds || []).map((id) => idea(id)).filter(Boolean);
-  const lineIdeasMarkup = `<section class="line-ideas"><div class="section-title"><h2>本线思想卡（未指定阶段）</h2><div><button type="button" class="button secondary" data-action="new-idea">＋ 思想卡</button><button type="button" class="button quiet" data-action="attach-idea">关联已有卡片</button></div></div>${lineIdeas.length ? `<div class="card-tabs">${lineIdeas.map((item) => `<button type="button" class="card-tab" data-action="${item.entityType === "method" ? "paper-view-idea" : "select-idea"}" data-id="${esc(item.id)}" data-user-content>${esc(item.title)}</button>`).join("")}</div>` : `<p class="empty-small">还没有思想卡</p>`}</section>`;
+  const lineIdeasMarkup = `<section class="line-ideas"><div class="section-title"><h2>本线思想卡（未指定阶段）</h2><div><button type="button" class="button secondary" data-action="new-idea">＋ 思想卡</button><button type="button" class="button quiet" data-action="attach-idea">关联已有卡片</button></div></div>${lineIdeas.length ? `<div class="idea-catalog">${ideaCardsMarkup(lineIdeas, !ui.methodInspect?.stageId ? inspectedMethod()?.id : "")}</div>` : `<p class="empty-small">还没有思想卡</p>`}</section>`;
   ui.timelineZoom = ui.timelineViews?.[current.id]?.zoom || 1;
   const paperPositions = new Map(), methodPositions = new Map();
   let route = "", branches = "", nodes = "", methodsMarkup = "";
@@ -2206,7 +2234,8 @@ document.addEventListener("input", (event) => {
   }
   if (event.target.id === "method-search") {
     ui.methodQuery = event.target.value;
-    $("#method-results").innerHTML = methodChoices(ui.methodQuery).map((item) => `<button type="button" class="card-tab" data-action="paper-view-idea" data-id="${esc(item.id)}" data-user-content>${esc(item.title)}</button>`).join("");
+    $("#method-results").innerHTML = ideaCardsMarkup(methodChoices(ui.methodQuery), ui.selectedIdeaId, "paper-view-idea");
+    localize($("#method-results"));
   }
 });
 document.addEventListener("change", (event) => {

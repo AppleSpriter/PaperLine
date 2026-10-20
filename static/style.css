@@ -99,6 +99,15 @@ h1, h2, h3, p { margin-top: 0; }
 .card-tab { padding: 9px 15px; border: 1px solid #dbe6d9; border-radius: 100px; background: var(--paper); color: #586e60; white-space: nowrap; font-size: 12px; box-shadow: 0 2px 6px #1e482108; transition: background .14s var(--ease-out), color .14s var(--ease-out), border-color .14s var(--ease-out); }
 .card-tab:hover { border-color: #9ebca4; }
 .card-tab.active { background: var(--green); border-color: var(--green); color: white; box-shadow: none; }
+.idea-catalog { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, max(240px, calc((100% - 20px) / 3))), 1fr)); gap: 10px; min-width: 0; margin-bottom: 16px; }
+.method-catalog { max-height: min(340px, calc(44dvh / var(--page-scale, 1))); overflow-y: auto; overflow-x: hidden; padding: 4px; scrollbar-width: thin; }
+.idea-catalog-card { display: flex; flex-direction: column; gap: 9px; min-width: 0; padding: 14px; border: 1px solid #dbe6d9; border-radius: 12px; background: var(--paper); color: var(--green-dark); text-align: left; box-shadow: 0 2px 6px #1e482108; }
+.idea-catalog-card:hover { border-color: #9ebca4; background: #f4f8f1; }
+.idea-catalog-card.active { border-color: var(--green); background: #edf5e8; box-shadow: inset 3px 0 var(--green); }
+.idea-catalog-card:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
+.idea-catalog-title { font-size: 14px; font-weight: 650; line-height: 1.5; white-space: normal; overflow-wrap: anywhere; }
+.idea-catalog-meta { display: flex; flex-wrap: wrap; gap: 5px 10px; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.idea-catalog-preview { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; color: var(--muted); font-size: 12px; line-height: 1.6; white-space: pre-line; overflow-wrap: anywhere; }
 .graph-panel { background: var(--paper); border: 1px solid #e2e9df; border-radius: 16px; box-shadow: var(--shadow-soft); overflow: hidden; }
 .graph-toolbar { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; align-items: center; padding: 14px 18px; border-bottom: 1px solid #edf0e9; }
 .graph-stats, .graph-legend { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; color: var(--muted); font-size: 11px; }
