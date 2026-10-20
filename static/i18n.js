@@ -192,7 +192,7 @@
     "阅读线类型": "Reading path type",
     "模型演进线（阶段与论文）": "Model evolution path (stages and papers)",
     "主题研究线（思想卡顺序）": "Research path (ordered idea cards)",
-    "这张旧卡尚未明确分类为方法。可在下方修改内容分类；旧笔记与关系保留。": "This existing card is not explicitly classified as a method. Change its category below; notes and relationships are preserved.",
+    "这张旧卡尚未明确分类为方法。可在右侧修改内容分类；旧笔记与关系保留。": "This existing card is not explicitly classified as a method. Change its category on the right; notes and relationships are preserved.",
     "按住 Ctrl + 滚轮缩放": "Hold Ctrl and scroll to zoom",
     "整页": "Page",
     "整页缩放": "Page zoom",

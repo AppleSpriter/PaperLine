@@ -420,6 +420,10 @@ kbd { display: inline-block; min-width: 21px; padding: 2px 6px; border: 1px soli
 .method-relations h2 { font-size: 19px; }
 .method-editor { margin-top: 24px; padding: 20px; border: 1px solid var(--line); border-radius: 16px; background: var(--paper); }
 .method-editor .choice-grid { grid-template-columns: repeat(auto-fit,minmax(180px,1fr)); }
+.inspector .method-editor { margin-top: 0; padding: 0; border: none; background: transparent; }
+.inspector .method-editor .choice-grid { grid-template-columns: minmax(0, 1fr); }
+.inspector .method-editor .choice-row { flex-wrap: wrap; }
+.inspector .method-editor > .button { white-space: normal; }
 .stage-panel { margin: 18px 0; padding: 20px; background: var(--paper); border: 1px solid var(--line); border-left: 4px solid var(--green-dark); border-radius: 15px; min-width: 0; }
 .stage-panel h3 { margin: 18px 0 8px; font-size: 14px; }
 .stage-actions { display: flex; flex-wrap: wrap; gap: 4px; }

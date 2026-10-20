@@ -117,9 +117,9 @@ test("card drafts survive selection changes, rerenders, and a reload", () => {
   assert.doesNotMatch(first.node("#inspector").innerHTML, /Unsaved/);
   const reloaded = createApp(first.storage);
   reloaded.app.ui.selectedIdeaId = "i1";
-  reloaded.app.renderMethodsWorkspace();
-  assert.match(reloaded.node("#main-view").innerHTML, /Unsaved &lt;insight&gt;/);
-  assert.match(reloaded.node("#main-view").innerHTML, /value="learning" checked/);
+  reloaded.app.renderMethodsWorkspace(); reloaded.app.renderInspector();
+  assert.match(reloaded.node("#inspector").innerHTML, /Unsaved &lt;insight&gt;/);
+  assert.match(reloaded.node("#inspector").innerHTML, /value="learning" checked/);
 });
 
 test("a pending session save cannot be submitted twice or close a different session", async () => {
@@ -1239,8 +1239,8 @@ test("method stage backlinks use explicit contribution references and navigate t
   assert.equal(h.app.ui.stageInspect, true); assert.equal(h.app.ui.inspectorOpen, true);
 });
 
-test("empty graph details release the workspace column and selecting a paper restores it", () => {
-  const h = createApp(); h.app.ui.view = "graph"; h.app.ui.selectedIdeaId = "i1";
+test("graph details release the column only without a valid idea or paper", () => {
+  const h = createApp(); h.app.ui.view = "graph"; h.app.ui.selectedIdeaId = "missing";
   h.app.syncInspectorLayout(); assert.equal(h.node(".workspace").dataset.inspectorVisible, "false");
   h.app.ui.selectedPaperId = "p1"; h.app.syncInspectorLayout();
   assert.equal(h.node(".workspace").dataset.inspectorVisible, "true");
@@ -1676,7 +1676,8 @@ test("two timeline clicks preserve the target for one native double click and gr
   const button = { dataset: { id: "i1" } };
   for (const listener of h.documentListeners.get("dblclick").callbacks) listener({ preventDefault() {}, target: { closest: () => button } });
   assert.equal(graphWrites, 1); assert.equal(h.app.ui.view, "graph"); assert.equal(h.app.ui.selectedIdeaId, "i1"); assert.equal(h.app.ui.selectedPaperId, ""); assert.equal(h.app.ui.methodInspect, null);
-  assert.match(html, /id="idea-edit-form"/);
+  assert.doesNotMatch(html, /id="idea-edit-form"/);
+  assert.match(h.node("#inspector").innerHTML, /id="idea-edit-form"/);
 });
 
 test("method inspector saves the global draft while keeping its reading line, stage, and viewport", async () => {
@@ -2076,7 +2077,7 @@ test("line methods inspect on click and open the graph on double click while con
     h.app.ui.view = "outline"; h.app.ui.stageInspect = true;
     await actionClick(h, { action: "select-idea", id });
     assert.equal(h.app.ui.view, "graph"); assert.equal(h.app.ui.selectedIdeaId, id); assert.equal(h.app.ui.stageInspect, false);
-    assert.match(h.node("#main-view").innerHTML, new RegExp(`id="idea-edit-form"[^>]*data-id="${id}"`));
+    assert.match(h.node("#inspector").innerHTML, new RegExp(`id="idea-edit-form"[^>]*data-id="${id}"`));
     const draft = { dataset: { id }, values: { title: "Edited idea", summary: "Editable from this line" } };
     h.app.captureIdeaDraft(draft); assert.equal(h.app.readDraft(`idea:${id}`).summary, "Editable from this line");
   }
@@ -2371,4 +2372,82 @@ test("attachment completion moves only its own remaining focus with preventScrol
   await second.done;
   assert.equal(focused.length, 1);
   assert.equal(h.context.document.activeElement, h.node("#attach-search"));
+});
+
+test("graph method selection replaces stage details with one editor and isolates method drafts", async () => {
+  const h = createApp(), data = methodInspectionFixture(h); data.ideas[1].entityType = "method";
+  const before = JSON.stringify(data);
+  h.app.selectTimelineStage("s1");
+  h.app.selectIdea("i1");
+  const inspector = h.node("#inspector");
+  assert.equal(h.app.ui.stageInspect, false); assert.equal(h.app.ui.newStage, false); assert.equal(h.app.ui.methodInspect, null);
+  assert.equal(h.app.ui.selectedPaperId, ""); assert.equal(h.app.ui.inspectorOpen, true);
+  assert.equal((inspector.innerHTML.match(/id="idea-edit-form"/g) || []).length, 1);
+  assert.doesNotMatch(inspector.innerHTML, /stage-panel|inspector-section|阅读线|出现于这些阶段|data-action="set-next"/);
+  assert.doesNotMatch(h.node("#main-view").innerHTML, /id="idea-edit-form"|id="idea-draft-status"/);
+  assert.match(h.node("#main-view").innerHTML, /method-relations|graph-panel/);
+  h.app.captureIdeaDraft({ dataset: { id: "i1" }, values: { title: "Draft A", summary: "Notes A" } });
+  inspector.scrollTop = 460;
+  await actionClick(h, { action: "paper-view-idea", id: "i2" });
+  assert.equal(inspector.scrollTop, 0); assert.doesNotMatch(inspector.innerHTML, /Notes A/);
+  h.app.captureIdeaDraft({ dataset: { id: "i2" }, values: { title: "Draft B", summary: "Notes B" } });
+  h.app.selectIdea("i1"); assert.match(inspector.innerHTML, /Notes A/); assert.doesNotMatch(inspector.innerHTML, /Notes B/);
+  inspector.scrollTop = 320; h.app.selectIdea("i1"); assert.equal(inspector.scrollTop, 320);
+  assert.equal(h.app.readDraft("idea:i2").summary, "Notes B"); assert.equal(JSON.stringify(data), before);
+});
+
+test("graph default method opens the editor and paper nodes keep their paper details", async () => {
+  const h = createApp(), data = methodInspectionFixture(h); h.app.ui.view = "graph";
+  h.app.ui.selectedIdeaId = ""; h.app.ui.inspectorOpen = false; h.app.ui.stageInspect = true;
+  const classes = new Map(); h.node("#inspector").classList.toggle = (name, value) => classes.set(name, value);
+  h.app.renderMethodsWorkspace(); h.app.renderInspector();
+  assert.equal(h.app.ui.selectedIdeaId, "i1"); assert.equal(h.app.ui.inspectorOpen, true);
+  assert.equal(h.node(".workspace").dataset.inspectorVisible, "true"); assert.equal(classes.get("paper-inspector"), false);
+  assert.match(h.node("#inspector").innerHTML, /编辑方法与笔记/);
+  await actionClick(h, { action: "select-paper", id: "p1" });
+  assert.match(h.node("#inspector").innerHTML, /参考文献分析/); assert.doesNotMatch(h.node("#inspector").innerHTML, /id="idea-edit-form"/);
+  assert.equal(h.app.ui.selectedPaperId, data.papers[0].id);
+  await workspaceClick(h, { workspaceAction: "edit-method" });
+  assert.equal(h.app.ui.selectedPaperId, ""); assert.match(h.node("#inspector").innerHTML, /编辑方法与笔记/);
+});
+
+test("compact graph editor closes and reopens through edit current method without scrolling the page", async () => {
+  const h = createApp(); methodInspectionFixture(h); h.app.selectIdea("i1");
+  h.node(".workspace").dataset.compact = "true";
+  let focused = 0, pageScrolls = 0;
+  h.node("#idea-edit-form").querySelector = () => ({ focus(options) { assert.equal(options.preventScroll, true); focused++; } });
+  h.node("#idea-edit-form").scrollIntoView = () => { pageScrolls++; };
+  const classes = new Map(); h.node("#inspector").classList.toggle = (name, value) => classes.set(name, value);
+  await actionClick(h, { action: "close-paper-inspector" });
+  assert.equal(h.app.ui.inspectorOpen, false); assert.equal(h.app.ui.selectedIdeaId, "i1"); assert.equal(classes.get("is-open"), false);
+  h.node("#inspector").scrollTop = 470;
+  await workspaceClick(h, { workspaceAction: "edit-method" });
+  assert.equal(h.app.ui.inspectorOpen, true); assert.equal(classes.get("is-open"), true);
+  assert.equal(h.node("#inspector").scrollTop, 0); assert.equal(focused, 1); assert.equal(pageScrolls, 0);
+});
+
+test("graph method saves classification changes and retains its editor and graph context", async () => {
+  const h = createApp(), data = methodInspectionFixture(h); h.app.selectIdea("i1");
+  const untouched = JSON.stringify({ lines: data.lines, stages: data.stages, edges: data.edges, papers: data.papers });
+  const values = { title: "Reclassified", aliases: "Alias", entityType: "concept", kind: "concept", status: "learning", summary: "Saved graph note", mechanism: "Mechanism", thoughts: "Thoughts" };
+  const form = { id: "idea-edit-form", dataset: { id: "i1" }, values }; h.app.captureIdeaDraft(form);
+  h.context.fetch = async (path, options) => { const request = JSON.parse(options.body); assert.equal(request.action, "idea.update"); Object.assign(data.ideas[0], request.payload, { aliases: [request.payload.aliases] }); return { ok: true, json: async () => ({ state: data, result: { ideaId: "i1" } }) }; };
+  for (const listener of h.documentListeners.get("submit").callbacks) await listener({ target: form, preventDefault() {} });
+  assert.equal(h.app.ui.view, "graph"); assert.equal(h.app.ui.selectedIdeaId, "i1"); assert.equal(h.app.ui.selectedPaperId, "");
+  assert.match(h.node("#inspector").innerHTML, /Saved graph note/); assert.match(h.node("#inspector").innerHTML, /value="concept" selected/);
+  assert.doesNotMatch(h.node("#main-view").innerHTML, /id="idea-edit-form"/); assert.equal(h.app.readDraft("idea:i1"), null);
+  assert.equal(JSON.stringify({ lines: data.lines, stages: data.stages, edges: data.edges, papers: data.papers }), untouched);
+});
+
+test("graph method conflict keeps its draft in the right editor and updates only the draft base", async () => {
+  const h = createApp(), data = methodInspectionFixture(h); data.ideas[0].updatedAt = "old"; h.app.selectIdea("i1");
+  const values = { title: "Local draft", entityType: "method", kind: "concept", status: "learning", summary: "Unsent graph note" };
+  const form = { id: "idea-edit-form", dataset: { id: "i1" }, values }; h.app.captureIdeaDraft(form);
+  const newer = JSON.parse(JSON.stringify(data)); newer.ideas[0].updatedAt = "new"; newer.ideas[0].summary = "Remote note";
+  h.context.fetch = async (path) => path === "/api/state" ? { ok: true, json: async () => newer } : { ok: false, json: async () => ({ error: "别的页面改过" }) };
+  for (const listener of h.documentListeners.get("submit").callbacks) await listener({ target: form, preventDefault() {} });
+  assert.equal(h.app.ui.view, "graph"); assert.equal(h.app.ui.selectedIdeaId, "i1"); assert.equal(h.app.ui.selectedPaperId, "");
+  assert.equal(h.app.readDraft("idea:i1").baseUpdatedAt, "new"); assert.equal(h.app.readDraft("idea:i1").summary, values.summary);
+  assert.match(h.node("#inspector").innerHTML, /Unsent graph note/); assert.doesNotMatch(h.node("#main-view").innerHTML, /id="idea-edit-form"/);
+  assert.equal(data.ideas[0].summary, "Saved note");
 });

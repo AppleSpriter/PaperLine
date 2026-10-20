@@ -4,7 +4,9 @@ English · [简体中文](README.md)
 
 PaperLine is a local research-learning workspace. Papers provide evidence for **shared methods and concepts**. **Model-family paths** organize independent stages, with papers and method contributions recorded under each stage. Research paths preserve existing knowledge and learning records.
 
-## Native macOS desktop app (0.3.11)
+## Native macOS desktop app (0.3.12)
+
+Version 0.3.12 moves method editing and notes to the right sidebar in the idea graph. Selecting a method opens its editor; paper and reading-path selections show their own details, while drafts and existing relationships are preserved.
 
 Version 0.3.11 replaces the existing-card dropdown with a searchable card picker. Inspect names, types, status, and summaries, then add several cards consecutively. Added cards are clearly marked; card contents and stage contributions are preserved.
 
@@ -37,7 +39,7 @@ npm ci
 npm run desktop:package
 ```
 
-Artifacts in `dist/macos/0.3.11/`: `PaperLine_0.3.11_aarch64-apple-darwin.dmg` and a compressed `.app.zip`. No launchable version-directory app is retained; the temporary build bundle is removed after package verification. The DMG is created headlessly with `hdiutil` and contains the app plus an Applications shortcut. Use `npm run desktop:dev` for development. Only `static/` and the standalone backend are bundled; local `data/`, WebDAV credentials, and logs are excluded. The first build downloads Cargo dependencies and PyInstaller. A prebuild gate checks the Python executable and shared library deployment targets against macOS 13.0. Select a compatible interpreter with `PAPERLINE_PYTHON=/path/to/python3.13 npm run desktop:package`; recreate `.desktop-tools/venv` first if it uses a different interpreter. Builds use local ad-hoc signing with Hardened Runtime enabled. Because the bundled Python libraries have no Team ID, the sole runtime exception is `disable-library-validation`; Tauri applies one entitlement file to the main executable and sidecar. Packaging verifies startup, API responses, and shutdown of the signed backend inside the completed app. Public distribution requires Developer ID signing and Apple notarization.
+Artifacts in `dist/macos/0.3.12/`: `PaperLine_0.3.12_aarch64-apple-darwin.dmg` and a compressed `.app.zip`. No launchable version-directory app is retained; the temporary build bundle is removed after package verification. The DMG is created headlessly with `hdiutil` and contains the app plus an Applications shortcut. Use `npm run desktop:dev` for development. Only `static/` and the standalone backend are bundled; local `data/`, WebDAV credentials, and logs are excluded. The first build downloads Cargo dependencies and PyInstaller. A prebuild gate checks the Python executable and shared library deployment targets against macOS 13.0. Select a compatible interpreter with `PAPERLINE_PYTHON=/path/to/python3.13 npm run desktop:package`; recreate `.desktop-tools/venv` first if it uses a different interpreter. Builds use local ad-hoc signing with Hardened Runtime enabled. Because the bundled Python libraries have no Team ID, the sole runtime exception is `disable-library-validation`; Tauri applies one entitlement file to the main executable and sidecar. Packaging verifies startup, API responses, and shutdown of the signed backend inside the completed app. Public distribution requires Developer ID signing and Apple notarization.
 
 macOS builds remap local Rust build paths to a generic `/build` prefix and audit backend archive privacy before packaging.
 
@@ -45,7 +47,7 @@ For development deployment, run `python3 scripts/install-macos.py /Volumes/Paper
 
 ## Windows desktop (0.3.0)
 
-Mac and Windows versions are independent: Mac is 0.3.11 and Windows is 0.3.0. Windows uses the shared timeline, model-stage, global-method, and paper-search implementation. Its effective version comes from `src-tauri/tauri.windows.conf.json`.
+Mac and Windows versions are independent: Mac is 0.3.12 and Windows is 0.3.0. Windows uses the shared timeline, model-stage, global-method, and paper-search implementation. Its effective version comes from `src-tauri/tauri.windows.conf.json`.
 
 Targets Windows 10/11 x64. The NSIS installer installs for the current user and offers English or Simplified Chinese. Installed users need no Python or Node.js. If WebView2 is missing, the installer downloads Microsoft's bootstrapper, so initial installation may need an internet connection. Data lives in `%APPDATA%\io.github.applespriter.paperline\`, separate from the installation directory. Import an existing JSON backup through Settings.
 
