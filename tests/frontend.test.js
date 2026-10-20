@@ -2451,3 +2451,41 @@ test("graph method conflict keeps its draft in the right editor and updates only
   assert.match(h.node("#inspector").innerHTML, /Unsent graph note/); assert.doesNotMatch(h.node("#main-view").innerHTML, /id="idea-edit-form"/);
   assert.equal(data.ideas[0].summary, "Saved note");
 });
+
+test("method content search matches all terms across fields with common separators and normalized case", () => {
+  const h = createApp(), data = learningFixture();
+  Object.assign(data.ideas[0], { title: "GRPO", aliases: ["Group Relative"], summary: "方法定义 advantage", mechanism: "核心机制 reward", thoughts: "我的思考 stability" });
+  Object.assign(data.ideas[1], { title: "Legacy", summary: "方法定义 advantage", mechanism: "核心机制 reward", thoughts: "我的思考 stability" });
+  data.ideas.push({ ...data.ideas[0], id: "other", title: "Other method", aliases: [], summary: "Other definition", mechanism: "Other mechanism", thoughts: "Other thoughts" });
+  h.app.setState(data); const before = JSON.stringify(data);
+  const ids = (query) => Array.from(h.app.methodChoices(query), (item) => item.id);
+  for (const term of ["方法定义", "核心机制", "我的思考", "advantage", "reward", "stability"]) assert.deepEqual(ids(term), ["i1"]);
+  for (const separator of [" ", "　", ",", "，", "、", ";", "；"]) {
+    assert.deepEqual(ids(["STABILITY", "reward", "advantage", "ＧＲＰＯ"].join(separator)), ["i1"]);
+  }
+  assert.deepEqual(ids("reward missing"), []); assert.deepEqual(ids("reward Other"), []);
+  assert.deepEqual(ids("group reward relative"), ["i1"]);
+  assert.deepEqual(ids(""), ["i1", "other"]); assert.deepEqual(ids("　,，、;； "), ["i1", "other"]);
+  assert.equal(JSON.stringify(data), before);
+  assert.deepEqual(Array.from(h.app.searchIdeas("reward,advantage"), (item) => item.id), []);
+});
+
+test("method content search retains name priority and updates results without rebuilding input or right-side drafts", () => {
+  const h = createApp(), data = learningFixture();
+  Object.assign(data.ideas[0], { title: "First method", summary: "reward definition", mechanism: "group mechanism", thoughts: "stable thought" });
+  data.ideas.push({ ...data.ideas[0], id: "exact", title: "reward", aliases: [], summary: "", mechanism: "", thoughts: "" });
+  h.app.setState(data); h.app.selectIdea("i1");
+  assert.deepEqual(Array.from(h.app.methodChoices("reward"), (item) => item.id), ["exact", "i1"]);
+  h.app.captureIdeaDraft({ dataset: { id: "i1" }, values: { title: "Draft title", summary: "Unsaved right note" } });
+  h.app.renderInspector();
+  const main = h.node("#main-view").innerHTML, inspector = h.node("#inspector").innerHTML;
+  const input = h.node("#method-search"); input.value = "stable，group"; input.selectionStart = 2; input.selectionEnd = 5; input.isComposing = true;
+  h.context.document.activeElement = input;
+  for (const listener of h.documentListeners.get("input").callbacks) listener({ target: input, isComposing: true });
+  assert.equal(h.node("#method-search"), input); assert.equal(h.context.document.activeElement, input);
+  assert.equal(input.selectionStart, 2); assert.equal(input.selectionEnd, 5); assert.equal(input.value, "stable，group");
+  assert.equal(h.node("#main-view").innerHTML, main); assert.equal(h.node("#inspector").innerHTML, inspector);
+  assert.equal(h.app.ui.selectedIdeaId, "i1"); assert.equal(h.app.readDraft("idea:i1").summary, "Unsaved right note");
+  assert.match(h.node("#method-results").innerHTML, /data-id="i1"/); assert.doesNotMatch(h.node("#method-results").innerHTML, /data-id="exact"/);
+  assert.match(main, /搜索名称、别名、定义、机制与思考/); assert.match(main, /placeholder="多词可用空格或逗号分隔"/);
+});
