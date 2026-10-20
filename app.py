@@ -742,7 +742,7 @@ def rebuild_recommendations(state: dict[str, Any]) -> list[dict[str, Any]]:
     papers = []
     by_id = {}
     for saved in state["papers"]:
-        if saved.get("zoteroMissing"):
+        if saved.get("zoteroMissing") or saved.get("sourceType", "paper") != "paper":
             continue
         key = saved.get("zoteroKey") or "local:" + saved["id"]
         identifiers = " ".join(str(saved.get(name) or "") for name in ("doi", "url", "extra"))
@@ -789,7 +789,8 @@ def ensure_recommendations(state: dict[str, Any], cache_key: Any = None) -> None
 
 def merge_zotero_snapshot(state: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, Any]:
     """Merge into the latest state so edits made during PDF analysis survive."""
-    by_key = {paper["zoteroKey"]: paper for paper in state["papers"] if paper.get("zoteroKey")}
+    by_key = {paper["zoteroKey"]: paper for paper in state["papers"]
+              if paper.get("zoteroKey") and paper.get("sourceType", "paper") == "paper"}
     added = updated = 0
     current_keys = {item["zoteroKey"] for item in snapshot["papers"]}
     metadata_fields = ("title", "authors", "year", "doi", "arxivIds", "zoteroVersion", "url", "tags", "referenceAnalysis", "institution", "extra", "authorNames", "authorCount")
@@ -964,6 +965,10 @@ def render_note(state: dict[str, Any], kind: str, item: dict[str, Any]) -> str:
     def tr(zh: str, en: str) -> str:
         return en if english else zh
 
+    def source_wiki(source: dict[str, Any]) -> str:
+        label = {"webpage": tr("网页", "Web page"), "model": tr("模型", "Model")}.get(source.get("sourceType"))
+        return f"{label} · {wiki('paper', source)}" if label else wiki("paper", source)
+
     lines = [f"# {item['title']}", ""]
     if kind == "idea":
         if item.get("aliases"):
@@ -974,12 +979,13 @@ def render_note(state: dict[str, Any], kind: str, item: dict[str, Any]) -> str:
         for heading, key in ((tr("一句话", "In one sentence"), "summary"), (tr("核心机制", "Core mechanism"), "mechanism"), (tr("我的思考", "My thoughts"), "thoughts")):
             lines += [f"## {heading}", "", item.get(key, "") or tr("待补充。", "To be added."), ""]
         sources = [edge for edge in state["edges"] if edge["toId"] == item["id"] and edge["fromType"] == "paper"]
-        lines += [f"## {tr('相关论文', 'Related papers')}", ""]
+        mixed_sources = any(find(state, "papers", edge["fromId"]).get("sourceType", "paper") != "paper" for edge in sources)
+        lines += [f"## {tr('相关资料', 'Related materials') if mixed_sources else tr('相关论文', 'Related papers')}", ""]
         rel = {"proposes": tr("提出", "Proposes"), "uses": tr("使用", "Uses"), "improves": tr("改进", "Improves"), "questions": tr("质疑", "Questions")}
         for edge in sources:
             paper = find(state, "papers", edge["fromId"])
             source = f" · {markdown_link(tr('原文位置', 'Source passage'), edge['sourceUrl'])}" if edge["sourceUrl"] else ""
-            lines.append(f"- {wiki('paper', paper)} · {rel[edge['relation']]}{source}")
+            lines.append(f"- {source_wiki(paper)} · {rel[edge['relation']]}{source}")
             if edge["note"]:
                 lines.append(f"  - {edge['note']}")
         if not sources:
@@ -988,7 +994,7 @@ def render_note(state: dict[str, Any], kind: str, item: dict[str, Any]) -> str:
         stage_ids = list(dict.fromkeys(edge["toId"] for edge in state["edges"]
                          if edge.get("toType") == "stage" and edge["fromId"] in source_papers))
         if stage_ids:
-            lines += ["", f"## {tr('关联论文涉及的阶段（仅导航）', 'Stages associated with source papers (navigation only)')}", ""]
+            lines += ["", f"## {tr('关联资料涉及的阶段（仅导航）', 'Stages associated with source materials (navigation only)') if mixed_sources else tr('关联论文涉及的阶段（仅导航）', 'Stages associated with source papers (navigation only)')}", ""]
             for stage_id in stage_ids:
                 lines.append(f"- {wiki('stage', find(state, 'stages', stage_id))}")
         related = [edge for edge in state["edges"] if edge["fromType"] == "idea" and (edge["fromId"] == item["id"] or edge["toId"] == item["id"])]
@@ -1010,6 +1016,12 @@ def render_note(state: dict[str, Any], kind: str, item: dict[str, Any]) -> str:
         if not sessions:
             lines.append(tr("暂无。", "None yet."))
     elif kind == "paper":
+        source_type = item.get("sourceType", "paper")
+        if source_type != "paper":
+            lines += [f"{tr('资料类型', 'Material type')}：{tr('网页', 'Web page') if source_type == 'webpage' else tr('模型', 'Model')}", ""]
+            if item.get("url"):
+                lines += [markdown_link(tr("打开网页", "Open web page") if source_type == "webpage" else tr("打开模型页面", "Open model page"), item["url"]), ""]
+            lines += [f"## {tr('说明', 'Description')}", "", item.get("summary") or tr("待补充。", "To be added."), ""]
         if item.get("authors"):
             lines.append(f"{tr('作者', 'Authors')}：{item['authors']}")
         if item.get("year"):
@@ -1040,26 +1052,27 @@ def render_note(state: dict[str, Any], kind: str, item: dict[str, Any]) -> str:
         for line in state["lines"]:
             if item["id"] in line.get("stageIds", []):
                 lines.append(f"- {wiki('line', line)}")
-        lines += ["", f"## {tr('关联论文', 'Associated papers')}", ""]
         members = [edge for edge in state["edges"] if edge.get("toType") == "stage" and edge["toId"] == item["id"]]
+        mixed_sources = any(find(state, "papers", member["fromId"]).get("sourceType", "paper") != "paper" for member in members)
+        lines += ["", f"## {tr('阶段资料', 'Stage materials') if mixed_sources else tr('关联论文', 'Associated papers')}", ""]
         for membership in members:
             paper = find(state, "papers", membership["fromId"])
-            lines.append(f"- {wiki('paper', paper)}")
+            lines.append(f"- {source_wiki(paper)}")
         if not members:
             lines.append(tr("待关联。", "No connections yet."))
-        lines += ["", f"## {tr('关联论文的方法（仅导航）', 'Methods in associated papers (navigation only)')}", "",
-                  tr("以下关系描述论文的方法标注，不自动表示本阶段采用这些方法。", "These annotations describe the papers; they do not imply adoption by this stage."), ""]
+        lines += ["", f"## {tr('关联资料的方法（仅导航）', 'Methods in associated materials (navigation only)') if mixed_sources else tr('关联论文的方法（仅导航）', 'Methods in associated papers (navigation only)')}", "",
+                  tr("以下关系描述资料的方法标注，不自动表示本阶段采用这些方法。", "These annotations describe the materials; they do not imply adoption by this stage.") if mixed_sources else tr("以下关系描述论文的方法标注，不自动表示本阶段采用这些方法。", "These annotations describe the papers; they do not imply adoption by this stage."), ""]
         for membership in members:
             paper = find(state, "papers", membership["fromId"])
             for edge in state["edges"]:
                 if edge["fromType"] == "paper" and edge["fromId"] == paper["id"] and edge.get("toType", "idea") == "idea":
-                    lines.append(f"- {wiki('paper', paper)} · {edge['relation']} · {wiki('idea', find(state, 'ideas', edge['toId']))}")
+                    lines.append(f"- {source_wiki(paper)} · {edge['relation']} · {wiki('idea', find(state, 'ideas', edge['toId']))}")
         selected = {value for member in members for value in member.get("contributionRefs", [])}
         if selected:
-            lines += ["", f"## {tr('已标注的论文贡献', 'Selected paper contributions')}", ""]
+            lines += ["", f"## {tr('已标注的资料贡献', 'Selected material contributions') if mixed_sources else tr('已标注的论文贡献', 'Selected paper contributions')}", ""]
             for edge in state["edges"]:
                 if edge["id"] in selected:
-                    lines.append(f"- {wiki('paper', find(state, 'papers', edge['fromId']))} · {edge['relation']} · {wiki('idea', find(state, 'ideas', edge['toId']))}")
+                    lines.append(f"- {source_wiki(find(state, 'papers', edge['fromId']))} · {edge['relation']} · {wiki('idea', find(state, 'ideas', edge['toId']))}")
                     if edge.get("note"):
                         lines.append(f"  - {edge['note']}")
                     if edge.get("sourceUrl"):

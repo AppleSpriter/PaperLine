@@ -33,6 +33,10 @@
         if (!session(draft)) continue;
       } else if (parts[0] === "session" && parts.length === 4 && parts[1] === "stage" && stages.has(parts[2]) && (parts[3] === "" || lines.get(parts[3])?.stageIds?.includes(parts[2]))) {
         if (!session(draft)) continue;
+      } else if (parts[0] === "source" && parts.length === 2 && (backup.papers || []).some((item) => item.id === parts[1] && ["webpage", "model"].includes(item.sourceType) && !item.zoteroKey)) {
+        if (!strings(draft, { title: 300, url: 1500, summary: 4000, baseUpdatedAt: 100 })) continue;
+      } else if (parts[0] === "stage-source" && parts.length === 3 && stages.has(parts[1]) && ["paper", "webpage", "model"].includes(parts[2])) {
+        if (!strings(draft, { title: 300, url: 1500, summary: 4000, query: 1500 })) continue;
       } else if (parts[0] === "stage" && parts.length === 2 && stages.has(parts[1])) {
         if (!strings(draft, { title: 120, date: 10, summary: 4000, baseUpdatedAt: 100 })) continue;
       } else if (parts[0] === "stage-new" && parts.length === 2 && lines.get(parts[1])?.kind === "model_family") {

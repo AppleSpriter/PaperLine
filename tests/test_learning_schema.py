@@ -17,6 +17,107 @@ class LearningDomainTests(unittest.TestCase):
     def action(self, action, **payload):
         return app.apply_action(self.state, action, payload)
 
+    def test_stage_sources_create_reuse_and_roundtrip_without_changing_stage(self):
+        stage = self.action("stage.create", title="V4.1", summary="Keep stage summary")
+        line = self.action("line.create", title="Family", kind="model_family")["lineId"]
+        self.action("line.attach_stage", lineId=line, stageId=stage["stageId"])
+        original_stage = copy.deepcopy(self.state["stages"])
+        payload = dict(stageId=stage["stageId"], lineId=line, sourceType="webpage", title="Release notes",
+                       url="https://example.org/release", summary="Original notes")
+        first = self.action("stage.add_source", **payload)
+        self.assertFalse(first["reused"])
+        self.assertEqual(first["lineId"], line)
+        source = app.find(self.state, "papers", first["paperId"])
+        self.assertEqual((source["sourceType"], source["summary"], source["zoteroKey"]), ("webpage", "Original notes", ""))
+        membership = app.find(self.state, "edges", first["edgeId"])
+        self.assertEqual((membership["relation"], membership["contributionRefs"]), ("documents", []))
+        method = self.action("paper.annotate_method", paperId=source["id"], stageId=stage["stageId"],
+                             title="CED", relation="proposes", note="Evidence")
+        before = copy.deepcopy(self.state)
+        again = self.action("stage.add_source", **{**payload, "summary": "Must not overwrite"})
+        self.assertEqual(again, {**first, "reused": True})
+        self.assertEqual(self.state, before)
+        self.assertEqual(self.state["stages"], original_stage)
+        restored = app.validate_backup(json.loads(json.dumps(self.state)))
+        self.assertEqual(restored, self.state)
+        self.assertEqual(app.find(restored, "edges", first["edgeId"])["contributionRefs"], [method["edgeId"]])
+        next_stage = self.action("stage.create", title="Next stage")["stageId"]
+        linked = self.action("stage.add_source", **{**payload, "stageId": next_stage, "lineId": "", "summary": "Ignore"})
+        self.assertTrue(linked["reused"])
+        self.assertEqual(linked["paperId"], first["paperId"])
+        self.assertNotEqual(linked["edgeId"], first["edgeId"])
+        self.assertEqual(app.find(self.state, "papers", first["paperId"])["summary"], "Original notes")
+        model = self.action("stage.add_source", stageId=stage["stageId"], sourceType="model", title="V4.1 model")
+        self.assertEqual(app.find(self.state, "papers", model["paperId"])["url"], "")
+
+    def test_source_creation_rejects_bad_context_fields_and_urls_atomically(self):
+        stage = self.action("stage.create", title="Stage")["stageId"]
+        unrelated = self.action("line.create", title="Other", kind="model_family")["lineId"]
+        good = dict(stageId=stage, sourceType="webpage", title="Web", url="https://example.org", summary="Summary")
+        invalid = [dict(stageId="missing"), dict(lineId=unrelated), dict(sourceType="paper"),
+                   dict(sourceType="bad"), dict(title=""), dict(title="x" * 301), dict(summary="x" * 4001)]
+        invalid += [dict(url=url) for url in ("", "javascript:alert(1)", "data:text/plain,x", "file:///tmp/x",
+                    "https:///path", "https://user:password@example.org/x", "https://user@example.org", "https://bad host/x",
+                    "https://example.org/\npath", "https://example.org/%0apath", "https://-bad.org", "https://example.org:99999")]
+        before = copy.deepcopy(self.state)
+        for changed in invalid:
+            with self.subTest(changed=changed), self.assertRaises(ValueError):
+                self.action("stage.add_source", **{**good, **changed})
+            self.assertEqual(self.state, before)
+        with patch.object(app, "fresh_id", side_effect=["p-new", RuntimeError("membership failure")]):
+            with self.assertRaisesRegex(RuntimeError, "membership failure"):
+                self.action("stage.add_source", **good)
+        self.assertEqual(self.state, before)
+
+    def test_source_update_preserves_identity_read_status_and_relationships(self):
+        stage = self.action("stage.create", title="Stage")["stageId"]
+        result = self.action("stage.add_source", stageId=stage, sourceType="model", title="Model", summary="Before")
+        source = app.find(self.state, "papers", result["paperId"])
+        source["readStatus"] = "read"
+        self.action("paper.annotate_method", paperId=source["id"], stageId=stage, title="CED", relation="uses", note="Evidence")
+        before = copy.deepcopy(self.state)
+        with patch.object(app, "utc_now", return_value="2030-01-01T00:00:00Z"):
+            changed = self.action("source.update", id=source["id"], title="Renamed model", url="https://example.org/model",
+                                  summary="After", baseUpdatedAt=source["updatedAt"])
+        self.assertEqual(changed, {"paperId": source["id"]})
+        expected = copy.deepcopy(before)
+        app.find(expected, "papers", source["id"]).update(title="Renamed model", url="https://example.org/model",
+                                                          summary="After", updatedAt="2030-01-01T00:00:00Z")
+        self.assertEqual(self.state, expected)
+        with self.assertRaisesRegex(ValueError, "别的页面改过"):
+            self.action("source.update", id=source["id"], title="Stale", url="", summary="Lost", baseUpdatedAt="old")
+        self.assertEqual(self.state, expected)
+        with self.assertRaises(ValueError):
+            self.action("source.update", id=source["id"], title="Changed", url="https://user:password@example.org", summary="")
+        self.assertEqual(self.state, expected)
+        for extra in ({"sourceType": "webpage"}, {"fileName": "new.md"}, {"zoteroKey": "ABCDEFGH"}):
+            with self.assertRaises(ValueError):
+                self.action("source.update", id=source["id"], title="Changed", url="", summary="", **extra)
+            self.assertEqual(self.state, expected)
+
+    def test_source_update_cannot_edit_papers_or_zotero_and_backup_keeps_legacy_metadata(self):
+        zotero = self.action("paper.create", title="Zotero", zoteroKey="ABCDEFGH")["paperId"]
+        for paper_id in (self.paper, zotero):
+            before = copy.deepcopy(self.state)
+            with self.assertRaises(ValueError):
+                self.action("source.update", id=paper_id, title="Changed", url="https://example.org", summary="")
+            self.assertEqual(self.state, before)
+        legacy = app.find(self.state, "papers", self.paper)
+        legacy.update(url="legacy://old-format", summary={"old": "metadata"})
+        self.assertEqual(app.validate_backup(self.state), self.state)
+        self.assertNotIn("sourceType", legacy)
+
+    def test_typed_source_backup_validation_rejects_invalid_types_and_sync_identity(self):
+        stage = self.action("stage.create", title="Stage")["stageId"]
+        result = self.action("stage.add_source", stageId=stage, sourceType="webpage", title="Web", url="https://example.org")
+        for changed in ({"sourceType": "unknown"}, {"sourceType": []}, {"url": "javascript:bad"},
+                        {"summary": "x" * 4001}, {"zoteroKey": "ABCDEFGH"}, {"zoteroUrl": "zotero://item"},
+                        {"referenceAnalysis": {"status": "ready"}}):
+            candidate = copy.deepcopy(self.state)
+            app.find(candidate, "papers", result["paperId"]).update(changed)
+            with self.subTest(changed=changed), self.assertRaises(ValueError):
+                app.validate_backup(candidate)
+
     def test_stage_accepts_multiple_papers_without_ideas_and_shares_across_lines(self):
         first = self.action("paper.add_to_stage", paperId=self.paper, lineTitle="DeepSeek", stageTitle="R1", summary="Stage summary")
         second_paper = self.action("paper.create", title="R1 analysis")["paperId"]

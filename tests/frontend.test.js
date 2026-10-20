@@ -62,7 +62,7 @@ function createApp(storage = new Map(), clock = { now: 0 }, bootFetch = () => ne
     PaperLineI18n: { translate: (value) => value, apply() {} },
   });
   vm.runInContext(appSource, context);
-  const app = vm.runInContext(`({ ui, inspectMethod, inspectedMethod, syncTimelineMethodSelection, openDialog, openIdeaDialog, ideaDialogDraftKey, captureDialogDraft, openSession, closeDialog, stopTimer, sessionSeconds, captureIdeaDraft, searchIdeas, selectIdea, latestSession, readingRecap, sessionHistory,
+  const app = vm.runInContext(`({ ui, sourceType, isPaperSource, paperSources, renderPickerSourceControls, openPaperPicker, renderPaperPickerResults, submitSourceForm, inspectMethod, inspectedMethod, syncTimelineMethodSelection, openDialog, openIdeaDialog, ideaDialogDraftKey, captureDialogDraft, openSession, closeDialog, stopTimer, sessionSeconds, captureIdeaDraft, searchIdeas, selectIdea, latestSession, readingRecap, sessionHistory,
     revealStageCalendar, validateStageDateInput, stageDateParts, stageDateISO, stageDateToday, stageDateField, stageCalendarMarkup, updateStageDate, closeStageCalendar, newStageEditor, stageEditor, enhanceDirectChoices, paperStageForm, paperMethodForm, methodStageOccurrences, methodMatchChoices, paperRelationRank, editableEdge, timelineLayout, stageContributions, selectTimelineStage, renderStageInspector, rememberTimelineViewport, restoreTimelineViewport, paperPickerResults, removeStageContribution, queueContributionAction, fitMethodGraph, switchWorkspaceView, methods, methodChoices, paperIdeaEdges, stagePaperEdges, workspaceDraft, submitWorkspaceForm, renderMethodsWorkspace, renderStageLine, renderPaperInspector, openStageSession, sessionDraftKey, graphZoomHint, setPageZoom, zoomGraph, zoomGraphWheel, graphMarkup, orderedMapPapers, paperMapLayout, updatePaperSelection, syncInspectorLayout, syncSelection, graphNode, displayAuthors, paperInstitution, libraryCitationCounts, rankedRecommendations, renderRecommendations, openPaperLineDialog, paperReadStatus, mapPapers, validCitations, renderPaperMap, renderPaperMapResults, renderMapInspector, renderZoteroSync, applyZoteroSync, refreshZoteroSync, startZoteroSync, markPaper, renderIdeaInspector, renderInspector, renderIdeas, renderPaperResults, searchResult, searchPapers, searchLines, searchEverything, markIdea, toast, readDraft, act, refreshState, formatDuration, readingTotal, renderOutline, setState(value) { state = value; } })`, context);
   app.setState(fixture());
   app.ui.selectedLineId = "l1";
@@ -1827,4 +1827,173 @@ test("a timeline node with an existing inspector can inspect immediately without
   const button = { dataset: { workspaceAction: "timeline-method", id: "i1", stageId: "s1" }, matches: (selector) => selector === ".timeline-node" };
   await Promise.all(h.documentListeners.get("click").callbacks.map((listener) => listener({ detail: 1, target: { closest: (selector) => selector === "[data-workspace-action]" ? button : null } })));
   assert.equal(timers, 0); assert.equal(h.app.inspectedMethod().id, "i1");
+});
+
+function mixedSourceFixture(h) {
+  const data = learningFixture();
+  data.papers.push({ id: "web1", sourceType: "webpage", title: "Release notes", url: "https://example.com/releases", summary: "Verified capabilities", updatedAt: "old-source" });
+  data.papers.push({ id: "model1", sourceType: "model", title: "Model Alpha", url: "", summary: "Local model description" });
+  data.papers.push({ id: "p2", sourceType: "paper", title: "Typed paper", year: "2026", readStatus: "read" });
+  data.edges.push({ id: "web-method", fromType: "paper", fromId: "web1", toId: "i1", relation: "proposes" });
+  h.app.setState(data); h.app.ui.view = "outline"; h.app.ui.selectedLineId = "family"; h.app.ui.selectedStageId = "s1";
+  return data;
+}
+function sourceCreateForm(type = "webpage", stageId = "s1") {
+  return { dataset: { workspaceForm: "source-create", workspaceDraft: `stage-source:${stageId}:${type}`, id: stageId, sourceType: type }, values: { title: "New source", url: type === "webpage" ? "https://example.com/new" : "", summary: "Source draft" } };
+}
+
+test("stage picker presents three direct types and keeps each type's drafts and search while reusing existing sources", async () => {
+  const h = createApp(); mixedSourceFixture(h); h.app.openPaperPicker("stage", "s1");
+  assert.equal(h.node("#picker-source-tabs").hidden, false);
+  assert.match(h.node("#picker-source-tabs").innerHTML, /data-id="paper"/); assert.match(h.node("#picker-source-tabs").innerHTML, /data-id="webpage"/); assert.match(h.node("#picker-source-tabs").innerHTML, /data-id="model"/);
+  assert.deepEqual(Array.from(h.app.paperPickerResults(""), (item) => item.id), ["p2"]);
+  await workspaceClick(h, { workspaceAction: "picker-source-type", id: "webpage" });
+  assert.deepEqual(Array.from(h.app.paperPickerResults("capabilities"), (item) => item.id), ["web1"]);
+  assert.match(h.node("#picker-source-editor").innerHTML, /name="url"[^>]+required/);
+  const form = sourceCreateForm(); h.app.workspaceDraft(form);
+  const query = h.node("#picker-paper-query"); query.value = "Release";
+  for (const listener of h.documentListeners.get("input").callbacks) listener({ target: query });
+  await workspaceClick(h, { workspaceAction: "picker-source-type", id: "model" });
+  assert.doesNotMatch(h.node("#picker-source-editor").innerHTML, /name="url"[^>]+required/);
+  assert.deepEqual(Array.from(h.app.paperPickerResults("description"), (item) => item.id), ["model1"]);
+  await workspaceClick(h, { workspaceAction: "picker-source-type", id: "webpage" });
+  assert.equal(query.value, "Release"); assert.match(h.node("#picker-source-editor").innerHTML, /value="New source"/);
+  h.app.openPaperPicker("method", "i1"); assert.equal(h.node("#picker-source-tabs").hidden, true);
+  assert.deepEqual(Array.from(h.app.paperPickerResults(""), (item) => item.id), ["p1", "web1", "model1", "p2"]);
+});
+
+test("source creation submits the typed atomic action once, preserves a newer draft, and does not overwrite a reopened picker", async () => {
+  const h = createApp(), data = mixedSourceFixture(h); h.app.openPaperPicker("stage", "s1");
+  await workspaceClick(h, { workspaceAction: "picker-source-type", id: "webpage" });
+  const form = sourceCreateForm(); h.app.workspaceDraft(form);
+  let release, request, calls = 0;
+  h.context.fetch = async (path, options) => { calls++; request = JSON.parse(options.body); await new Promise((resolve) => { release = resolve; }); return { ok: true, json: async () => ({ state: data, result: { paperId: "web1", stageId: "s1", reused: true } }) }; };
+  const first = h.app.submitWorkspaceForm(form), duplicate = h.app.submitWorkspaceForm(form);
+  await new Promise((resolve) => setImmediate(resolve)); assert.equal(calls, 1);
+  form.values.title = "Newer draft"; h.app.workspaceDraft(form);
+  h.app.openPaperPicker("stage", "s1"); await workspaceClick(h, { workspaceAction: "picker-source-type", id: "model" });
+  h.node("#picker-paper-query").value = "New context query";
+  release(); await Promise.all([first, duplicate]);
+  assert.deepEqual(request, { action: "stage.add_source", payload: { stageId: "s1", lineId: "family", sourceType: "webpage", title: "New source", url: "https://example.com/new", summary: "Source draft" } });
+  assert.equal(h.app.ui.paperPicker.sourceType, "model"); assert.equal(h.node("#paper-picker-dialog").open, true); assert.equal(h.node("#picker-paper-query").value, "New context query");
+  assert.equal(h.app.readDraft("stage-source:s1:webpage").title, "Newer draft");
+});
+
+test("creating a model for stage method annotation allows no URL and selects the returned reused source", async () => {
+  const h = createApp(), data = mixedSourceFixture(h); h.app.openPaperPicker("stage-method", "s1");
+  await workspaceClick(h, { workspaceAction: "picker-source-type", id: "model" });
+  assert.deepEqual(Array.from(h.app.paperPickerResults(""), (item) => item.id), ["model1"]);
+  const form = sourceCreateForm("model"); h.app.workspaceDraft(form);
+  let request;
+  h.context.fetch = async (path, options) => { request = JSON.parse(options.body); data.edges.push({ id: "model-member", fromType: "paper", fromId: "model1", toType: "stage", toId: "s1", relation: "documents" }); return { ok: true, json: async () => ({ state: data, result: { paperId: "model1", stageId: "s1", reused: true } }) }; };
+  await h.app.submitWorkspaceForm(form);
+  assert.equal(request.payload.url, ""); assert.equal(request.payload.sourceType, "model");
+  assert.equal(h.app.ui.stageMethodPaperId, "model1"); assert.equal(h.node("#paper-picker-dialog").open, false); assert.equal(h.app.readDraft("stage-source:s1:model"), null);
+  assert.match(h.node("#inspector").innerHTML, /data-id="model1" data-stage-id="s1"/);
+});
+
+test("existing web sources can join a stage through its method picker without creating duplicate sources", async () => {
+  const h = createApp(), data = mixedSourceFixture(h); h.app.openPaperPicker("stage-method", "s1");
+  await workspaceClick(h, { workspaceAction: "picker-source-type", id: "webpage" });
+  let request;
+  h.context.fetch = async (path, options) => { request = JSON.parse(options.body); data.edges.push({ id: "web-member", fromType: "paper", fromId: "web1", toType: "stage", toId: "s1", relation: "documents" }); return { ok: true, json: async () => ({ state: data, result: { paperId: "web1", stageId: "s1" } }) }; };
+  await workspaceClick(h, { workspaceAction: "pick-paper", id: "web1" });
+  assert.equal(request.action, "paper.add_to_stage"); assert.equal(request.payload.paperId, "web1"); assert.equal(data.papers.length, 4);
+  assert.equal(h.app.ui.stageMethodPaperId, "web1"); assert.equal(h.node("#paper-picker-dialog").open, false);
+});
+
+test("web source details edit local fields, open a safe external link, and reuse method and stage forms without PDF sections", () => {
+  const h = createApp(), data = mixedSourceFixture(h);
+  data.edges.push({ id: "web-member", fromType: "paper", fromId: "web1", toType: "stage", toId: "s1", relation: "documents" });
+  h.app.renderPaperInspector(data.papers[1]); const html = h.node("#inspector").innerHTML;
+  assert.match(html, /网页/); assert.match(html, /data-workspace-form="source-update"/); assert.match(html, /data-workspace-draft="source:web1"/);
+  assert.match(html, /href="https:\/\/example.com\/releases" target="_blank" rel="noopener noreferrer"/);
+  assert.match(html, /Verified capabilities/); assert.match(html, /data-workspace-form="annotate-method"/); assert.match(html, /data-workspace-action="method-stage"/);
+  assert.doesNotMatch(html, /参考文献分析|引用的论文|引用它的论文|Zotero 批注|DOI/);
+  data.papers[1].url = 'javascript:alert(1)'; h.app.renderPaperInspector(data.papers[1]); assert.match(h.node("#inspector").innerHTML, /href="#"/);
+  h.app.renderPaperInspector(data.papers[0]); assert.match(h.node("#inspector").innerHTML, /参考文献分析/); assert.doesNotMatch(h.node("#inspector").innerHTML, /data-workspace-form="source-update"/);
+});
+
+test("source editing keeps drafts on failure and conflict, follows the latest base, and does not change the source type", async () => {
+  const h = createApp(), data = mixedSourceFixture(h); h.app.ui.selectedPaperId = "web1";
+  const form = { dataset: { workspaceForm: "source-update", workspaceDraft: "source:web1", id: "web1", sourceType: "webpage" }, values: { title: "Edited web", url: "https://example.com/edited", summary: "Local draft" } };
+  h.app.workspaceDraft(form); assert.equal(h.app.readDraft("source:web1").baseUpdatedAt, "old-source");
+  const requests = [];
+  h.context.fetch = async (path, options) => {
+    if (path === "/api/state") { data.papers[1].updatedAt = "new-source"; return { ok: true, json: async () => data }; }
+    requests.push(JSON.parse(options.body)); return { ok: false, json: async () => ({ error: "别的页面改过" }) };
+  };
+  await assert.rejects(h.app.submitWorkspaceForm(form), /别的页面改过/);
+  assert.equal(h.app.readDraft("source:web1").summary, "Local draft"); assert.equal(h.app.readDraft("source:web1").baseUpdatedAt, "new-source");
+  assert.equal(requests[0].payload.sourceType, undefined); assert.equal(requests[0].payload.baseUpdatedAt, "old-source");
+  h.context.fetch = async (path, options) => { requests.push(JSON.parse(options.body)); return { ok: true, json: async () => ({ state: data, result: { paperId: "web1" } }) }; };
+  await h.app.submitWorkspaceForm(form); assert.equal(requests[1].payload.baseUpdatedAt, "new-source"); assert.equal(h.app.readDraft("source:web1"), null);
+});
+
+test("source edits typed during a save keep their values and advance the base for the next real submission", async () => {
+  const h = createApp(), data = mixedSourceFixture(h); h.app.ui.selectedPaperId = "web1";
+  const form = { dataset: { workspaceForm: "source-update", workspaceDraft: "source:web1", id: "web1", sourceType: "webpage" }, values: { title: "First title", url: "https://example.com/first", summary: "First summary" } };
+  h.app.workspaceDraft(form);
+  const other = { dataset: { workspaceForm: "source-update", workspaceDraft: "source:model1", id: "model1", sourceType: "model" }, values: { title: "Other draft", url: "", summary: "Keep other source" } };
+  h.app.workspaceDraft(other); const otherDraft = JSON.stringify(h.app.readDraft("source:model1"));
+  let release; const requests = [];
+  h.context.fetch = async (path, options) => {
+    const request = JSON.parse(options.body); requests.push(request);
+    if (requests.length === 1) await new Promise((resolve) => { release = resolve; });
+    const source = data.papers.find((item) => item.id === request.payload.id);
+    if (request.payload.baseUpdatedAt !== source.updatedAt) return { ok: false, json: async () => ({ error: "别的页面改过" }) };
+    Object.assign(source, { title: request.payload.title, url: request.payload.url, summary: request.payload.summary, updatedAt: `saved-${requests.length}` });
+    return { ok: true, json: async () => ({ state: data, result: { paperId: source.id } }) };
+  };
+  const first = h.app.submitWorkspaceForm(form);
+  await new Promise((resolve) => setImmediate(resolve)); assert.equal(requests.length, 1);
+  form.values = { title: "Newer title", url: "https://example.com/newer", summary: "Newer summary" }; h.app.workspaceDraft(form);
+  release(); await first;
+  assert.deepEqual(JSON.parse(JSON.stringify(h.app.readDraft("source:web1"))), { ...form.values, baseUpdatedAt: "saved-1" });
+  assert.equal(JSON.stringify(h.app.readDraft("source:model1")), otherDraft);
+  await h.app.submitWorkspaceForm(form);
+  assert.equal(requests.length, 2); assert.equal(requests[1].payload.baseUpdatedAt, "saved-1");
+  assert.equal(requests[1].payload.title, "Newer title"); assert.equal(requests[1].payload.summary, "Newer summary");
+  assert.equal(h.app.readDraft("source:web1"), null); assert.equal(data.papers[1].updatedAt, "saved-2");
+  assert.equal(JSON.stringify(h.app.readDraft("source:model1")), otherDraft);
+});
+
+test("a successful source save does not replace a draft base that changed independently", async () => {
+  const h = createApp(), data = mixedSourceFixture(h); h.app.ui.selectedPaperId = "web1";
+  const form = { dataset: { workspaceForm: "source-update", workspaceDraft: "source:web1", id: "web1", sourceType: "webpage" }, values: { title: "First", url: "https://example.com/first", summary: "First" } };
+  h.app.workspaceDraft(form); let release;
+  h.context.fetch = async () => { await new Promise((resolve) => { release = resolve; }); data.papers[1].updatedAt = "saved"; return { ok: true, json: async () => ({ state: data, result: { paperId: "web1" } }) }; };
+  const first = h.app.submitWorkspaceForm(form); await new Promise((resolve) => setImmediate(resolve));
+  const newer = { ...form.values, summary: "Independent draft", baseUpdatedAt: "independent-base" };
+  Object.assign(h.app.readDraft("source:web1"), newer);
+  release(); await first;
+  assert.deepEqual(JSON.parse(JSON.stringify(h.app.readDraft("source:web1"))), newer);
+});
+
+test("invalid web URLs are rejected before writes, model URLs may be empty, and failed source creation is retryable", async () => {
+  const h = createApp(), data = mixedSourceFixture(h); h.app.openPaperPicker("stage", "s1"); await workspaceClick(h, { workspaceAction: "picker-source-type", id: "webpage" });
+  const form = sourceCreateForm(); form.values.url = ""; h.app.workspaceDraft(form);
+  let calls = 0; h.context.fetch = async () => { calls++; return { ok: false, json: async () => ({ error: "Network failed" }) }; };
+  await assert.rejects(h.app.submitWorkspaceForm(form), /HTTP/); assert.equal(calls, 0);
+  form.values.url = "https://example.com/new"; h.app.workspaceDraft(form);
+  await assert.rejects(h.app.submitWorkspaceForm(form), /Network failed/); await assert.rejects(h.app.submitWorkspaceForm(form), /Network failed/);
+  assert.equal(calls, 2); assert.equal(h.app.readDraft("stage-source:s1:webpage").summary, "Source draft"); assert.equal(form.dataset.saving, undefined);
+});
+
+test("mixed sources never enter citation maps, paper counts or citation recommendations but remain searchable and labeled in the library and idea graph", () => {
+  const h = createApp(), data = mixedSourceFixture(h);
+  data.citations = [{ fromId: "p1", toId: "p2" }, { fromId: "web1", toId: "p1" }, { fromId: "p1", toId: "model1" }];
+  data.recommendations = [{ id: "r1", title: "Candidate", citingIds: ["web1", "p1", "model1"] }]; h.app.ui.recommendationAll = true;
+  h.app.ui.selectedPaperId = "web1";
+  assert.deepEqual(Array.from(h.app.mapPapers(), (item) => item.id), ["p1", "p2"]); assert.equal(h.app.validCitations().length, 1);
+  assert.deepEqual(Array.from(h.app.paperMapLayout().nodes, (item) => item.item.id).sort(), ["p1", "p2"]);
+  assert.equal(h.app.libraryCitationCounts().has("web1"), false);
+  assert.equal(h.app.rankedRecommendations().length, 0);
+  data.recommendations[0].citingIds.push("p2");
+  assert.equal(h.app.rankedRecommendations()[0].citationCount, 2);
+  h.app.renderPaperMap(); assert.match(h.node("#main-view").innerHTML, /<b>2<\/b> 篇论文/); assert.match(h.node("#main-view").innerHTML, /<b>1<\/b> 未读/); assert.match(h.node("#main-view").innerHTML, /<b>1<\/b> 已读/);
+  assert.deepEqual(Array.from(h.app.searchPapers("capabilities"), (item) => item.id), ["web1"]);
+  assert.deepEqual(Array.from(h.app.searchPapers("example.com/releases"), (item) => item.id), ["web1"]);
+  h.app.renderPaperResults(); assert.match(h.node("#paper-search-results").innerHTML, /source-badge/);
+  const graph = h.app.graphMarkup(data.ideas[0]); assert.match(graph, /项资料/); assert.match(graph, /网页/); assert.match(graph, /Release notes/);
 });

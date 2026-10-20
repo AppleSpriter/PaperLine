@@ -84,6 +84,12 @@ function captureIdeaDraft(form) {
 function line(id) { return state.lines.find((item) => item.id === id); }
 function idea(id) { return state.ideas.find((item) => item.id === id); }
 function paper(id) { return state.papers.find((item) => item.id === id); }
+function sourceType(item) { return item?.sourceType || "paper"; }
+function isPaperSource(item) { return Boolean(item) && sourceType(item) === "paper"; }
+function sourceLabel(item) { return tr(({ paper: "论文", webpage: "网页", model: "模型" })[sourceType(item)] || "资料"); }
+function sourceBadge(item) { return `<span class="source-badge">${sourceLabel(item)}</span>`; }
+function sourceMetadata(item) { return isPaperSource(item) ? [displayAuthors(item), item.year, paperInstitution(item)].filter(Boolean).join(" · ") : [sourceLabel(item), item.url || item.summary].filter(Boolean).join(" · "); }
+function paperSources() { return state.papers.filter(isPaperSource); }
 function edge(id) { return state.edges.find((item) => item.id === id); }
 function safeUrl(url) { return /^(https?:\/\/|zotero:\/\/)/i.test(url || "") ? url : "#"; }
 function safeHref(url) { return esc(safeUrl(url)); }
@@ -106,7 +112,7 @@ function libraryCitationCounts() {
   return new Map([...citing].map(([id, ids]) => [id, ids.size]));
 }
 function rankedRecommendations() {
-  const libraryIds = new Set(state.papers.map((item) => item.id));
+  const libraryIds = new Set(paperSources().map((item) => item.id));
   return (state.recommendations || []).map((item) => {
     const citingIds = [...new Set((item.citingIds || []).filter((id) => libraryIds.has(id)))];
     return { ...item, citingIds, citationCount: citingIds.length };
@@ -556,18 +562,19 @@ function graphMarkup(focus) {
   const center = `<g class="graph-focus" role="group" aria-label="当前思想 ${esc(focus.title)}"><title data-user-content>${esc(focus.title)}</title><rect x="410" y="${centerY - 48}" width="240" height="96" rx="22"/><text x="430" y="${centerY - 10}" class="focus-title" data-user-content>${esc(truncate(focus.title, 22))}</text><text x="430" y="${centerY + 19}" class="focus-sub">${labels.kind[focus.kind]} · ${labels.status[focus.status]}</text></g>`;
   const more = paperEdges.length > 7 || ideaEdges.length > 7;
   const paperCount = new Set(paperEdges.map((item) => item.fromId)).size;
+  const mixedSources = paperEdges.some((item) => !isPaperSource(paper(item.fromId)));
   const parent = ideaEdges.find((connection) => connection.toId === focus.id && connection.relation === "extends");
-  return `${parent ? `<button type="button" class="button quiet parent-return" data-action="select-idea" data-id="${esc(parent.fromId)}"><span>↖ 返回来源</span> <span data-user-content>${esc(idea(parent.fromId)?.title)}</span></button>` : ""}<section class="graph-panel"><div class="graph-toolbar"><div class="graph-stats"><span><b>${paperCount}</b> ${countUnit(paperCount, "篇论文", "paper", "papers")}</span><span><b>${ideaEdges.length}</b> ${countUnit(ideaEdges.length, "条思想关联", "idea connection", "idea connections")}</span></div><div class="graph-legend"><span><i class="legend-paper"></i>论文</span><span><i class="legend-idea"></i>思想</span></div>${paperRelationLegend()}</div>
+  return `${parent ? `<button type="button" class="button quiet parent-return" data-action="select-idea" data-id="${esc(parent.fromId)}"><span>↖ 返回来源</span> <span data-user-content>${esc(idea(parent.fromId)?.title)}</span></button>` : ""}<section class="graph-panel"><div class="graph-toolbar"><div class="graph-stats"><span><b>${paperCount}</b> ${mixedSources ? tr("项资料") : countUnit(paperCount, "篇论文", "paper", "papers")}</span><span><b>${ideaEdges.length}</b> ${countUnit(ideaEdges.length, "条思想关联", "idea connection", "idea connections")}</span></div><div class="graph-legend"><span><i class="legend-paper"></i>${mixedSources ? tr("资料") : tr("论文")}</span><span><i class="legend-idea"></i>思想</span></div>${paperRelationLegend()}</div>
     <div class="graph-zoom"><span>${esc(tr(graphZoomHint()))}</span>${focus.entityType === "method" ? `<button type="button" class="button quiet" data-workspace-action="fit-method">全图</button>` : ""}<button type="button" class="button quiet" data-action="idea-zoom" data-step="-0.2" aria-label="缩小思想图">−</button><button type="button" class="button quiet" data-action="idea-zoom" data-step="0" aria-label="重置思想图缩放">${Math.round(ui.ideaGraphZoom * 100)}%</button><button type="button" class="button quiet" data-action="idea-zoom" data-step="0.2" aria-label="放大思想图">＋</button></div>
-    <div class="graph-scroll" tabindex="0"><svg class="idea-graph" width="${graphWidth * ui.ideaGraphZoom}" height="${height * ui.ideaGraphZoom}" viewBox="0 0 ${graphWidth} ${height}" role="group" aria-label="${esc(focus.title)} 与 ${paperCount} 篇论文及 ${ideaEdges.length} 条思想关系的图谱"><defs><pattern id="dot-grid" width="24" height="24" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="1" fill="var(--graph-dot)"/></pattern></defs><rect width="1000" height="${height}" fill="url(#dot-grid)"/>${paths}${nodes}${center}</svg></div>
+    <div class="graph-scroll" tabindex="0"><svg class="idea-graph" width="${graphWidth * ui.ideaGraphZoom}" height="${height * ui.ideaGraphZoom}" viewBox="0 0 ${graphWidth} ${height}" role="group" aria-label="${esc(focus.title)} 与 ${paperCount} ${mixedSources ? tr("项资料") : tr("篇论文")}及 ${ideaEdges.length} 条思想关系的图谱"><defs><pattern id="dot-grid" width="24" height="24" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="1" fill="var(--graph-dot)"/></pattern></defs><rect width="1000" height="${height}" fill="url(#dot-grid)"/>${paths}${nodes}${center}</svg></div>
     ${more ? `<button type="button" class="graph-more" data-action="expand-graph">${ui.graphExpanded ? "收起部分节点" : `展开全部关联（${paperEdges.length + ideaEdges.length}）`}</button>` : ""}
-    <div class="graph-bottom"><p>${paperCount ? "同一个思想卡可以汇集多篇论文；每条连线记录具体用法。" : "从论文库导入来源，再建立“论文 → 思想”的关联。"}</p><div><button type="button" class="button quiet" data-action="link-paper">＋ 关联论文</button><button type="button" class="button quiet" data-action="derive-idea">＋ 引申新卡</button><button type="button" class="button quiet" data-action="link-idea">关联已有思想</button></div></div></section>`;
+    <div class="graph-bottom"><p>${mixedSources ? tr("同一个思想卡可以汇集多项资料；每条连线记录具体用法。") : paperCount ? tr("同一个思想卡可以汇集多篇论文；每条连线记录具体用法。") : tr("从论文库导入来源，再建立“论文 → 思想”的关联。")}</p><div><button type="button" class="button quiet" data-action="link-paper">＋ 关联论文</button><button type="button" class="button quiet" data-action="derive-idea">＋ 引申新卡</button><button type="button" class="button quiet" data-action="link-idea">关联已有思想</button></div></div></section>`;
 }
 function graphNode(kind, item, x, y, width, relation = "") {
-  const secondary = kind === "paper" ? [displayAuthors(item), item.year].filter(Boolean).join(" · ") || "来源论文" : `${labels.kind[item.kind]} · ${labels.status[item.status]}`;
+  const secondary = kind === "paper" ? sourceMetadata(item) || "来源论文" : `${labels.kind[item.kind]} · ${labels.status[item.status]}`;
   const institution = kind === "paper" ? paperInstitution(item) : "";
   const titleY = institution ? y + 33 : y + 26;
-  return `<g class="graph-node ${kind}-node ${kind === "paper" ? paperRoleClass(relation) : ""}" data-action="select-${kind}" data-id="${esc(item.id)}" role="button" tabindex="0" aria-label="查看${kind === "paper" ? "论文" : "思想"} ${esc(item.title)}"><title data-user-content>${esc([item.title, institution, kind === "paper" ? item.authors : ""].filter(Boolean).join(" · "))}</title><rect x="${x}" y="${y}" width="${width}" height="62" rx="17"/>${institution ? `<text x="${x + width - 14}" y="${y + 15}" text-anchor="end" class="graph-node-institution" data-user-content>${esc(truncate(institution.replace(/\s+/g, " "), 26))}</text>` : ""}<text x="${x + 16}" y="${titleY}" class="node-title" data-user-content>${esc(truncate(item.title, kind === "paper" ? 25 : 20))}</text><text x="${x + 16}" y="${institution ? y + 50 : y + 47}" class="node-sub" ${kind === "paper" && (item.authors || item.year) ? "data-user-content" : ""}>${esc(truncate(secondary, 30))}</text></g>`;
+  return `<g class="graph-node ${kind}-node ${kind === "paper" ? paperRoleClass(relation) : ""}" data-action="select-${kind}" data-id="${esc(item.id)}" role="button" tabindex="0" aria-label="查看${kind === "paper" ? sourceLabel(item) : "思想"} ${esc(item.title)}"><title data-user-content>${esc([item.title, institution, kind === "paper" ? item.authors : ""].filter(Boolean).join(" · "))}</title><rect x="${x}" y="${y}" width="${width}" height="62" rx="17"/>${institution ? `<text x="${x + width - 14}" y="${y + 15}" text-anchor="end" class="graph-node-institution" data-user-content>${esc(truncate(institution.replace(/\s+/g, " "), 26))}</text>` : ""}<text x="${x + 16}" y="${titleY}" class="node-title" data-user-content>${esc(truncate(item.title, kind === "paper" ? 25 : 20))}</text><text x="${x + 16}" y="${institution ? y + 50 : y + 47}" class="node-sub" ${kind === "paper" && (item.authors || item.year) ? "data-user-content" : ""}>${esc(truncate(secondary, 30))}</text></g>`;
 }
 
 function renderOutline(current) {
@@ -615,7 +622,7 @@ function searchResult({ kind, item }) {
   }
   if (kind === "paper") {
     const ideaCount = new Set(state.edges.filter((connection) => connection.fromType === "paper" && connection.toType !== "stage" && connection.fromId === item.id).map((connection) => connection.toId)).size;
-    return `<button type="button" class="search-result paper" ${open}><div class="search-result-top"><strong data-user-content>${esc(item.title)}</strong><span class="type-tag paper">论文</span></div><small ${item.authors || item.year ? "data-user-content" : ""}>${esc([displayAuthors(item), item.year].filter(Boolean).join(" · ") || "手动添加")}</small><span>${ideaCount} 个思想</span></button>`;
+    return `<button type="button" class="search-result paper" ${open}><div class="search-result-top"><strong data-user-content>${esc(item.title)}</strong><span class="type-tag paper">论文</span></div><small ${item.authors || item.year ? "data-user-content" : ""}>${esc(sourceMetadata(item) || "手动添加")}</small><span>${ideaCount} 个思想</span></button>`;
   }
   return `<button type="button" class="search-result idea" ${open}><div class="search-result-top"><strong data-user-content>${esc(item.title)}</strong><span class="tag-row"><span class="type-tag idea">思想卡</span><span class="status-pill ${item.status}">${labels.status[item.status]}</span></span></div>${item.aliases?.length ? `<small data-user-content>${esc(item.aliases.join(" · "))}</small>` : ""}<p ${item.summary ? "data-user-content" : ""}>${esc(truncate(item.summary || "等待写下一句话理解", 150))}</p><span>${paperCountFor(item.id)} 篇论文</span></button>`;
 }
@@ -654,13 +661,13 @@ async function reuseIdea(id) {
 
 function searchPapers(query) {
   const terms = normalized(query).split(/\s+/).filter(Boolean);
-  return state.papers.filter((item) => terms.every((term) => normalized([item.title, item.authors, item.year, item.doi, paperInstitution(item)].join(" ")).includes(term)));
+  return state.papers.filter((item) => terms.every((term) => normalized([item.title, item.authors, item.year, item.doi, paperInstitution(item), item.url, item.summary].join(" ")).includes(term)));
 }
 function paperReadStatus(item) { return item.readStatus === "read" ? "read" : "unread"; }
 function paperReadLabel(item) { return paperReadStatus(item) === "read" ? "已读" : "未读"; }
-function mapPapers() { return searchPapers(ui.mapQuery).filter((item) => !ui.mapStatus || paperReadStatus(item) === ui.mapStatus); }
+function mapPapers() { return searchPapers(ui.mapQuery).filter((item) => isPaperSource(item) && (!ui.mapStatus || paperReadStatus(item) === ui.mapStatus)); }
 function validCitations() {
-  const ids = new Set(state.papers.map((item) => item.id));
+  const ids = new Set(paperSources().map((item) => item.id));
   return (state.citations || []).filter((item) => item.fromId !== item.toId && ids.has(item.fromId) && ids.has(item.toId));
 }
 function referenceStatus(item) {
@@ -683,7 +690,7 @@ function paperMapLayout() {
     nodes.push(node);
     return node;
   };
-  const selected = paper(ui.selectedPaperId);
+  const selected = isPaperSource(paper(ui.selectedPaperId)) ? paper(ui.selectedPaperId) : null;
   let width, rows;
   const connections = validCitations();
   if (selected) {
@@ -796,9 +803,9 @@ function syncInspectorLayout() {
 }
 function renderPaperMap() {
   const header = pageHeader("PAPER MAP / 论文地图", "沿着引用，看见阅读全貌", "如果 A 引用了 B，箭头从 B 指向 A。阅读标注独立保存，重新同步后仍然保留。", `<button type="button" class="button secondary" data-action="new-paper">＋ 添加论文</button>`, false);
-  const read = state.papers.filter((item) => paperReadStatus(item) === "read").length;
+  const sources = paperSources(), read = sources.filter((item) => paperReadStatus(item) === "read").length;
   $("#main-view").innerHTML = header + `<section id="paper-map-sync" class="paper-map-sync" aria-live="polite"></section>
-    <div class="map-summary"><span><b>${state.papers.length}</b> 篇论文</span><span><i class="read-dot unread"></i><b>${state.papers.length - read}</b> 未读</span><span><i class="read-dot read"></i><b>${read}</b> 已读</span><span><b>${validCitations().length}</b> 条库内引用</span></div>
+    <div class="map-summary"><span><b>${sources.length}</b> 篇论文</span><span><i class="read-dot unread"></i><b>${sources.length - read}</b> 未读</span><span><i class="read-dot read"></i><b>${read}</b> 已读</span><span><b>${validCitations().length}</b> 条库内引用</span></div>
     <label class="idea-search-label">搜索地图中的论文<input id="map-search" type="search" placeholder="搜索标题、作者、年份或 DOI" value="${esc(ui.mapQuery)}"></label>
     <div class="map-controls"><div class="filter-bar">${[["", "全部论文"], ["unread", "未读"], ["read", "已读"]].map(([status, label]) => `<button type="button" class="filter-button ${ui.mapStatus === status ? "active" : ""}" data-action="filter-paper-read" data-status="${status}" aria-pressed="${ui.mapStatus === status}">${label}</button>`).join("")}</div><div class="map-zoom"><label class="map-sort">排序<select id="map-sort" data-direct-choice><option value="citations" ${ui.mapSort === "citations" ? "selected" : ""}>库内被引（多到少）</option><option value="year" ${ui.mapSort === "year" ? "selected" : ""}>年份（早到晚）</option></select></label><button type="button" class="button quiet" data-action="map-connections" aria-pressed="${ui.mapAllConnections}">${ui.mapAllConnections ? "隐藏全部连线" : "显示全部连线"}</button><button type="button" class="button quiet" data-action="map-fit">全图</button><button type="button" class="button quiet" data-action="map-zoom" data-step="-0.2" aria-label="缩小地图">−</button><button type="button" class="button quiet" data-action="map-zoom" data-step="0" aria-label="重置地图缩放">${Math.round(ui.mapZoom * 100)}%</button><button type="button" class="button quiet" data-action="map-zoom" data-step="0.2" aria-label="放大地图">＋</button></div></div>
     <div id="paper-map-results"></div>`;
@@ -812,7 +819,7 @@ function renderPaperMapResults() {
   const zoomButton = $("[data-action='map-zoom'][data-step='0']");
   if (zoomButton) zoomButton.textContent = `${Math.round(ui.mapZoom * 100)}%`;
   if (!mapNodes.length) {
-    $("#paper-map-results").innerHTML = `<div class="empty-main"><div class="empty-orbit">↗</div><h2>${state.papers.length ? "没有符合筛选条件的论文" : "把 Zotero 文献库变成论文地图"}</h2><p>${state.papers.length ? "试试其他关键词或阅读状态。" : "点击上方同步按钮，导入论文并分析本机 PDF 的参考文献。"}</p></div>`;
+    $("#paper-map-results").innerHTML = `<div class="empty-main"><div class="empty-orbit">↗</div><h2>${paperSources().length ? "没有符合筛选条件的论文" : "把 Zotero 文献库变成论文地图"}</h2><p>${paperSources().length ? "试试其他关键词或阅读状态。" : "点击上方同步按钮，导入论文并分析本机 PDF 的参考文献。"}</p></div>`;
     localize($("#paper-map-results"));
     return;
   }
@@ -919,7 +926,7 @@ function renderPaperResults() {
   const results = searchPapers(ui.paperQuery);
   $("#paper-search-results").innerHTML = `<p class="field-help result-count">${results.length} 篇论文</p>` + (results.length ? `<div class="paper-list">${results.map((item) => {
     const count = new Set(state.edges.filter((connection) => connection.fromType === "paper" && connection.toType !== "stage" && connection.fromId === item.id).map((connection) => connection.toId)).size;
-    return `<button type="button" class="paper-list-item ${ui.selectedPaperId === item.id ? "selected" : ""}" data-action="select-paper" data-id="${esc(item.id)}"><span class="paper-icon">▤</span><span><strong data-user-content>${esc(item.title)}</strong><small ${item.authors || item.year ? "data-user-content" : ""}>${esc([displayAuthors(item), item.year].filter(Boolean).join(" · ") || "手动添加")}</small></span><span class="paper-list-meta">${paperInstitution(item) ? `<strong class="paper-institution" data-user-content>${esc(paperInstitution(item))}</strong>` : ""}<em>${count} 个思想</em></span></button>`;
+    return `<button type="button" class="paper-list-item ${ui.selectedPaperId === item.id ? "selected" : ""}" data-action="select-paper" data-id="${esc(item.id)}"><span class="paper-icon">▤</span><span>${sourceBadge(item)}<strong data-user-content>${esc(item.title)}</strong><small ${item.authors || item.year ? "data-user-content" : ""}>${esc(sourceMetadata(item) || "手动添加")}</small></span><span class="paper-list-meta">${paperInstitution(item) ? `<strong class="paper-institution" data-user-content>${esc(paperInstitution(item))}</strong>` : ""}<em>${count} 个思想</em></span></button>`;
   }).join("")}</div>` : `<div class="empty-main compact"><h2>没有找到论文</h2><p>换个关键词，或添加新的论文来源。</p><button type="button" class="button primary" data-action="new-paper">添加论文</button></div>`);
   localize($("#paper-search-results"));
 }
@@ -970,7 +977,7 @@ function renderIdeaInspector(item) {
     ${(() => { const total = readingTotal([item.id]); return total.count ? `<p class="reading-total">累计阅读 ${formatDuration(total.seconds)} · ${total.count} 次</p>` : ""; })()}
     <form id="idea-edit-form" class="detail-form" data-id="${esc(item.id)}"><label>名称<input name="title" maxlength="120" value="${esc(edit.title)}" required></label><label>内容分类<select name="entityType" data-direct-choice>${[["method","方法"],["concept","概念"],["question","问题"],["unclassified","尚未分类"]].map(([value,label]) => `<option value="${value}" ${(edit.entityType || "unclassified") === value ? "selected" : ""}>${label}</option>`).join("")}</select></label><label>别名<input name="aliases" maxlength="1500" value="${esc(edit.aliases)}" placeholder="缩写、全称或其他写法，用逗号分隔"></label><div class="choice-grid">${choiceField("kind", "类型", labels.kind, edit.kind, item.id)}${choiceField("status", "状态", labels.status, edit.status, item.id)}</div>
     <label>一句话理解<textarea name="summary" rows="3" maxlength="4000" placeholder="用自己的话说清这张卡。">${esc(edit.summary)}</textarea></label><label>核心机制<textarea name="mechanism" rows="4" maxlength="6000" placeholder="关键步骤、公式或假设。">${esc(edit.mechanism)}</textarea></label><label>我的思考<textarea name="thoughts" rows="4" maxlength="6000" placeholder="质疑、联系、引申。">${esc(edit.thoughts)}</textarea></label><p id="idea-draft-status" class="field-help" ${draft ? "" : "hidden"}>草稿已保留，点击保存卡片可写入笔记。</p><button type="submit" class="button primary full">保存卡片</button></form>
-    <div class="inspector-section"><div class="inspector-section-head"><h3>论文来源 <span>${papers.length}</span></h3><button type="button" data-action="link-paper">＋</button></div>${papers.length ? papers.map((connection) => relationRow(connection, "paper", paper(connection.fromId))).join("") : `<p class="empty-small">关联论文后，这里会显示每篇论文如何使用这个思想。</p>`}</div>
+    <div class="inspector-section"><div class="inspector-section-head"><h3>${papers.some((connection) => !isPaperSource(paper(connection.fromId))) ? tr("资料来源") : tr("论文来源")} <span>${papers.length}</span></h3><button type="button" data-action="link-paper">＋</button></div>${papers.length ? papers.map((connection) => relationRow(connection, "paper", paper(connection.fromId))).join("") : `<p class="empty-small">关联论文后，这里会显示每篇论文如何使用这个思想。</p>`}</div>
     <div class="inspector-section"><div class="inspector-section-head"><h3>思想关联 <span>${related.length}</span></h3><div><button type="button" class="text-action" data-action="derive-idea">引申新卡</button><button type="button" data-action="link-idea" aria-label="关联已有思想">＋</button></div></div>${related.length ? related.map((connection) => relationRow(connection, "idea", idea(connection.fromId === item.id ? connection.toId : connection.fromId))).join("") : `<p class="empty-small">继续追问时，可以把新的思想连进来。</p>`}</div>
     ${sessionHistory(item.id)}
     <div class="inspector-section last"><h3>所在阅读线</h3><p class="tiny-list" ${lineNames.length ? "data-user-content" : ""}>${esc(lineNames.join(" · ") || "尚未加入阅读线")}</p>${methodOccurrenceLinks(occurrences)}</div>
@@ -979,7 +986,7 @@ function renderIdeaInspector(item) {
 function relationRow(connection, kind, node) {
   if (!node) return "";
   const label = labels[connection.fromType][connection.relation] || connection.relation;
-  return `<div class="relation-row"><button type="button" class="relation-main" data-action="select-${kind}" data-id="${esc(node.id)}"><span class="relation-type">${label}</span><strong data-user-content>${esc(truncate(node.title, 46))}</strong>${connection.note ? `<small data-user-content>${esc(truncate(connection.note, 90))}</small>` : ""}</button>${connection.sourceUrl ? `<a class="relation-source" href="${safeHref(connection.sourceUrl)}" aria-label="打开原文位置">↗</a>` : ""}<button type="button" class="relation-edit" data-action="edit-edge" data-id="${esc(connection.id)}" aria-label="编辑关系">···</button></div>`;
+  return `<div class="relation-row"><button type="button" class="relation-main" data-action="select-${kind}" data-id="${esc(node.id)}"><span class="relation-type">${label}</span>${kind === "paper" ? sourceBadge(node) : ""}<strong data-user-content>${esc(truncate(node.title, 46))}</strong>${connection.note ? `<small data-user-content>${esc(truncate(connection.note, 90))}</small>` : ""}</button>${connection.sourceUrl ? `<a class="relation-source" href="${safeHref(connection.sourceUrl)}" aria-label="打开原文位置">↗</a>` : ""}<button type="button" class="relation-edit" data-action="edit-edge" data-id="${esc(connection.id)}" aria-label="编辑关系">···</button></div>`;
 }
 function citationRows(connections, nodeKey) {
   return connections.map((connection) => {
@@ -1002,11 +1009,11 @@ function renderLegacyPaperInspector(item) {
   if (["map", "recommendations"].includes(ui.view)) return renderMapInspector(item);
   const related = state.edges.filter((connection) => connection.fromType === "paper" && connection.toType !== "stage" && connection.fromId === item.id);
   const annotations = ui.annotationPaperId === item.id ? ui.annotations : null;
-  $("#inspector").innerHTML = `<div class="inspector-top"><span class="eyebrow">PAPER SOURCE</span><span class="paper-tag">论文</span></div><h2 class="inspector-title" data-user-content>${esc(item.title)}</h2><p class="inspector-sub" ${item.authors || item.year ? "data-user-content" : ""}>${esc([displayAuthors(item), item.year].filter(Boolean).join(" · ") || "手动添加")}</p>
+  $("#inspector").innerHTML = `<div class="inspector-top"><span class="eyebrow">PAPER SOURCE</span><span class="paper-tag">论文</span></div><h2 class="inspector-title" data-user-content>${esc(item.title)}</h2><p class="inspector-sub" ${item.authors || item.year ? "data-user-content" : ""}>${esc(sourceMetadata(item) || "手动添加")}</p>
     ${fullAuthorsDetail(item)}${paperInstitution(item) ? `<p class="paper-institution" data-user-content>${esc(paperInstitution(item))}</p>` : ""}<div class="paper-meta">${item.doi ? `<div><span>DOI</span><strong data-user-content>${esc(item.doi)}</strong></div>` : ""}${item.zoteroKey ? `<div><span>ZOTERO KEY</span><strong data-user-content>${esc(item.zoteroKey)}</strong></div>` : ""}</div>
     ${item.zoteroUrl ? `<a class="button primary full" href="${safeHref(item.zoteroUrl)}">在 Zotero 打开 ↗</a>` : ""}
     <div class="inspector-section"><div class="inspector-section-head"><h3>蕴含的思想 <span>${related.length}</span></h3><div><button type="button" data-action="new-idea-from-paper" aria-label="从论文创建思想卡">新建</button><button type="button" data-action="link-paper-to-idea" aria-label="关联已有思想卡">＋</button></div></div>${related.length ? related.map((connection) => relationRow(connection, "idea", idea(connection.toId))).join("") : `<p class="empty-small">把这篇论文连到已有思想，或从批注建一张新卡。</p>`}</div>
-    <button type="button" class="button danger full inspector-delete" data-action="delete-paper" data-id="${esc(item.id)}">删除这篇论文</button>
+    <button type="button" class="button danger full inspector-delete" data-action="delete-paper" data-id="${esc(item.id)}">${isPaperSource(item) ? tr("删除这篇论文") : tr("删除这项资料")}</button>
     ${item.zoteroKey ? `<div class="inspector-section last"><div class="inspector-section-head"><h3>Zotero 批注</h3><button type="button" data-action="load-annotations">读取</button></div>${annotations === null ? `<p class="empty-small">读取划线与批注，再从原文建卡。</p>` : annotations.length ? annotations.map((annotation, index) => `<div class="annotation"><span>第 ${esc(annotation.page || "?")} 页</span><p data-user-content>${esc(truncate(annotation.text || annotation.comment, 200))}</p>${annotation.comment && annotation.text ? `<small data-user-content>${esc(truncate(annotation.comment, 120))}</small>` : ""}<div class="annotation-actions"><button type="button" data-action="annotation-link" data-index="${index}">关联已有卡</button><button type="button" data-action="annotation-create" data-index="${index}">建新卡 ↗</button></div></div>`).join("") : `<p class="empty-small">没有找到文字批注。</p>`}</div>` : ""}`;
 }
 
@@ -1749,7 +1756,12 @@ function stagePaperEdges(stageId) { return state.edges.filter((item) => item.fro
 function draftValues(key, saved = {}) { return { ...saved, ...(readDraft(key) || {}) }; }
 function workspaceDraft(form) {
   const key = form.dataset.workspaceDraft;
-  if (key) writeDraft(key, Object.fromEntries(new FormData(form).entries()));
+  if (key) {
+    const values = Object.fromEntries(new FormData(form).entries());
+    if (form.dataset.workspaceForm === "source-update") values.baseUpdatedAt = readDraft(key)?.baseUpdatedAt ?? paper(form.dataset.id)?.updatedAt ?? "";
+    if (form.dataset.workspaceForm === "source-create") values.query = readDraft(key)?.query || "";
+    writeDraft(key, values);
+  }
 }
 function sessionDraftKey(session) { return session.targetType ? `session:${session.targetType}:${session.targetId}:${session.lineId || ""}` : `session:${session.lineId}:${session.ideaId}`; }
 function methodChoices(query = "") {
@@ -1780,7 +1792,7 @@ function renderMethodsWorkspace() {
   let selected = idea(ui.selectedIdeaId);
   if (!selected) { selected = choices[0]; if (selected) ui.selectedIdeaId = selected.id; }
   const header = pageHeader("METHODS / 思想图", "共享方法，连接不同论文", "同一个方法可被不同论文提出、使用或改进；这些关系独立于引用与阅读顺序。", `<button type="button" class="button primary" data-workspace-action="new-method">＋ 新建方法</button>${selected ? `<button type="button" class="button secondary" data-workspace-action="edit-method">编辑当前方法</button>` : ""}<button type="button" class="button secondary" data-action="new-paper">＋ 添加论文</button>`, false);
-  $("#main-view").innerHTML = header + `<label class="idea-search-label">搜索方法名称或别名<input id="method-search" type="search" value="${esc(ui.methodQuery)}" placeholder="例如：GRPO"></label><div id="method-results" class="card-tabs">${choices.map((item) => `<button type="button" class="card-tab ${selected?.id === item.id ? "active" : ""}" data-action="paper-view-idea" data-id="${esc(item.id)}" data-user-content>${esc(item.title)}</button>`).join("")}</div>` + (selected ? `${selected.entityType !== "method" ? `<p class="workspace-note">${!state.lines.some((path) => path.ideaIds.includes(selected.id)) ? tr("这张思想卡还没有加入阅读线。") : ""}${tr("这张旧卡尚未明确分类为方法。可在下方修改内容分类；旧笔记与关系保留。")}</p>` : ""}${graphMarkup(selected)}${methodOccurrenceLinks(methodStageOccurrences(selected.id))}<section class="method-relations"><h2>论文与此方法的关系</h2>${state.edges.filter((item) => item.fromType === "paper" && item.toType !== "stage" && item.toId === selected.id).sort(comparePaperRelations).map((item) => editableEdge(item, true)).join("") || `<p class="field-help">还没有关联论文。选中右侧论文，直接添加已有方法或新方法。</p>`}</section>${methodEditor(selected)}` : `<div class="empty-main compact"><h2>还没有明确分类的方法</h2><p>新建共享方法，或从搜索中打开旧卡并手动确认分类。旧卡不会自动改成方法。</p><button type="button" class="button primary" data-workspace-action="new-method">新建方法</button></div>`);  if (selected && ui.methodFitId !== selected.id) {
+  $("#main-view").innerHTML = header + `<label class="idea-search-label">搜索方法名称或别名<input id="method-search" type="search" value="${esc(ui.methodQuery)}" placeholder="例如：GRPO"></label><div id="method-results" class="card-tabs">${choices.map((item) => `<button type="button" class="card-tab ${selected?.id === item.id ? "active" : ""}" data-action="paper-view-idea" data-id="${esc(item.id)}" data-user-content>${esc(item.title)}</button>`).join("")}</div>` + (selected ? `${selected.entityType !== "method" ? `<p class="workspace-note">${!state.lines.some((path) => path.ideaIds.includes(selected.id)) ? tr("这张思想卡还没有加入阅读线。") : ""}${tr("这张旧卡尚未明确分类为方法。可在下方修改内容分类；旧笔记与关系保留。")}</p>` : ""}${graphMarkup(selected)}${methodOccurrenceLinks(methodStageOccurrences(selected.id))}<section class="method-relations"><h2>${state.edges.some((connection) => connection.fromType === "paper" && connection.toId === selected.id && !isPaperSource(paper(connection.fromId))) ? tr("资料与此方法的关系") : tr("论文与此方法的关系")}</h2>${state.edges.filter((item) => item.fromType === "paper" && item.toType !== "stage" && item.toId === selected.id).sort(comparePaperRelations).map((item) => editableEdge(item, true)).join("") || `<p class="field-help">还没有关联论文。选中右侧论文，直接添加已有方法或新方法。</p>`}</section>${methodEditor(selected)}` : `<div class="empty-main compact"><h2>还没有明确分类的方法</h2><p>新建共享方法，或从搜索中打开旧卡并手动确认分类。旧卡不会自动改成方法。</p><button type="button" class="button primary" data-workspace-action="new-method">新建方法</button></div>`);  if (selected && ui.methodFitId !== selected.id) {
     fitMethodGraph();
     if ($(".graph-scroll")?.clientWidth) ui.methodFitId = selected.id;
   }
@@ -1854,14 +1866,14 @@ function renderStageLine(current) {
     memberships.forEach((membership, row) => {
       const point = { x, y: 216 + row * 108 }; paperPositions.set(`${item.id}:${membership.fromId}`, point);
       branches += `<path class="timeline-membership" d="M ${x + 200} 142 V ${point.y - 15} H ${point.x + 90} V ${point.y}"/>`;
-      nodes += timelineNode({ ...point, width: 180, title: paper(membership.fromId).title, subtitle: `${paper(membership.fromId).year || tr("年份未知")} · ${paperInstitution(paper(membership.fromId)) || tr("关联论文")}`, detail: [displayAuthors(paper(membership.fromId)), paperInstitution(paper(membership.fromId))].filter(Boolean).join(" · "), action: "timeline-paper", id: item.id, paperId: membership.fromId, selected: !ui.stageInspect && ui.selectedPaperId === membership.fromId, kind: "paper" });
+      nodes += timelineNode({ ...point, width: 180, title: paper(membership.fromId).title, subtitle: isPaperSource(paper(membership.fromId)) ? `${paper(membership.fromId).year || tr("年份未知")} · ${paperInstitution(paper(membership.fromId)) || tr("关联论文")}` : sourceMetadata(paper(membership.fromId)), detail: [displayAuthors(paper(membership.fromId)), paperInstitution(paper(membership.fromId))].filter(Boolean).join(" · "), action: "timeline-paper", id: item.id, paperId: membership.fromId, selected: !ui.stageInspect && ui.selectedPaperId === membership.fromId, kind: "paper" });
     });
     localMethods.forEach((id, row) => {
       const point = { x: x + 230, y: 216 + row * 108 }; methodPositions.set(`${item.id}:${id}`, point);
       const relation = refs.find(({ connection }) => connection.toId === id).connection.relation;
       methodsMarkup += timelineNode({ ...point, width: 180, title: idea(id).title, subtitle: `${tr(labels.paper[relation])} · ${tr("共享方法")}`, detail: tr("单击查看，双击进入思想图"), action: "timeline-method", id, stageId: item.id, selected: ui.methodInspect?.ideaId === id && ui.methodInspect?.stageId === item.id, kind: "method", relation });
     });
-    nodes += `<g class="timeline-node timeline-add" role="button" tabindex="0" aria-label="${tr("添加阶段论文")}" data-workspace-action="stage-papers" data-id="${esc(item.id)}"><text x="${x + 8}" y="185">${tr("＋ 论文")}</text></g><g class="timeline-node timeline-add" role="button" tabindex="0" aria-label="${tr("添加阶段方法")}" data-workspace-action="stage-methods" data-id="${esc(item.id)}"><text x="${x + 238}" y="185">${tr("＋ 方法")}${refs.length ? "" : ` · ${tr("未标注贡献")}`}</text></g>`;
+    nodes += `<g class="timeline-node timeline-add" role="button" tabindex="0" aria-label="${tr("添加阶段资料")}" data-workspace-action="stage-papers" data-id="${esc(item.id)}"><text x="${x + 8}" y="185">${tr("＋ 资料")}</text></g><g class="timeline-node timeline-add" role="button" tabindex="0" aria-label="${tr("添加阶段方法")}" data-workspace-action="stage-methods" data-id="${esc(item.id)}"><text x="${x + 238}" y="185">${tr("＋ 方法")}${refs.length ? "" : ` · ${tr("未标注贡献")}`}</text></g>`;
   });
   const pairCounts = new Map();
   layout.contributions.forEach(({ membership, connection }) => {
@@ -1997,32 +2009,87 @@ function stageContributionChoices(stageId) {
 function stageEditor(item, current, index) {
   const key = `stage:${item.id}`, edit = draftValues(key, item), memberships = stagePaperEdges(item.id), refs = stageContributions(item.id);
   const methodPaper = memberships.some((member) => member.fromId === ui.stageMethodPaperId) ? paper(ui.stageMethodPaperId) : null;
-  return `<section class="stage-panel"><div class="inspector-section-head"><span class="eyebrow">${index + 1} · ${tr("阶段顺序")}</span><div class="stage-actions"><button type="button" class="button quiet" data-workspace-action="move-stage" data-id="${esc(item.id)}" data-offset="-1" ${index === 0 ? "disabled" : ""}>上移</button><button type="button" class="button quiet" data-workspace-action="move-stage" data-id="${esc(item.id)}" data-offset="1" ${index === current.stageIds.length - 1 ? "disabled" : ""}>下移</button><button type="button" class="button quiet" data-workspace-action="detach-stage" data-id="${esc(item.id)}">移出本线</button></div></div><h2 data-user-content>${esc(item.title)}</h2><form class="workspace-form" data-workspace-form="stage" data-workspace-draft="${esc(key)}" data-id="${esc(item.id)}"><label>阶段名称<input name="title" maxlength="120" value="${esc(edit.title)}" required></label>${stageDateField(edit.date)}<label>本阶段贡献<textarea name="summary" maxlength="4000" rows="3">${esc(edit.summary || "")}</textarea></label><button type="submit" class="button secondary">保存阶段</button></form><h3>阶段论文</h3>${memberships.map((membership) => `<div class="stage-paper-row"><button type="button" class="button quiet" data-action="select-paper" data-id="${esc(membership.fromId)}" data-user-content>${esc(paper(membership.fromId).title)}</button><button type="button" class="mini-action" data-workspace-action="remove-stage-paper" data-id="${esc(item.id)}" data-paper-id="${esc(membership.fromId)}">移出阶段</button></div>`).join("") || `<p class="field-help">此阶段还没有论文，可以直接添加。</p>`}<button type="button" class="button secondary" data-workspace-action="stage-papers" data-id="${esc(item.id)}">＋ 论文</button><h3>明确标注的方法贡献</h3>${refs.map(({ membership, connection }) => `<div class="stage-contribution-row"><button type="button" class="button quiet" data-workspace-action="timeline-method" data-id="${esc(connection.toId)}" data-stage-id="${esc(item.id)}"><span data-user-content>${esc(paper(connection.fromId).title)} · ${tr(labels.paper[connection.relation])} · ${esc(idea(connection.toId).title)}</span></button><button type="button" class="mini-action" data-workspace-action="remove-contribution" data-id="${esc(membership.id)}" data-edge-id="${esc(connection.id)}">移出贡献展示</button></div>`).join("") || `<p class="field-help">尚无明确方法贡献；不会从阶段摘要或全部论文关系自动推断。</p>`}${stageContributionChoices(item.id)}<button type="button" class="button secondary" data-workspace-action="stage-methods" data-id="${esc(item.id)}">＋ 方法</button>${methodPaper ? `<h3>${tr("为成员论文标注方法")}</h3><p data-user-content>${esc(methodPaper.title)}</p>${paperMethodForm(methodPaper, item.id)}` : ""}<button type="button" class="button secondary" data-workspace-action="read-stage" data-id="${esc(item.id)}">开始阶段阅读</button>${sessionHistory(item.id, "stage")}</section>`;
+  return `<section class="stage-panel"><div class="inspector-section-head"><span class="eyebrow">${index + 1} · ${tr("阶段顺序")}</span><div class="stage-actions"><button type="button" class="button quiet" data-workspace-action="move-stage" data-id="${esc(item.id)}" data-offset="-1" ${index === 0 ? "disabled" : ""}>上移</button><button type="button" class="button quiet" data-workspace-action="move-stage" data-id="${esc(item.id)}" data-offset="1" ${index === current.stageIds.length - 1 ? "disabled" : ""}>下移</button><button type="button" class="button quiet" data-workspace-action="detach-stage" data-id="${esc(item.id)}">移出本线</button></div></div><h2 data-user-content>${esc(item.title)}</h2><form class="workspace-form" data-workspace-form="stage" data-workspace-draft="${esc(key)}" data-id="${esc(item.id)}"><label>阶段名称<input name="title" maxlength="120" value="${esc(edit.title)}" required></label>${stageDateField(edit.date)}<label>本阶段贡献<textarea name="summary" maxlength="4000" rows="3">${esc(edit.summary || "")}</textarea></label><button type="submit" class="button secondary">保存阶段</button></form><h3>阶段资料</h3>${memberships.map((membership) => `<div class="stage-paper-row"><button type="button" class="button quiet" data-action="select-paper" data-id="${esc(membership.fromId)}" >${sourceBadge(paper(membership.fromId))}<span data-user-content>${esc(paper(membership.fromId).title)}</span></button><button type="button" class="mini-action" data-workspace-action="remove-stage-paper" data-id="${esc(item.id)}" data-paper-id="${esc(membership.fromId)}">移出阶段</button></div>`).join("") || `<p class="field-help">此阶段还没有资料，可以直接添加。</p>`}<button type="button" class="button secondary" data-workspace-action="stage-papers" data-id="${esc(item.id)}">＋ 资料</button><h3>明确标注的方法贡献</h3>${refs.map(({ membership, connection }) => `<div class="stage-contribution-row"><button type="button" class="button quiet" data-workspace-action="timeline-method" data-id="${esc(connection.toId)}" data-stage-id="${esc(item.id)}"><span data-user-content>${esc(paper(connection.fromId).title)} · ${tr(labels.paper[connection.relation])} · ${esc(idea(connection.toId).title)}</span></button><button type="button" class="mini-action" data-workspace-action="remove-contribution" data-id="${esc(membership.id)}" data-edge-id="${esc(connection.id)}">移出贡献展示</button></div>`).join("") || `<p class="field-help">尚无明确方法贡献；不会从阶段摘要或全部论文关系自动推断。</p>`}${stageContributionChoices(item.id)}<button type="button" class="button secondary" data-workspace-action="stage-methods" data-id="${esc(item.id)}">＋ 方法</button>${methodPaper ? `<h3>${tr("为成员资料标注方法")}</h3><p data-user-content>${esc(methodPaper.title)}</p>${paperMethodForm(methodPaper, item.id)}` : ""}<button type="button" class="button secondary" data-workspace-action="read-stage" data-id="${esc(item.id)}">开始阶段阅读</button>${sessionHistory(item.id, "stage")}</section>`;
 }
 function renderStageInspector() {
   const current = line(ui.selectedLineId), target = stage(ui.selectedStageId);
   if (!current || current.kind !== "model_family") return;
   $("#inspector").innerHTML = `<button type="button" class="button quiet paper-inspector-close" data-action="close-paper-inspector">关闭详情 ×</button>` + (ui.newStage ? newStageEditor(current) : target ? stageEditor(target, current, current.stageIds.indexOf(target.id)) : "");
 }
+function pickerSourceDraftKey(context = ui.paperPicker) { return `stage-source:${context.id}:${context.sourceType || "paper"}`; }
 function paperPickerResults(query, context = ui.paperPicker) {
-  const memberIds = context?.kind === "stage-method" ? new Set(stagePaperEdges(context.id).map((membership) => membership.fromId)) : null;
+  const type = context?.sourceType || "paper", typed = ["stage", "stage-method"].includes(context?.kind);
+  const memberIds = context?.kind === "stage-method" && type === "paper" ? new Set(stagePaperEdges(context.id).map((membership) => membership.fromId)) : null;
   const existing = context?.kind === "stage" ? new Set(stagePaperEdges(context.id).map((membership) => membership.fromId)) : new Set();
   const terms = normalized(query).split(/\s+/).filter(Boolean);
   return state.papers.filter((item) => {
-    const metadata = normalized([item.title, item.authors, item.doi, paperInstitution(item)].join(" "));
-    return terms.every((term) => metadata.includes(term) || normalized(item.year) === term);
+    const metadata = normalized([item.title, item.authors, item.doi, paperInstitution(item), item.url, item.summary].join(" "));
+    return (!typed || sourceType(item) === type) && terms.every((term) => metadata.includes(term) || normalized(item.year) === term);
   }).filter((item) => (!memberIds || memberIds.has(item.id)) && !existing.has(item.id)).slice(0, 12);
+}
+function renderPickerSourceControls() {
+  const context = ui.paperPicker; if (!context) return;
+  const typed = ["stage", "stage-method"].includes(context.kind), type = context.sourceType || "paper";
+  const tabs = $("#picker-source-tabs"); tabs.hidden = !typed;
+  tabs.innerHTML = typed ? ["paper", "webpage", "model"].map((value) => `<button type="button" class="choice-button" data-workspace-action="picker-source-type" data-id="${value}" aria-pressed="${value === type}">${sourceLabel({ sourceType: value })}</button>`).join("") : "";
+  $("#picker-search-label").textContent = tr(typed ? "搜索已有同类资料" : "搜索库内资料");
+  const edit = typed ? draftValues(pickerSourceDraftKey(context)) : {};
+  $("#picker-source-editor").innerHTML = typed && type !== "paper" ? `<h3>${tr("新建资料并加入阶段")}</h3><form class="workspace-form" data-workspace-form="source-create" data-workspace-draft="${esc(pickerSourceDraftKey(context))}" data-id="${esc(context.id)}" data-source-type="${type}">${sourceFields(edit, type)}<button type="submit" class="button primary">${tr("新建并加入阶段")}</button></form>` : "";
+  localize(tabs); localize($("#picker-source-editor"));
 }
 function renderPaperPickerResults() {
   const context = ui.paperPicker; if (!context) return;
   const items = paperPickerResults($("#picker-paper-query").value);
-  $("#picker-paper-results").innerHTML = items.length ? items.map((item) => `<div class="picker-paper-row"><div><strong data-user-content>${esc(item.title)}</strong><small data-user-content>${esc([displayAuthors(item), item.year, paperInstitution(item)].filter(Boolean).join(" · "))}</small></div><button type="button" class="button secondary" data-workspace-action="pick-paper" data-id="${esc(item.id)}">${tr(context.kind === "stage" ? "添加" : "选择")}</button></div>`).join("") : `<p class="field-help">没有匹配的论文。可以更换关键词；阶段方法只能选择已加入阶段的论文。</p>`;
+  $("#picker-paper-results").innerHTML = items.length ? items.map((item) => `<div class="picker-paper-row"><div>${sourceBadge(item)}<strong data-user-content>${esc(item.title)}</strong><small data-user-content>${esc(sourceMetadata(item))}</small></div><button type="button" class="button secondary" data-workspace-action="pick-paper" data-id="${esc(item.id)}">${tr(context.kind === "stage" ? "添加" : "选择")}</button></div>`).join("") : `<p class="field-help">${tr("没有匹配的资料。可以更换关键词或新建网页、模型资料。")}</p>`;
   localize($("#picker-paper-results"));
 }
 function openPaperPicker(kind, id) {
-  ui.paperPicker = { kind, id }; $("#picker-paper-query").value = "";
-  $("#picker-paper-title").textContent = tr(kind === "stage" ? "搜索并添加阶段论文" : kind === "stage-method" ? "选择阶段内的成员论文" : "搜索关联此方法的论文");
-  $("#picker-method-editor").innerHTML = ""; renderPaperPickerResults(); openDialog("#paper-picker-dialog"); $("#picker-paper-query").focus();
+  ui.paperPicker = { kind, id, sourceType: "paper", lineId: ui.selectedLineId };
+  $("#picker-paper-query").value = ["stage", "stage-method"].includes(kind) ? readDraft(pickerSourceDraftKey())?.query || "" : "";
+  $("#picker-paper-title").textContent = tr(kind === "stage" ? "搜索并添加阶段资料" : kind === "stage-method" ? "选择阶段资料标注方法" : "搜索关联此方法的资料");
+  $("#picker-method-editor").innerHTML = ""; renderPickerSourceControls(); renderPaperPickerResults(); openDialog("#paper-picker-dialog"); $("#picker-paper-query").focus();
+}
+const sourceSaveRequests = new Set();
+async function submitSourceForm(form) {
+  const create = form.dataset.workspaceForm === "source-create", id = form.dataset.id, type = form.dataset.sourceType;
+  const requestKey = `${create ? "create" : "update"}:${id}:${type}`;
+  if (sourceSaveRequests.has(requestKey)) return;
+  sourceSaveRequests.add(requestKey); form.dataset.saving = "true";
+  const context = ui.paperPicker, picker = $("#paper-picker-dialog"), generation = picker.dataset.generation;
+  const selected = { paperId: ui.selectedPaperId, view: ui.view }, key = form.dataset.workspaceDraft;
+  try {
+    const values = Object.fromEntries(new FormData(form).entries());
+    const url = (values.url || "").trim();
+    if (!values.title.trim()) throw new Error("请输入资料名称。");
+    if ((type === "webpage" || url) && !/^https?:\/\/[^\s/]+/i.test(url)) throw new Error("请输入有效的 HTTP 或 HTTPS 资料链接。");
+    const snapshot = JSON.stringify(readDraft(key));
+    const payload = create ? { stageId: id, ...(context?.lineId ? { lineId: context.lineId } : {}), sourceType: type, title: values.title, url, summary: values.summary || "" } : { id, title: values.title, url, summary: values.summary || "", baseUpdatedAt: readDraft(key)?.baseUpdatedAt ?? paper(id)?.updatedAt ?? "" };
+    const save = async () => {
+      const data = await postJson("/api/action", { action: create ? "stage.add_source" : "source.update", payload });
+      state = data.state;
+      const active = create ? ui.paperPicker === context && picker.open && picker.dataset.generation === generation : ui.selectedPaperId === selected.paperId && ui.view === selected.view;
+      const currentDraft = readDraft(key);
+      if (JSON.stringify(currentDraft) === snapshot) forgetDraft(key);
+      else if (!create && currentDraft?.baseUpdatedAt === payload.baseUpdatedAt) {
+        writeDraft(key, { ...currentDraft, baseUpdatedAt: paper(id)?.updatedAt || "" });
+      }
+      if (create && active) {
+        clearMethodInspection(); ui.selectedStageId = id; ui.stageInspect = true; ui.newStage = false; ui.inspectorOpen = true;
+        if (context.kind === "stage-method") { ui.stageMethodPaperId = data.result.paperId; closeDialog(picker, generation); }
+      }
+      render(); noteLocalChange();
+      if (create && active && context.kind === "stage") { renderPickerSourceControls(); renderPaperPickerResults(); }
+      toast("已保存，关联内容保持同步。");
+    };
+    if (create) await queueContributionAction(save); else await save();
+  } catch (error) {
+    if (!create && /别的页面改过/.test(error.message)) {
+      try { state = await api("/api/state"); } catch { throw error; }
+      const draft = readDraft(key); if (draft) writeDraft(key, { ...draft, baseUpdatedAt: paper(id)?.updatedAt || "" });
+      render();
+    }
+    throw error;
+  } finally { sourceSaveRequests.delete(requestKey); delete form.dataset.saving; }
 }
 
 function methodMatchChoices(edit) {
@@ -2043,14 +2110,21 @@ function updateMethodChoices(form) {
 function paperMethodForm(item, stageId = "") {
   const draftKey = `paper-method:${item.id}${stageId ? `:${stageId}` : ""}`;
   const edit = draftValues(draftKey);
-  return `<form class="workspace-form" data-workspace-form="annotate-method" data-workspace-draft="${esc(draftKey)}" data-id="${esc(item.id)}" ${stageId ? `data-stage-id="${esc(stageId)}"` : ""}>${stageId ? `<p class="field-help"><span>${tr("保存后显示于阶段")}</span> · <strong data-user-content>${esc(stage(stageId)?.title)}</strong></p>` : ""}<label>搜索已有方法或输入新名称<input name="title" maxlength="120" value="${esc(edit.title || "")}" placeholder="例如：GRPO"></label><input type="hidden" name="ideaId" value="${esc(edit.ideaId || "")}"><input type="hidden" name="edgeId" value="${esc(edit.edgeId || "")}"><div class="method-choices">${methodMatchChoices(edit)}</div><div class="method-edges">${methodEdgeChoices(item, edit)}</div><label>关系依据<textarea name="note" maxlength="3000" rows="2">${esc(edit.note || "")}</textarea></label><label>原文位置链接<input name="sourceUrl" maxlength="1500" value="${esc(edit.sourceUrl || "")}"></label><p class="field-help">已有名称或别名会复用方法；新名称直接创建。请选择论文与方法的关系。</p><div class="direct-relations">${["proposes","improves","uses"].map((relation) => `<button type="submit" name="relation" value="${relation}" class="button secondary">${labels.paper[relation]}</button>`).join("")}</div></form>`;
+  return `<form class="workspace-form" data-workspace-form="annotate-method" data-workspace-draft="${esc(draftKey)}" data-id="${esc(item.id)}" ${stageId ? `data-stage-id="${esc(stageId)}"` : ""}>${stageId ? `<p class="field-help"><span>${tr("保存后显示于阶段")}</span> · <strong data-user-content>${esc(stage(stageId)?.title)}</strong></p>` : ""}<label>搜索已有方法或输入新名称<input name="title" maxlength="120" value="${esc(edit.title || "")}" placeholder="例如：GRPO"></label><input type="hidden" name="ideaId" value="${esc(edit.ideaId || "")}"><input type="hidden" name="edgeId" value="${esc(edit.edgeId || "")}"><div class="method-choices">${methodMatchChoices(edit)}</div><div class="method-edges">${methodEdgeChoices(item, edit)}</div><label>关系依据<textarea name="note" maxlength="3000" rows="2">${esc(edit.note || "")}</textarea></label><label>原文位置链接<input name="sourceUrl" maxlength="1500" value="${esc(edit.sourceUrl || "")}"></label><p class="field-help">${isPaperSource(item) ? tr("已有名称或别名会复用方法；新名称直接创建。请选择论文与方法的关系。") : tr("已有名称或别名会复用方法；新名称直接创建。请选择资料与方法的关系。")}</p><div class="direct-relations">${["proposes","improves","uses"].map((relation) => `<button type="submit" name="relation" value="${relation}" class="button secondary">${labels.paper[relation]}</button>`).join("")}</div></form>`;
 }
 function paperStageForm(item) {
   const paths = state.lines.filter((line) => line.kind === "model_family"), current = paths.find((path) => path.id === ui.selectedLineId);
   const saved = readDraft(`paper-stage:${item.id}`);
   const edit = saved ?? { lineId: current?.id || "", stageId: current?.stageIds?.includes(ui.selectedStageId) ? ui.selectedStageId : "" };
   const selectedLine = paths.find((path) => path.id === edit.lineId);
-  return `<form class="workspace-form" data-workspace-form="join-stage" data-workspace-draft="paper-stage:${esc(item.id)}" data-id="${esc(item.id)}"><label>选择演进线或新建<select name="lineId" data-direct-choice data-choice-search><option value="">＋ 新建演进线</option>${options(paths, edit.lineId)}</select></label><div class="creation-fields" data-create-line ${selectedLine ? "hidden" : ""}><label>新演进线名称<input name="lineTitle" maxlength="120" value="${esc(edit.lineTitle || "")}" placeholder="例如：DeepSeek 模型演进"></label></div><label>选择阶段或新建<select name="stageId" data-direct-choice data-choice-search><option value="">＋ 新增阶段</option>${options((selectedLine?.stageIds || []).map(stage).filter(Boolean), edit.stageId)}</select></label><div class="creation-fields" data-create-stage ${edit.stageId && selectedLine?.stageIds.includes(edit.stageId) ? "hidden" : ""}><label>新阶段名称<input name="stageTitle" maxlength="120" value="${esc(edit.stageTitle || "")}" placeholder="例如：R1 · 推理强化学习"></label>${stageDateField(edit.date, !(edit.stageId && selectedLine?.stageIds.includes(edit.stageId)))}<label>本阶段贡献<textarea name="summary" maxlength="4000" rows="2">${esc(edit.summary || "")}</textarea></label></div><button type="submit" class="button primary">保存论文阶段</button></form>`;
+  return `<form class="workspace-form" data-workspace-form="join-stage" data-workspace-draft="paper-stage:${esc(item.id)}" data-id="${esc(item.id)}"><label>选择演进线或新建<select name="lineId" data-direct-choice data-choice-search><option value="">＋ 新建演进线</option>${options(paths, edit.lineId)}</select></label><div class="creation-fields" data-create-line ${selectedLine ? "hidden" : ""}><label>新演进线名称<input name="lineTitle" maxlength="120" value="${esc(edit.lineTitle || "")}" placeholder="例如：DeepSeek 模型演进"></label></div><label>选择阶段或新建<select name="stageId" data-direct-choice data-choice-search><option value="">＋ 新增阶段</option>${options((selectedLine?.stageIds || []).map(stage).filter(Boolean), edit.stageId)}</select></label><div class="creation-fields" data-create-stage ${edit.stageId && selectedLine?.stageIds.includes(edit.stageId) ? "hidden" : ""}><label>新阶段名称<input name="stageTitle" maxlength="120" value="${esc(edit.stageTitle || "")}" placeholder="例如：R1 · 推理强化学习"></label>${stageDateField(edit.date, !(edit.stageId && selectedLine?.stageIds.includes(edit.stageId)))}<label>本阶段贡献<textarea name="summary" maxlength="4000" rows="2">${esc(edit.summary || "")}</textarea></label></div><button type="submit" class="button primary">${isPaperSource(item) ? tr("保存论文阶段") : tr("保存资料阶段")}</button></form>`;
+}
+function renderSourceInspector(item) {
+  const key = `source:${item.id}`, edit = draftValues(key, item);
+  $("#inspector").innerHTML = `<button type="button" class="button quiet paper-inspector-close" data-action="close-paper-inspector">关闭详情 ×</button><div class="inspector-top"><span class="eyebrow">SOURCE</span>${sourceBadge(item)}</div><h2 class="inspector-title" data-user-content>${esc(item.title)}</h2>${item.url ? `<a class="button secondary full" href="${safeHref(item.url)}" target="_blank" rel="noopener noreferrer">${tr("打开资料链接")} ↗</a>` : ""}<form class="workspace-form" data-workspace-form="source-update" data-workspace-draft="${esc(key)}" data-id="${esc(item.id)}" data-source-type="${esc(sourceType(item))}">${sourceFields(edit, sourceType(item))}<button type="submit" class="button primary">${tr("保存资料")}</button></form><div class="paper-bridge"></div>`;
+}
+function sourceFields(edit, type) {
+  return `<label>${tr("资料名称")}<input name="title" maxlength="300" value="${esc(edit.title || "")}" required></label><label>${tr("资料链接")}<input name="url" type="url" maxlength="1500" pattern="https?://.+" value="${esc(edit.url || "")}" ${type === "webpage" ? "required" : ""} placeholder="https://…"></label><label>${tr("资料简介")}<textarea name="summary" maxlength="4000" rows="3">${esc(edit.summary || "")}</textarea></label>`;
 }
 function paperAnnotationStageId(item) {
   const current = line(ui.selectedLineId), target = stage(ui.selectedStageId);
@@ -2058,14 +2132,14 @@ function paperAnnotationStageId(item) {
 }
 function renderPaperInspector(item) {
   if (!item) return;
-  renderMapInspector(item);
+  if (isPaperSource(item)) renderMapInspector(item); else renderSourceInspector(item);
   const container = $("#inspector"), bridge = container.querySelector?.(".paper-bridge");
-  const content = `<section class="inspector-section paper-workspace"><h3>方法关系</h3>${paperIdeaEdges(item.id).filter((connection) => idea(connection.toId)?.entityType === "method").map((connection) => editableEdge(connection)).join("") || `<p class="field-help">尚无方法关系。可以直接关联已有方法或创建新方法。</p>`}${paperMethodForm(item, paperAnnotationStageId(item))}</section>${paperIdeaEdges(item.id).some((edge) => idea(edge.toId)?.entityType !== "method") ? `<section class="inspector-section"><h3>其他思想卡（保留原分类）</h3>${paperIdeaEdges(item.id).filter((edge) => idea(edge.toId)?.entityType !== "method").map((edge) => relationRow(edge, "idea", idea(edge.toId))).join("")}</section>` : ""}<section class="inspector-section paper-workspace"><h3>演进阶段</h3>${state.lines.filter((path) => path.kind === "model_family").flatMap((path) => (path.stageIds || []).filter((id) => stagePaperEdges(id).some((edge) => edge.fromId === item.id)).map((id) => `<div class="stage-membership"><button type="button" class="button quiet" data-workspace-action="method-stage" data-id="${esc(id)}" data-line-id="${esc(path.id)}"><span data-user-content>${esc(path.title)} · ${esc(stage(id)?.title)}</span></button><button type="button" class="mini-action" data-workspace-action="remove-stage-paper" data-id="${esc(id)}" data-paper-id="${esc(item.id)}">移出阶段</button></div>`)).join("")}${paperStageForm(item)}</section><div class="paper-meta">${item.doi ? `<p data-user-content>DOI · ${esc(item.doi)}</p>` : ""}</div>`;
+  const content = `<section class="inspector-section paper-workspace"><h3>方法关系</h3>${paperIdeaEdges(item.id).filter((connection) => idea(connection.toId)?.entityType === "method").map((connection) => editableEdge(connection)).join("") || `<p class="field-help">尚无方法关系。可以直接关联已有方法或创建新方法。</p>`}${paperMethodForm(item, paperAnnotationStageId(item))}</section>${paperIdeaEdges(item.id).some((edge) => idea(edge.toId)?.entityType !== "method") ? `<section class="inspector-section"><h3>其他思想卡（保留原分类）</h3>${paperIdeaEdges(item.id).filter((edge) => idea(edge.toId)?.entityType !== "method").map((edge) => relationRow(edge, "idea", idea(edge.toId))).join("")}</section>` : ""}<section class="inspector-section paper-workspace"><h3>演进阶段</h3>${state.lines.filter((path) => path.kind === "model_family").flatMap((path) => (path.stageIds || []).filter((id) => stagePaperEdges(id).some((edge) => edge.fromId === item.id)).map((id) => `<div class="stage-membership"><button type="button" class="button quiet" data-workspace-action="method-stage" data-id="${esc(id)}" data-line-id="${esc(path.id)}"><span data-user-content>${esc(path.title)} · ${esc(stage(id)?.title)}</span></button><button type="button" class="mini-action" data-workspace-action="remove-stage-paper" data-id="${esc(id)}" data-paper-id="${esc(item.id)}">移出阶段</button></div>`)).join("")}${paperStageForm(item)}</section><div class="paper-meta">${isPaperSource(item) && item.doi ? `<p data-user-content>DOI · ${esc(item.doi)}</p>` : ""}</div>`;
   // Preserve the citation inspector's original evidence sections, replacing only its bridge.
   if (bridge) bridge.outerHTML = content;
   else container.innerHTML += content;
-  if (item.zoteroKey) container.innerHTML += `<section class="inspector-section"><h3>Zotero 批注</h3><button type="button" class="button quiet" data-action="load-annotations">读取</button>${ui.annotationPaperId === item.id ? (ui.annotations || []).map((annotation, index) => `<div class="annotation"><p data-user-content>${esc(annotation.text || annotation.comment || "")}</p><button type="button" class="button quiet" data-action="annotation-create" data-index="${index}">从批注新建卡片</button><button type="button" class="button quiet" data-action="annotation-link" data-index="${index}">关联已有卡</button></div>`).join("") : ""}</section>`;
-  container.innerHTML += `<button type="button" class="button danger" data-action="delete-paper" data-id="${esc(item.id)}">删除这篇论文</button>`;
+  if (isPaperSource(item) && item.zoteroKey) container.innerHTML += `<section class="inspector-section"><h3>Zotero 批注</h3><button type="button" class="button quiet" data-action="load-annotations">读取</button>${ui.annotationPaperId === item.id ? (ui.annotations || []).map((annotation, index) => `<div class="annotation"><p data-user-content>${esc(annotation.text || annotation.comment || "")}</p><button type="button" class="button quiet" data-action="annotation-create" data-index="${index}">从批注新建卡片</button><button type="button" class="button quiet" data-action="annotation-link" data-index="${index}">关联已有卡</button></div>`).join("") : ""}</section>`;
+  container.innerHTML += `<button type="button" class="button danger" data-action="delete-paper" data-id="${esc(item.id)}">${isPaperSource(item) ? tr("删除这篇论文") : tr("删除这项资料")}</button>`;
 }
 function openStageSession(id) {
   const target = stage(id); if (!target) return;
@@ -2081,6 +2155,7 @@ function openStageSession(id) {
   updateClock(); ui.timer = setInterval(updateClock, 1000); openDialog("#session-dialog");
 }
 async function submitWorkspaceForm(form, submitter) {
+  if (["source-create", "source-update"].includes(form.dataset.workspaceForm)) return submitSourceForm(form);
   if (form.dataset.saving) return;
   const picker = $("#paper-picker-dialog"), pickerWasOpen = picker?.open, pickerGeneration = picker?.dataset.generation;
   form.dataset.saving = "true";
@@ -2123,7 +2198,10 @@ document.addEventListener("input", (event) => {
     updateMethodChoices(form);
   }
   if (form?.dataset.workspaceDraft) workspaceDraft(form);
-  if (event.target.id === "picker-paper-query") renderPaperPickerResults();
+  if (event.target.id === "picker-paper-query") {
+    if (["stage", "stage-method"].includes(ui.paperPicker?.kind)) { const key = pickerSourceDraftKey(); writeDraft(key, { ...readDraft(key), query: event.target.value }); }
+    renderPaperPickerResults();
+  }
   if (event.target.id === "method-search") {
     ui.methodQuery = event.target.value;
     $("#method-results").innerHTML = methodChoices(ui.methodQuery).map((item) => `<button type="button" class="card-tab" data-action="paper-view-idea" data-id="${esc(item.id)}" data-user-content>${esc(item.title)}</button>`).join("");
@@ -2188,11 +2266,17 @@ document.addEventListener("click", async (event) => {
       const members = stagePaperEdges(id);
       if (members.length === 1) { ui.stageMethodPaperId = members[0].fromId; renderInspector(); localize($("#inspector")); }
       else if (members.length) openPaperPicker("stage-method", id);
-      else { openPaperPicker("stage", id); toast("先添加阶段论文，再为它标注方法贡献。"); }
+      else { openPaperPicker("stage", id); toast("先添加阶段资料，再为它标注方法贡献。"); }
+    }
+    else if (action === "picker-source-type") {
+      const context = ui.paperPicker; if (!context || !["stage", "stage-method"].includes(context.kind) || !["paper", "webpage", "model"].includes(id)) return;
+      ui.paperPicker = { ...context, sourceType: id };
+      $("#picker-paper-query").value = readDraft(pickerSourceDraftKey())?.query || "";
+      renderPickerSourceControls(); renderPaperPickerResults();
     }
     else if (action === "pick-paper") {
       const context = ui.paperPicker;
-      if (context?.kind === "stage") {
+      if (context?.kind === "stage" || (context?.kind === "stage-method" && !stagePaperEdges(context.id).some((member) => member.fromId === id))) {
         if (button.dataset.saving) return;
         button.dataset.saving = "true"; button.disabled = true;
         const picker = $("#paper-picker-dialog"), generation = picker.dataset.generation;
@@ -2204,7 +2288,8 @@ document.addEventListener("click", async (event) => {
             const active = ui.paperPicker === context && picker.open && picker.dataset.generation === generation;
             if (active) { ui.stageInspect = true; ui.newStage = false; ui.selectedStageId = context.id; ui.inspectorOpen = true; }
             render(); noteLocalChange();
-            if (active) renderPaperPickerResults();
+            if (active && context.kind === "stage-method") { ui.stageMethodPaperId = id; selectTimelineStage(context.id); closeDialog(picker, generation); }
+            else if (active) renderPaperPickerResults();
           });
         } finally { delete button.dataset.saving; button.disabled = false; }
       } else if (context?.kind === "stage-method") {

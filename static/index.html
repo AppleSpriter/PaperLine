@@ -54,9 +54,11 @@
 
   <dialog id="paper-picker-dialog" class="modal wide-modal">
     <div class="modal-top"><h2 id="picker-paper-title">搜索论文</h2><button type="button" class="close-button" data-action="close-dialog" aria-label="关闭">×</button></div>
-    <label>搜索库内论文<input id="picker-paper-query" type="search" placeholder="标题、作者、年份、机构或 DOI"></label>
+    <div id="picker-source-tabs" class="choice-group" hidden></div>
+    <label><span id="picker-search-label">搜索库内论文</span><input id="picker-paper-query" type="search" placeholder="标题、作者、年份、机构或 DOI"></label>
     <p class="field-help">显示最多 12 条匹配结果。</p>
     <div id="picker-paper-results" aria-live="polite"></div>
+    <div id="picker-source-editor"></div>
     <div id="picker-method-editor"></div>
     <div class="form-actions"><button type="button" class="button primary" data-action="close-dialog">完成</button></div>
   </dialog>

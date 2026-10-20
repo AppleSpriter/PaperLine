@@ -2,13 +2,53 @@
 from __future__ import annotations
 
 import copy
+import ipaddress
 import re
 import unicodedata
+import urllib.parse
 from typing import Any
 
 ENTITY_TYPES = {"method", "concept", "question", "unclassified"}
 ACTIONS = {"paper.annotate_method", "paper.add_to_stage", "stage.create", "stage.update",
-           "line.attach_stage", "line.detach_stage", "line.move_stage", "stage.remove_paper", "stage.add_contribution", "session.create"}
+           "line.attach_stage", "line.detach_stage", "line.move_stage", "stage.remove_paper", "stage.add_contribution",
+           "stage.add_source", "source.update", "session.create"}
+
+
+def validate_source_url(value: str, source_type: str) -> None:
+    if (not isinstance(value, str) or len(value) > 1500
+            or any(unicodedata.category(char) == "Cc" for char in urllib.parse.unquote(value))):
+        raise ValueError("来源链接无效。")
+    if not value and source_type == "model":
+        return
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        host = parsed.hostname
+        _ = parsed.port  # Access validates malformed/out-of-range ports.
+        if (parsed.scheme not in {"http", "https"} or not host or parsed.username is not None
+                or parsed.password is not None or "\\" in value or any(char.isspace() for char in value)):
+            raise ValueError
+        try:
+            ipaddress.ip_address(host)
+        except ValueError:
+            labels = host.rstrip(".").encode("idna").decode("ascii").split(".")
+            if len(host) > 253 or any(not re.fullmatch(r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?", label) for label in labels):
+                raise ValueError
+    except (ValueError, UnicodeError):
+        raise ValueError("来源链接必须是有效且不含账号密码的 HTTP(S) 地址。") from None
+
+
+def validate_source_fields(source: dict[str, Any]) -> None:
+    source_type = source.get("sourceType", "paper")
+    if not isinstance(source_type, str) or source_type not in {"paper", "webpage", "model"}:
+        raise ValueError("来源类型无效。")
+    if source_type == "paper":
+        return
+    if any(source.get(name) for name in ("zoteroKey", "zoteroUrl", "referenceAnalysis")):
+        raise ValueError("网页或模型来源不能包含 Zotero 身份信息。")
+    if (not isinstance(source.get("title"), str) or not source["title"].strip() or len(source["title"]) > 300
+            or not isinstance(source.get("summary", ""), str) or len(source.get("summary", "")) > 4000):
+        raise ValueError("来源名称或摘要无效。")
+    validate_source_url(source.get("url", ""), source_type)
 
 
 def upgrade_v1(data: dict[str, Any]) -> dict[str, Any]:
@@ -41,6 +81,8 @@ def validate(state: dict[str, Any]) -> None:
     entity_ids = [item["id"] for name in ("papers", "ideas", "stages", "lines") for item in state[name]]
     if len(set(entity_ids)) != len(entity_ids):
         raise ValueError("不同实体不能使用相同编号。")
+    for paper in state["papers"]:
+        validate_source_fields(paper)
     for name in ("papers", "ideas", "stages", "lines"):
         for item in state[name]:
             if (not isinstance(item.get("title"), str) or not item["title"].strip()
@@ -160,6 +202,48 @@ def apply_action(state: dict[str, Any], action: str, payload: dict[str, Any], co
 def _apply(state, action, payload, c):
     field = c.field
     find = c.find
+    if action in {"stage.add_source", "source.update"}:
+        source = None
+        if action == "source.update":
+            if set(payload) - {"id", "title", "url", "summary", "baseUpdatedAt"}:
+                raise ValueError("来源编辑不能修改类型、编号或同步身份。")
+            source = find(state, "papers", field(payload, "id", 40, True))
+            if source.get("sourceType") not in {"webpage", "model"} or source.get("zoteroKey"):
+                raise ValueError("只能编辑本地网页或模型来源。")
+            validate_source_fields(source)
+            seen = field(payload, "baseUpdatedAt", 40)
+            if seen and seen != source.get("updatedAt", ""):
+                raise ValueError("这个来源已在别的页面改过。刷新后再保存，你写的内容会作为草稿保留。")
+        source_type = source["sourceType"] if source is not None else field(payload, "sourceType", 20, True)
+        if source_type not in {"webpage", "model"}:
+            raise ValueError("请选择网页或模型来源。")
+        validate_source_url(payload.get("url", ""), source_type)
+        values = {"sourceType": source_type, "title": field(payload, "title", 300, True),
+                  "url": field(payload, "url", 1500), "summary": field(payload, "summary", 4000)}
+        if action == "source.update":
+            source.update(values, updatedAt=c.utc_now())
+            return {"paperId": source["id"]}
+        stage_id = find(state, "stages", field(payload, "stageId", 40, True))["id"]
+        line_id = field(payload, "lineId", 40)
+        if line_id:
+            line = find(state, "lines", line_id)
+            if line.get("kind") != "model_family" or stage_id not in line.get("stageIds", []):
+                raise ValueError("目标阶段不属于所选演进线。")
+        matches = [paper for paper in state["papers"] if not paper.get("zoteroKey")
+                   and paper.get("sourceType") == source_type and normalized(paper["title"]) == normalized(values["title"])
+                   and paper.get("url", "") == values["url"]]
+        if len(matches) > 1:
+            raise ValueError("存在多个相同来源，请明确选择已有来源。")
+        reused = bool(matches)
+        if reused:
+            source = matches[0]
+        else:
+            paper_id = c.apply_action(state, "paper.create", {"title": values["title"]})["paperId"]
+            source = find(state, "papers", paper_id)
+            source.update(values)
+        result = _apply(state, "paper.add_to_stage", {"paperId": source["id"], "stageId": stage_id}, c)
+        result.update(lineId=line_id, reused=reused)
+        return result
     if action == "stage.create":
         title = field(payload, "title", 120, True)
         date = field(payload, "date", 10)

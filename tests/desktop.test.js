@@ -237,3 +237,25 @@ test("stage draft migration preserves titles and summaries when partially typed 
   } });
   assert.deepEqual(Object.keys(rejected.drafts), []);
 });
+
+test("migration retains typed source and stage picker drafts while rejecting orphan and forged fields", () => {
+  const h = harness();
+  const backup = { ...data(), version: 2, stages: [{ id: 's1' }], papers: [{ id: 'p1' }, { id: 'web1', sourceType: 'webpage' }, { id: 'model1', sourceType: 'model' }], lines: [{ id: 'l1', kind: 'model_family', stageIds: ['s1'], ideaIds: ['i1'] }] };
+  const drafts = {
+    'paperline-draft:source:web1': { title: 'Edited page', url: 'https://example.com', summary: 'Draft', baseUpdatedAt: 'old' },
+    'paperline-draft:source:model1': { title: 'Model', url: '', summary: 'Model draft' },
+    'paperline-draft:stage-source:s1:paper': { query: 'Paper query' },
+    'paperline-draft:stage-source:s1:webpage': { title: 'Page', url: 'https://example.com', summary: 'New page', query: 'Search' },
+    'paperline-draft:stage-source:s1:model': { title: 'Model', url: '', summary: 'New model', query: '' },
+    'paperline-draft:source:p1': { title: 'Do not turn papers into local sources' },
+    'paperline-draft:source:missing': { title: 'Orphan' },
+    'paperline-draft:stage-source:missing:model': { title: 'Orphan stage' },
+    'paperline-draft:stage-source:s1:forged': { title: 'Unknown type' },
+    'paperline-draft:stage-source:s1:webpage:extra': { title: 'Invalid key' },
+  };
+  const result = h.bridge.unpack({ format: 'paperline-desktop-migration', version: 1, backup, drafts });
+  assert.deepEqual(Object.keys(result.drafts), Object.keys(drafts).slice(0, 5));
+  assert.deepEqual(json(result.drafts['paperline-draft:source:web1']), drafts['paperline-draft:source:web1']);
+  const forged = h.bridge.unpack({ format: 'paperline-desktop-migration', version: 1, backup, drafts: { 'paperline-draft:source:web1': { title: 'X', sourceType: 'model' }, 'paperline-draft:stage-source:s1:model': { title: 'x'.repeat(301) } } });
+  assert.deepEqual(json(forged.drafts), {});
+});

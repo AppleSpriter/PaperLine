@@ -570,3 +570,8 @@ kbd { display: inline-block; min-width: 21px; padding: 2px 6px; border: 1px soli
 .stage-calendar-day[aria-pressed="true"] { background: var(--green); color: white; }
 .stage-calendar-actions { display: flex; justify-content: space-between; gap: 2px; margin-top: 8px; }
 .stage-calendar-actions .button { padding: 5px; font-size: 12px; }
+
+.source-badge { display: inline-block; flex: 0 0 auto; margin-right: 7px; padding: 2px 7px; border-radius: 6px; background: var(--green-soft, #edf3e9); color: var(--green-dark); font-size: 11px; font-weight: 600; vertical-align: middle; }
+#picker-source-tabs { margin-bottom: 16px; }
+#picker-source-editor:not(:empty) { border-top: 1px solid var(--line); margin-top: 20px; padding-top: 12px; }
+#picker-source-editor .workspace-form { margin-top: 10px; }
