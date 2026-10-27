@@ -47,9 +47,9 @@ macOS 构建会把 Rust 二进制中的本机构建路径匿名化为通用 `/bu
 
 开发部署可执行 `python3 scripts/install-macos.py /Volumes/PaperLine/PaperLine.app`。脚本先检查 bundle ID 与签名，要求正常退出正在运行的 PaperLine，把旧正式应用压缩到 `.desktop-build/install-backups/`，再原子替换 `/Applications/PaperLine.app`；替换后签名验证失败会回滚。它不修改 AppSupport、Keychain、Obsidian 或旧浏览器启动器。恢复时先用 `ditto -x -k <备份.zip> <临时目录>` 解压旧 bundle，再用同一安装脚本替换正式应用。
 
-## Windows 桌面版（0.3.0）
+## Windows 桌面版（0.3.13）
 
-Mac 与 Windows 版本独立：Mac 为 0.3.13，Windows 为 0.3.0。Windows 同步使用时间线、模型阶段、全局方法与论文搜索的共享实现；其有效版本由 `src-tauri/tauri.windows.conf.json` 指定。
+Mac 与 Windows 版本独立：Mac 为 0.3.13，Windows 为 0.3.13。Windows 同步使用时间线、模型阶段、全局方法与论文搜索的共享实现；其有效版本由 `src-tauri/tauri.windows.conf.json` 指定。
 
 目标为 Windows 10/11 x64。安装器采用 NSIS，为当前用户安装，无需单独安装 Python 或 Node.js；可选择简体中文或英文。缺少 WebView2 时，安装器会下载微软官方 bootstrapper，因此首次安装可能需要联网。应用数据存放在 `%APPDATA%\io.github.applespriter.paperline\`，与安装目录分开。旧版 JSON 数据可以从“设置”导入。
 
@@ -60,11 +60,11 @@ npm ci
 npm run desktop:windows:package
 ```
 
-需要指定解释器时，先设置 `$env:PAPERLINE_PYTHON = "C:\path\to\python.exe"`。打包脚本使用独立的 `.desktop-tools/venv-windows`，生成 `paperline-backend-x86_64-pc-windows-msvc.exe` 并通过标准输入输出测试；不会打包真实 `data/`、账户信息或日志。输出为 `dist/windows/0.3.0/PaperLine_0.3.0_x64-setup.exe` 与 `SHA256SUMS.txt`。`npm run desktop:windows:dev` 启动开发版。Windows 后端必须在 Windows 编译，不能用 macOS 的 PyInstaller 产物替代。
+需要指定解释器时，先设置 `$env:PAPERLINE_PYTHON = "C:\path\to\python.exe"`。打包脚本使用独立的 `.desktop-tools/venv-windows`，生成 `paperline-backend-x86_64-pc-windows-msvc.exe` 并通过标准输入输出测试；不会打包真实 `data/`、账户信息或日志。输出为 `dist/windows/0.3.13/PaperLine_0.3.13_x64-setup.exe` 与 `SHA256SUMS.txt`。`npm run desktop:windows:dev` 启动开发版。Windows 后端必须在 Windows 编译，不能用 macOS 的 PyInstaller 产物替代。
 
-`.github/workflows/windows-desktop.yml` 运行 Node、Python、Rust 测试，构建前后审计 Python archive 与原生可执行文件中的私有构建路径，再打包 NSIS。在专属 CI runner 中，安装验收先将已发布的 0.2.1 安装到含中文和空格的路径，在默认 `%APPDATA%` 目录创建合成 v1 笔记，再升级到 0.3.0。检查覆盖只读 v1 迁移、手工方法与阶段贡献、阅读记录、重装和卸载后数据字节一致、真实窗口、正常退出及所属子进程清理。合成默认数据目录在开始时必须不存在，并在结束后清理；不使用真实 Zotero/WebDAV 凭据。通过后上传安装器及校验和作为 GitHub Actions artifact，不发布 Release。
+`.github/workflows/windows-desktop.yml` 运行 Node、Python、Rust 测试，构建前后审计 Python archive 与原生可执行文件中的私有构建路径，再打包 NSIS。在专属 CI runner 中，安装验收先将已发布的 0.2.1 安装到含中文和空格的路径，在默认 `%APPDATA%` 目录创建合成 v1 笔记，再升级到 0.3.13。检查覆盖只读 v1 迁移、手工方法与阶段贡献、阅读记录、重装和卸载后数据字节一致、真实窗口、正常退出及所属子进程清理。合成默认数据目录在开始时必须不存在，并在结束后清理；不使用真实 Zotero/WebDAV 凭据。通过后上传安装器及校验和作为 GitHub Actions artifact，不发布 Release。
 
-Windows 0.3.0 的安装器须通过本轮 workflow 后才算完成验证。[历史 0.2.1 CI](https://github.com/AppleSpriter/PaperLine/actions/runs/38501863099) 不代表 0.3.0 已通过。草稿序列化与恢复由 JavaScript 测试覆盖；原生 WebView 草稿跨升级保留、Zotero、目录选择、备份保存及完整界面仍需 Windows 实机验收。现阶段没有 Windows 代码签名证书，未签名安装器可能触发 SmartScreen。设计依据：[Tauri 官方 Windows installer 文档](https://v2.tauri.app/distribute/windows-installer/)。
+Windows 0.3.13 的安装器须通过本轮 workflow 后才算完成验证。[历史 0.2.1 CI](https://github.com/AppleSpriter/PaperLine/actions/runs/38501863099) 不代表 0.3.13 已通过。草稿序列化与恢复由 JavaScript 测试覆盖；原生 WebView 草稿跨升级保留、Zotero、目录选择、备份保存及完整界面仍需 Windows 实机验收。现阶段没有 Windows 代码签名证书，未签名安装器可能触发 SmartScreen。设计依据：[Tauri 官方 Windows installer 文档](https://v2.tauri.app/distribute/windows-installer/)。
 
 ## 浏览器版运行
 
