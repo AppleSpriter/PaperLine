@@ -62,7 +62,7 @@ function createApp(storage = new Map(), clock = { now: 0 }, bootFetch = () => ne
     PaperLineI18n: { translate: (value) => value, apply() {} },
   });
   vm.runInContext(appSource, context);
-  const app = vm.runInContext(`({ ui, openAttachPicker, renderAttachPicker, attachPickerIdea, ideaCardMarkup, ideaCardsMarkup, sourceType, isPaperSource, paperSources, renderPickerSourceControls, openPaperPicker, renderPaperPickerResults, submitSourceForm, inspectMethod, inspectedMethod, syncTimelineMethodSelection, openDialog, openIdeaDialog, ideaDialogDraftKey, captureDialogDraft, openSession, closeDialog, stopTimer, sessionSeconds, captureIdeaDraft, searchIdeas, selectIdea, latestSession, readingRecap, sessionHistory,
+  const app = vm.runInContext(`({ ui, methodOccurrenceLinks, methodLinkCandidates, methodCandidatesMarkup, compareMarkup, addToCompare, saveCompareNote, dismissLink, openAttachPicker, renderAttachPicker, attachPickerIdea, ideaCardMarkup, ideaCardsMarkup, sourceType, isPaperSource, paperSources, renderPickerSourceControls, openPaperPicker, renderPaperPickerResults, submitSourceForm, inspectMethod, inspectedMethod, syncTimelineMethodSelection, openDialog, openIdeaDialog, ideaDialogDraftKey, captureDialogDraft, openSession, closeDialog, stopTimer, sessionSeconds, captureIdeaDraft, searchIdeas, selectIdea, latestSession, readingRecap, sessionHistory,
     revealStageCalendar, validateStageDateInput, stageDateParts, stageDateISO, stageDateToday, stageDateField, stageCalendarMarkup, updateStageDate, closeStageCalendar, newStageEditor, stageEditor, enhanceDirectChoices, paperStageForm, paperMethodForm, methodStageOccurrences, methodMatchChoices, paperRelationRank, editableEdge, timelineLayout, stageContributions, selectTimelineStage, renderStageInspector, rememberTimelineViewport, restoreTimelineViewport, paperPickerResults, removeStageContribution, queueContributionAction, fitMethodGraph, switchWorkspaceView, methods, methodChoices, paperIdeaEdges, stagePaperEdges, workspaceDraft, submitWorkspaceForm, renderMethodsWorkspace, renderStageLine, renderPaperInspector, openStageSession, sessionDraftKey, graphZoomHint, setPageZoom, zoomGraph, zoomGraphWheel, graphMarkup, orderedMapPapers, paperMapLayout, updatePaperSelection, syncInspectorLayout, syncSelection, graphNode, displayAuthors, paperInstitution, libraryCitationCounts, rankedRecommendations, renderRecommendations, openPaperLineDialog, paperReadStatus, mapPapers, validCitations, renderPaperMap, renderPaperMapResults, renderMapInspector, renderZoteroSync, applyZoteroSync, refreshZoteroSync, startZoteroSync, markPaper, renderIdeaInspector, renderInspector, renderIdeas, renderPaperResults, searchResult, searchPapers, searchLines, searchEverything, markIdea, toast, readDraft, act, refreshState, formatDuration, readingTotal, renderOutline, setState(value) { state = value; } })`, context);
   app.setState(fixture());
   app.ui.selectedLineId = "l1";
@@ -2488,4 +2488,71 @@ test("method content search retains name priority and updates results without re
   assert.equal(h.app.ui.selectedIdeaId, "i1"); assert.equal(h.app.readDraft("idea:i1").summary, "Unsaved right note");
   assert.match(h.node("#method-results").innerHTML, /data-id="i1"/); assert.doesNotMatch(h.node("#method-results").innerHTML, /data-id="exact"/);
   assert.match(main, /搜索名称、别名、定义、机制与思考/); assert.match(main, /placeholder="多词可用空格或逗号分隔"/);
+});
+
+test("related-method suggestions explain shared papers, citations, shared links and similar text, and skip linked or dismissed pairs", () => {
+  const h = createApp();
+  h.app.setState({
+    settings: { language: "zh" }, lines: [], sessions: [],
+    ideas: [
+      { id: "a", title: "GRPO", entityType: "method", kind: "concept", status: "inbox", summary: "组内相对奖励归一化的策略优化", mechanism: "", thoughts: "" },
+      { id: "b", title: "PPO", entityType: "method", kind: "concept", status: "inbox", summary: "带裁剪的策略优化", mechanism: "", thoughts: "" },
+      { id: "c", title: "RLOO", entityType: "method", kind: "concept", status: "inbox", summary: "留一基线", mechanism: "", thoughts: "" },
+      { id: "d", title: "DPO", entityType: "method", kind: "concept", status: "inbox", summary: "偏好直接优化", mechanism: "", thoughts: "" },
+      { id: "e", title: "KL", entityType: "concept", kind: "concept", status: "inbox", summary: "散度", mechanism: "", thoughts: "" },
+      { id: "f", title: "Linked", entityType: "method", kind: "concept", status: "inbox", summary: "", mechanism: "", thoughts: "" },
+    ],
+    papers: [{ id: "p1", title: "DeepSeekMath" }, { id: "p2", title: "RLOO paper" }, { id: "p3", title: "Cited" }],
+    citations: [{ fromId: "p3", toId: "p1" }],
+    edges: [
+      { id: "1", fromType: "paper", fromId: "p1", toId: "a", relation: "proposes" },
+      { id: "2", fromType: "paper", fromId: "p1", toId: "b", relation: "uses" },
+      { id: "3", fromType: "paper", fromId: "p3", toId: "c", relation: "proposes" },
+      { id: "4", fromType: "idea", fromId: "a", toId: "e", relation: "depends" },
+      { id: "5", fromType: "idea", fromId: "d", toId: "e", relation: "depends" },
+      { id: "6", fromType: "idea", fromId: "a", toId: "f", relation: "extends" },
+    ],
+  });
+  const found = Object.fromEntries(h.app.methodLinkCandidates("a").map((item) => [item.item.id, item.reasons.join(" | ")]));
+  assert.match(found.b, /同被论文使用：DeepSeekMath/);
+  assert.match(found.b, /描述相近/);
+  assert.match(found.c, /来源论文存在引用/);
+  assert.match(found.d, /通过共同关联：KL/);
+  assert.equal(found.e, undefined);
+  assert.equal(found.f, undefined);
+  h.app.dismissLink("a", "b");
+  assert.equal(h.app.methodLinkCandidates("a").some((item) => item.item.id === "b"), false);
+  assert.match(h.app.methodCandidatesMarkup("a"), /data-workspace-action="accept-link" data-id="c"/);
+});
+
+test("method comparison shows fields side by side and saves the difference as one compares edge", async () => {
+  const h = createApp();
+  const data = fixture();
+  data.ideas.forEach((item) => { item.entityType = "method"; });
+  data.ideas[0].mechanism = "<script>";
+  h.app.setState(data);
+  h.app.addToCompare("i1"); h.app.addToCompare("i2"); h.app.addToCompare("i1");
+  const markup = h.app.compareMarkup();
+  assert.match(markup, /&lt;script&gt;/);
+  assert.match(markup, /data-workspace-form="compare-note"/);
+  const calls = [];
+  h.context.fetch = async (url, options) => { calls.push(JSON.parse(options.body)); return { ok: true, json: async () => ({ state: { ...data, edges: [...data.edges, { id: "c1", fromType: "idea", fromId: "i1", toId: "i2", relation: "compares", note: "差异" }] }, result: {} }) }; };
+  await h.app.saveCompareNote({ elements: { note: { value: "差异" } } });
+  assert.deepEqual(calls[0].action, "edge.create");
+  assert.equal(calls[0].payload.relation, "compares");
+  assert.match(h.app.compareMarkup(), /更新对比说明/);
+});
+
+test("method occurrences are ordered by stage date and show flow across model lines", () => {
+  const h = createApp();
+  h.app.setState({ settings: { language: "zh" }, sessions: [], ideas: [{ id: "m", title: "M", entityType: "method", kind: "concept", status: "inbox" }],
+    papers: [{ id: "p1", title: "P1" }, { id: "p2", title: "P2" }],
+    stages: [{ id: "s1", title: "Late", date: "2024-05-01" }, { id: "s2", title: "Early", date: "2023-01-01" }],
+    lines: [{ id: "A", title: "LineA", kind: "model_family", ideaIds: [], stageIds: ["s1"] }, { id: "B", title: "LineB", kind: "model_family", ideaIds: [], stageIds: ["s2"] }],
+    edges: [{ id: "c1", fromType: "paper", fromId: "p1", toId: "m", relation: "proposes" }, { id: "c2", fromType: "paper", fromId: "p2", toId: "m", relation: "uses" },
+      { id: "d1", fromType: "paper", fromId: "p1", toType: "stage", toId: "s1", relation: "documents", contributionRefs: ["c1"] },
+      { id: "d2", fromType: "paper", fromId: "p2", toType: "stage", toId: "s2", relation: "documents", contributionRefs: ["c2"] }] });
+  const markup = h.app.methodOccurrenceLinks(h.app.methodStageOccurrences("m"));
+  assert.match(markup, /跨演进线流动（2）/);
+  assert.ok(markup.indexOf("LineB") < markup.indexOf("LineA"));
 });

@@ -493,3 +493,14 @@ class HttpTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SynthesisRelationTests(unittest.TestCase):
+    def test_new_idea_relations_are_accepted_and_unknown_rejected(self):
+        state = app.default_state()
+        state["ideas"] += [{"id": "a", "title": "A"}, {"id": "b", "title": "B"}]
+        for relation in ("same_as", "alternative", "combines"):
+            app.add_edge(state, "idea", "a", "b", relation)
+        self.assertEqual([edge["relation"] for edge in state["edges"]], ["same_as", "alternative", "combines"])
+        with self.assertRaises(ValueError):
+            app.add_edge(state, "idea", "a", "b", "bogus")

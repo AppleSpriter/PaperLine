@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "version": "0.3.13",
+  "version": "0.3.14",
   "build": {
     "beforeBuildCommand": "npm run desktop:windows:backend",
     "beforeDevCommand": "npm run desktop:windows:backend"

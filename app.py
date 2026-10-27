@@ -53,7 +53,7 @@ ZOTERO_BASE = "http://127.0.0.1:23119/api/users/0"
 IDEA_KINDS = {"concept", "innovation", "question"}
 IDEA_STATUSES = {"inbox", "learning", "understood"}
 PAPER_RELATIONS = {"proposes", "uses", "improves", "questions"}
-IDEA_RELATIONS = {"extends", "depends", "compares", "improves"}
+IDEA_RELATIONS = {"extends", "depends", "compares", "improves", "same_as", "alternative", "combines"}
 
 
 def utc_now() -> str:
@@ -999,7 +999,7 @@ def render_note(state: dict[str, Any], kind: str, item: dict[str, Any]) -> str:
                 lines.append(f"- {wiki('stage', find(state, 'stages', stage_id))}")
         related = [edge for edge in state["edges"] if edge["fromType"] == "idea" and (edge["fromId"] == item["id"] or edge["toId"] == item["id"])]
         lines += ["", f"## {tr('思想关联', 'Idea connections')}", ""]
-        relation_labels = {"extends": tr("引申", "Extends"), "depends": tr("依赖", "Depends on"), "compares": tr("对比", "Compares"), "improves": tr("改进", "Improves")}
+        relation_labels = {"extends": tr("引申", "Extends"), "depends": tr("依赖", "Depends on"), "compares": tr("对比", "Compares"), "improves": tr("改进", "Improves"), "same_as": tr("本质相同", "Same idea as"), "alternative": tr("替代方案", "Alternative to"), "combines": tr("组合使用", "Combined with")}
         for edge in related:
             other_id = edge["toId"] if edge["fromId"] == item["id"] else edge["fromId"]
             other = find(state, "ideas", other_id)

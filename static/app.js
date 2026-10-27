@@ -6,7 +6,7 @@ const labels = {
   kind: { concept: "基础概念", innovation: "创新思想", question: "引申问题" },
   status: { inbox: "待学", learning: "正在学", understood: "已理解" },
   paper: { proposes: "提出", uses: "使用", improves: "改进", questions: "质疑" },
-  idea: { extends: "引申", depends: "依赖", compares: "对比", improves: "改进" },
+  idea: { extends: "引申", depends: "依赖", compares: "对比", improves: "改进", same_as: "本质相同", alternative: "替代方案", combines: "组合使用" },
 };
 
 let state = null;
@@ -1882,8 +1882,8 @@ function renderMethodsWorkspace() {
   const choices = methodChoices(ui.methodQuery);
   let selected = idea(ui.selectedIdeaId);
   if (!selected) { selected = choices[0]; if (selected) { ui.selectedIdeaId = selected.id; if (!ui.selectedPaperId) ui.inspectorOpen = true; } }
-  const header = pageHeader("METHODS / 思想图", "共享方法，连接不同论文", "同一个方法可被不同论文提出、使用或改进；这些关系独立于引用与阅读顺序。", `<button type="button" class="button primary" data-workspace-action="new-method">＋ 新建方法</button>${selected ? `<button type="button" class="button secondary" data-workspace-action="edit-method">编辑当前方法</button>` : ""}<button type="button" class="button secondary" data-action="new-paper">＋ 添加论文</button>`, false);
-  $("#main-view").innerHTML = header + `<label class="idea-search-label">搜索名称、别名、定义、机制与思考<input id="method-search" type="search" value="${esc(ui.methodQuery)}" placeholder="多词可用空格或逗号分隔"></label><div id="method-results" class="idea-catalog method-catalog">${ideaCardsMarkup(choices, selected?.id, "paper-view-idea")}</div>` + (selected ? `${selected.entityType !== "method" ? `<p class="workspace-note">${!state.lines.some((path) => path.ideaIds.includes(selected.id)) ? tr("这张思想卡还没有加入阅读线。") : ""}${tr("这张旧卡尚未明确分类为方法。可在右侧修改内容分类；旧笔记与关系保留。")}</p>` : ""}${graphMarkup(selected)}${methodOccurrenceLinks(methodStageOccurrences(selected.id))}<section class="method-relations"><h2>${state.edges.some((connection) => connection.fromType === "paper" && connection.toId === selected.id && !isPaperSource(paper(connection.fromId))) ? tr("资料与此方法的关系") : tr("论文与此方法的关系")}</h2>${state.edges.filter((item) => item.fromType === "paper" && item.toType !== "stage" && item.toId === selected.id).sort(comparePaperRelations).map((item) => editableEdge(item, true)).join("") || `<p class="field-help">还没有关联论文。选中右侧论文，直接添加已有方法或新方法。</p>`}</section>` : `<div class="empty-main compact"><h2>还没有明确分类的方法</h2><p>新建共享方法，或从搜索中打开旧卡并手动确认分类。旧卡不会自动改成方法。</p><button type="button" class="button primary" data-workspace-action="new-method">新建方法</button></div>`);
+  const header = pageHeader("METHODS / 思想图", "共享方法，连接不同论文", "同一个方法可被不同论文提出、使用或改进；这些关系独立于引用与阅读顺序。", `<button type="button" class="button primary" data-workspace-action="new-method">＋ 新建方法</button>${selected ? `<button type="button" class="button secondary" data-workspace-action="edit-method">编辑当前方法</button><button type="button" class="button quiet" data-workspace-action="compare-add" data-id="${esc(selected.id)}">加入对比</button>` : ""}<button type="button" class="button secondary" data-action="new-paper">＋ 添加论文</button>`, false);
+  $("#main-view").innerHTML = header + `<label class="idea-search-label">搜索名称、别名、定义、机制与思考<input id="method-search" type="search" value="${esc(ui.methodQuery)}" placeholder="多词可用空格或逗号分隔"></label><div id="method-results" class="idea-catalog method-catalog">${ideaCardsMarkup(choices, selected?.id, "paper-view-idea")}</div>` + (selected ? `${selected.entityType !== "method" ? `<p class="workspace-note">${!state.lines.some((path) => path.ideaIds.includes(selected.id)) ? tr("这张思想卡还没有加入阅读线。") : ""}${tr("这张旧卡尚未明确分类为方法。可在右侧修改内容分类；旧笔记与关系保留。")}</p>` : ""}${graphMarkup(selected)}${methodOccurrenceLinks(methodStageOccurrences(selected.id))}${compareMarkup()}${methodCandidatesMarkup(selected.id)}<section class="method-relations"><h2>${state.edges.some((connection) => connection.fromType === "paper" && connection.toId === selected.id && !isPaperSource(paper(connection.fromId))) ? tr("资料与此方法的关系") : tr("论文与此方法的关系")}</h2>${state.edges.filter((item) => item.fromType === "paper" && item.toType !== "stage" && item.toId === selected.id).sort(comparePaperRelations).map((item) => editableEdge(item, true)).join("") || `<p class="field-help">还没有关联论文。选中右侧论文，直接添加已有方法或新方法。</p>`}</section>` : `<div class="empty-main compact"><h2>还没有明确分类的方法</h2><p>新建共享方法，或从搜索中打开旧卡并手动确认分类。旧卡不会自动改成方法。</p><button type="button" class="button primary" data-workspace-action="new-method">新建方法</button></div>`);
   if (focusedCardId) [...document.querySelectorAll("#method-results .idea-catalog-card")].find((node) => node.dataset.id === focusedCardId)?.focus({ preventScroll: true });
   $("#method-results").scrollTop = catalogScroll;
   if (selected && ui.methodFitId !== selected.id) {
@@ -1917,7 +1917,137 @@ function methodStageOccurrences(methodId) {
   }));
 }
 function methodOccurrenceLinks(occurrences) {
-  return occurrences.length ? `<section class="method-occurrences"><h3>出现于这些阶段</h3><div class="choice-group">${occurrences.map((item) => `<button type="button" class="choice-button" data-workspace-action="method-stage" data-id="${esc(item.stageId)}" data-line-id="${esc(item.lineId)}"><span data-user-content>${esc(item.lineTitle)} · ${esc(item.stageTitle)}</span></button>`).join("")}</div></section>` : "";
+  const dated = occurrences.map((item) => ({ ...item, date: stage(item.stageId)?.date || "" })).sort((a, b) => (a.date || "9999").localeCompare(b.date || "9999"));
+  const lines = new Set(dated.map((item) => item.lineId)).size;
+  const flow = lines > 1 ? `<p class="field-help">${tr("跨演进线流动")}（${lines}）：${dated.map((item) => `<span data-user-content>${esc(item.date || "?")} ${esc(item.lineTitle)}</span>`).join(" → ")}</p>` : "";
+  occurrences = dated;
+  return occurrences.length ? `<section class="method-occurrences"><h3>出现于这些阶段</h3>${flow}<div class="choice-group">${occurrences.map((item) => `<button type="button" class="choice-button" data-workspace-action="method-stage" data-id="${esc(item.stageId)}" data-line-id="${esc(item.lineId)}"><span data-user-content>${esc(item.lineTitle)} · ${esc(item.stageTitle)}</span></button>`).join("")}</div></section>` : "";
+}
+// 自动发现方法之间的隐含联系：只用已有数据推断候选，由用户确认后才写入关系。
+const DISMISSED_LINKS_KEY = "paperline.dismissedMethodLinks";
+function dismissedLinks() {
+  try { const value = JSON.parse(localStorage.getItem(DISMISSED_LINKS_KEY) || "[]"); return new Set(Array.isArray(value) ? value : []); } catch { return new Set(); }
+}
+function linkPairKey(a, b) { return [a, b].sort().join("|"); }
+function dismissLink(a, b) {
+  const all = dismissedLinks(); all.add(linkPairKey(a, b));
+  localStorage.setItem(DISMISSED_LINKS_KEY, JSON.stringify([...all]));
+}
+function ideaTokens(item) {
+  const text = normalized([item.title, ...(item.aliases || []), item.summary, item.mechanism, item.thoughts].join(" "));
+  const tokens = new Set();
+  for (const word of text.match(/[a-z0-9][a-z0-9\-]{1,}/g) || []) tokens.add(word);
+  for (const run of text.match(/[\u3400-\u9fff]+/g) || []) for (let i = 0; i < run.length - 1; i += 1) tokens.add(run.slice(i, i + 2));
+  return tokens;
+}
+function ideaPaperIds(ideaId) {
+  return new Set(state.edges.filter((item) => item.fromType === "paper" && item.toType !== "stage" && item.toId === ideaId).map((item) => item.fromId));
+}
+function methodLinkCandidates(focusId, limit = 6) {
+  const focus = idea(focusId);
+  if (!focus) return [];
+  const pool = state.ideas.filter((item) => item.id !== focusId && item.entityType !== "question");
+  const ideaEdges = state.edges.filter((item) => item.fromType === "idea");
+  const neighbors = (id) => new Set(ideaEdges.flatMap((item) => item.fromId === id ? [item.toId] : item.toId === id ? [item.fromId] : []));
+  const direct = neighbors(focusId);
+  const dismissed = dismissedLinks();
+  const focusPapers = ideaPaperIds(focusId);
+  const citations = validCitations();
+  const tokenSets = new Map(pool.concat(focus).map((item) => [item.id, ideaTokens(item)]));
+  const docFreq = new Map();
+  tokenSets.forEach((tokens) => tokens.forEach((token) => docFreq.set(token, (docFreq.get(token) || 0) + 1)));
+  const total = tokenSets.size;
+  const weight = (token) => Math.log(1 + total / (docFreq.get(token) || 1));
+  const focusTokens = tokenSets.get(focusId);
+  const focusNorm = Math.sqrt([...focusTokens].reduce((sum, token) => sum + weight(token) ** 2, 0)) || 1;
+  const results = [];
+  for (const item of pool) {
+    if (direct.has(item.id) || dismissed.has(linkPairKey(focusId, item.id))) continue;
+    const reasons = [];
+    let score = 0;
+    const otherPapers = ideaPaperIds(item.id);
+    const shared = [...focusPapers].filter((id) => otherPapers.has(id));
+    if (shared.length) {
+      score += 3 * shared.length;
+      reasons.push(`${tr("同被论文使用")}：${shared.slice(0, 2).map((id) => truncate(paper(id)?.title || "", 28)).join("、")}${shared.length > 2 ? ` ${tr("等")} ${shared.length} ${tr("篇")}` : ""}`);
+    }
+    const cited = citations.filter((edgeItem) => (focusPapers.has(edgeItem.fromId) && otherPapers.has(edgeItem.toId)) || (focusPapers.has(edgeItem.toId) && otherPapers.has(edgeItem.fromId)))
+      .filter((edgeItem) => edgeItem.fromId !== edgeItem.toId);
+    if (cited.length) {
+      score += 2 * Math.min(cited.length, 3);
+      const first = cited[0];
+      reasons.push(`${tr("来源论文存在引用")}：${truncate(paper(first.fromId)?.title || "", 22)} ↔ ${truncate(paper(first.toId)?.title || "", 22)}`);
+    }
+    const via = [...neighbors(item.id)].filter((id) => direct.has(id));
+    if (via.length) {
+      score += 1.5 * via.length;
+      reasons.push(`${tr("通过共同关联")}：${via.slice(0, 2).map((id) => truncate(idea(id)?.title || "", 20)).join("、")}`);
+    }
+    const tokens = tokenSets.get(item.id);
+    const overlap = [...tokens].filter((token) => focusTokens.has(token));
+    if (overlap.length) {
+      const norm = Math.sqrt([...tokens].reduce((sum, token) => sum + weight(token) ** 2, 0)) || 1;
+      const similarity = overlap.reduce((sum, token) => sum + weight(token) ** 2, 0) / (focusNorm * norm);
+      if (similarity >= 0.12) {
+        score += 4 * similarity;
+        const words = overlap.filter((token) => docFreq.get(token) < total).sort((a, b) => weight(b) - weight(a)).slice(0, 4);
+        reasons.push(`${tr("描述相近")}（${Math.round(similarity * 100)}%）${words.length ? `：${words.join("、")}` : ""}`);
+      }
+    }
+    if (reasons.length) results.push({ item, score, reasons });
+  }
+  return results.sort((a, b) => b.score - a.score || String(a.item.title).localeCompare(String(b.item.title))).slice(0, limit);
+}
+function methodCandidatesMarkup(focusId) {
+  const candidates = methodLinkCandidates(focusId);
+  const body = candidates.length ? candidates.map(({ item, reasons }) => `<div class="link-candidate"><div class="link-candidate-head"><button type="button" class="text-action" data-action="paper-view-idea" data-id="${esc(item.id)}" data-user-content>${esc(item.title)}</button><span class="type-tag idea">${tr(({ method: "方法", concept: "概念" })[item.entityType] || "尚未分类")}</span></div><ul>${reasons.map((reason) => `<li data-user-content>${esc(reason)}</li>`).join("")}</ul><div class="link-candidate-actions"><button type="button" class="button quiet" data-workspace-action="accept-link" data-id="${esc(item.id)}">${tr("建立关系")}</button><button type="button" class="button quiet" data-workspace-action="compare-add" data-id="${esc(item.id)}">${tr("加入对比")}</button><button type="button" class="button quiet" data-workspace-action="dismiss-link" data-id="${esc(item.id)}">${tr("忽略")}</button></div></div>`).join("")
+    : `<p class="field-help">${tr("暂未发现候选。为方法补充论文、定义与机制后，这里会推荐可能相关的方法。")}</p>`;
+  return `<section class="link-candidates"><div class="section-title"><h2>${tr("可能相关的方法")}</h2><span class="field-help">${tr("依据共同论文、引用、共同关联与描述相似度推断，确认后才会保存。")}</span></div>${body}</section>`;
+}
+// 方法对比：并排查看 2–4 个方法，并把“异同”写成对比关系的说明。
+function compareIds() { ui.compareIds = (ui.compareIds || []).filter((id) => idea(id)); return ui.compareIds; }
+function addToCompare(id) {
+  const ids = compareIds();
+  if (ids.includes(id)) return;
+  if (ids.length >= 4) throw new Error(tr("最多同时对比 4 个方法。"));
+  ui.compareIds = [...ids, id];
+}
+function compareEdge(a, b) {
+  return state.edges.find((item) => item.fromType === "idea" && item.relation === "compares" && ((item.fromId === a && item.toId === b) || (item.fromId === b && item.toId === a)));
+}
+function compareMarkup() {
+  const items = compareIds().map(idea);
+  if (!items.length) return "";
+  const lineTitles = (item) => [...new Set(methodStageOccurrences(item.id).map((occurrence) => occurrence.lineTitle))].join("、");
+  const papers = (item) => [...ideaPaperIds(item.id)].map((id) => paper(id)?.title).filter(Boolean);
+  const rows = [
+    ["一句话理解", (item) => item.summary],
+    ["核心机制", (item) => item.mechanism],
+    ["我的思考", (item) => item.thoughts],
+    ["关联资料", (item) => { const list = papers(item); return list.length ? `${list.length}：${list.slice(0, 3).join("；")}${list.length > 3 ? "…" : ""}` : ""; }],
+    ["模型演进线", lineTitles],
+  ];
+  const head = `<tr><th></th>${items.map((item) => `<th><span data-user-content>${esc(item.title)}</span><button type="button" class="mini-action remove-action" data-workspace-action="compare-remove" data-id="${esc(item.id)}" aria-label="${tr("移出对比")}">×</button></th>`).join("")}</tr>`;
+  const body = rows.map(([label, value]) => `<tr><th>${tr(label)}</th>${items.map((item) => { const text = value(item); return `<td ${text ? "data-user-content" : ""}>${esc(text || "—")}</td>`; }).join("")}</tr>`).join("");
+  let note = "";
+  if (items.length === 2) {
+    const existing = compareEdge(items[0].id, items[1].id);
+    note = `<form class="compare-note" data-workspace-form="compare-note"><label>${tr("两者的异同与适用场景")}<textarea name="note" rows="3" maxlength="4000" placeholder="${tr("用一两句话写清区别：解决同一问题吗？代价和适用条件有什么不同？")}">${esc(existing?.note || "")}</textarea></label><button type="submit" class="button primary">${existing ? tr("更新对比说明") : tr("保存为对比关系")}</button></form>`;
+  } else if (items.length > 2) {
+    note = `<p class="field-help">${tr("选两个方法时，可以把异同保存为对比关系。")}</p>`;
+  } else {
+    note = `<p class="field-help">${tr("再加入至少一个方法即可并排对比。")}</p>`;
+  }
+  return `<section class="method-compare"><div class="section-title"><h2>${tr("方法对比")}</h2><button type="button" class="button quiet" data-workspace-action="compare-clear">${tr("清空对比")}</button></div><div class="compare-scroll"><table class="compare-table">${head}${body}</table></div>${note}</section>`;
+}
+async function saveCompareNote(form) {
+  const [a, b] = compareIds();
+  if (!a || !b) throw new Error(tr("请选择两个方法再保存。"));
+  const note = form.elements.note.value;
+  const existing = compareEdge(a, b);
+  if (existing) await act("edge.update", { id: existing.id, relation: "compares", note, sourceUrl: existing.sourceUrl || "" });
+  else await act("edge.create", { fromType: "idea", fromId: a, toId: b, relation: "compares", note, sourceUrl: "" });
+  toast(tr("对比说明已保存。"));
 }
 function timelineLayout(current) {
   const ordered = (current.stageIds || []).map(stage).filter(Boolean);
@@ -2327,7 +2457,7 @@ document.addEventListener("change", (event) => {
 document.addEventListener("submit", async (event) => {
   if (!event.target.dataset.workspaceForm) return;
   event.preventDefault();
-  try { await submitWorkspaceForm(event.target, event.submitter); } catch (error) { toast(error.message, true); }
+  try { if (event.target.dataset.workspaceForm === "compare-note") await saveCompareNote(event.target); else await submitWorkspaceForm(event.target, event.submitter); } catch (error) { toast(error.message, true); }
 });
 document.addEventListener("click", async (event) => {
   const button = event.target.closest?.("[data-workspace-action]"); if (!button) return;
@@ -2421,6 +2551,11 @@ document.addEventListener("click", async (event) => {
     }
     else if (action === "new-method") { openIdeaDialog(); $("#idea-entity-type").value = "method"; if (ui.methodQuery) $("#idea-title").value = ui.methodQuery; renderIdeaMatches(); localize($("#idea-dialog")); }
     else if (action === "fit-method") fitMethodGraph(true);
+    else if (action === "compare-add") { addToCompare(id); if (ui.selectedIdeaId && !compareIds().includes(ui.selectedIdeaId) && compareIds().length < 4) ui.compareIds = [ui.selectedIdeaId, ...compareIds()]; renderMethodsWorkspace(); localize($("#main-view")); }
+    else if (action === "compare-remove") { ui.compareIds = compareIds().filter((item) => item !== id); renderMethodsWorkspace(); localize($("#main-view")); }
+    else if (action === "compare-clear") { ui.compareIds = []; renderMethodsWorkspace(); localize($("#main-view")); }
+    else if (action === "dismiss-link") { dismissLink(ui.selectedIdeaId, id); renderMethodsWorkspace(); localize($("#main-view")); toast(tr("已忽略这条推荐。")); }
+    else if (action === "accept-link") { openRelation("idea", "idea", ui.selectedIdeaId); $("#relation-target").value = id; }
     else if (action === "edit-method") {
       if (!idea(ui.selectedIdeaId)) return;
       ui.selectedPaperId = ""; ui.stageInspect = false; ui.newStage = false; ui.methodInspect = null; ui.inspectorOpen = true;
