@@ -62,7 +62,7 @@ function createApp(storage = new Map(), clock = { now: 0 }, bootFetch = () => ne
     PaperLineI18n: { translate: (value) => value, apply() {} },
   });
   vm.runInContext(appSource, context);
-  const app = vm.runInContext(`({ ui, methodOccurrenceLinks, methodLinkCandidates, methodCandidatesMarkup, compareMarkup, addToCompare, saveCompareNote, dismissLink, openAttachPicker, renderAttachPicker, attachPickerIdea, ideaCardMarkup, ideaCardsMarkup, sourceType, isPaperSource, paperSources, renderPickerSourceControls, openPaperPicker, renderPaperPickerResults, submitSourceForm, inspectMethod, inspectedMethod, syncTimelineMethodSelection, openDialog, openIdeaDialog, ideaDialogDraftKey, captureDialogDraft, openSession, closeDialog, stopTimer, sessionSeconds, captureIdeaDraft, searchIdeas, selectIdea, latestSession, readingRecap, sessionHistory,
+  const app = vm.runInContext(`({ ui, methodWebLayout, methodWebMarkup, globalLinkSuggestions, methodOccurrenceLinks, methodLinkCandidates, methodCandidatesMarkup, compareMarkup, addToCompare, saveCompareNote, dismissLink, openAttachPicker, renderAttachPicker, attachPickerIdea, ideaCardMarkup, ideaCardsMarkup, sourceType, isPaperSource, paperSources, renderPickerSourceControls, openPaperPicker, renderPaperPickerResults, submitSourceForm, inspectMethod, inspectedMethod, syncTimelineMethodSelection, openDialog, openIdeaDialog, ideaDialogDraftKey, captureDialogDraft, openSession, closeDialog, stopTimer, sessionSeconds, captureIdeaDraft, searchIdeas, selectIdea, latestSession, readingRecap, sessionHistory,
     revealStageCalendar, validateStageDateInput, stageDateParts, stageDateISO, stageDateToday, stageDateField, stageCalendarMarkup, updateStageDate, closeStageCalendar, newStageEditor, stageEditor, enhanceDirectChoices, paperStageForm, paperMethodForm, methodStageOccurrences, methodMatchChoices, paperRelationRank, editableEdge, timelineLayout, stageContributions, selectTimelineStage, renderStageInspector, rememberTimelineViewport, restoreTimelineViewport, paperPickerResults, removeStageContribution, queueContributionAction, fitMethodGraph, switchWorkspaceView, methods, methodChoices, paperIdeaEdges, stagePaperEdges, workspaceDraft, submitWorkspaceForm, renderMethodsWorkspace, renderStageLine, renderPaperInspector, openStageSession, sessionDraftKey, graphZoomHint, setPageZoom, zoomGraph, zoomGraphWheel, graphMarkup, orderedMapPapers, paperMapLayout, updatePaperSelection, syncInspectorLayout, syncSelection, graphNode, displayAuthors, paperInstitution, libraryCitationCounts, rankedRecommendations, renderRecommendations, openPaperLineDialog, paperReadStatus, mapPapers, validCitations, renderPaperMap, renderPaperMapResults, renderMapInspector, renderZoteroSync, applyZoteroSync, refreshZoteroSync, startZoteroSync, markPaper, renderIdeaInspector, renderInspector, renderIdeas, renderPaperResults, searchResult, searchPapers, searchLines, searchEverything, markIdea, toast, readDraft, act, refreshState, formatDuration, readingTotal, renderOutline, setState(value) { state = value; } })`, context);
   app.setState(fixture());
   app.ui.selectedLineId = "l1";
@@ -990,7 +990,7 @@ test("idea graph and relationship cards consistently display proposes, improves,
   const graph = h.app.graphMarkup(data.ideas[0]);
   const nodes = [...graph.matchAll(/class="graph-node paper-node paper-role-(\w+)"[^>]*data-id="([^"]+)"/g)];
   assert.deepEqual(nodes.map((match) => [match[1], match[2]]), [["proposes", "p3"], ["improves", "p2"], ["uses", "p1"]]);
-  h.app.renderMethodsWorkspace();
+  h.app.ui.methodMode = "focus"; h.app.ui.methodTab = "papers"; h.app.renderMethodsWorkspace();
   const html = h.node("#main-view").innerHTML;
   assert.deepEqual([...html.matchAll(/class="editable-edge paper-role-(\w+)"/g)].map((match) => match[1]), ["proposes", "improves", "uses"]);
   for (const connection of data.edges.filter((item) => item.toId === "i1")) assert.match(h.app.editableEdge(connection), new RegExp(`data-id="${connection.id}"`));
@@ -2555,4 +2555,49 @@ test("method occurrences are ordered by stage date and show flow across model li
   const markup = h.app.methodOccurrenceLinks(h.app.methodStageOccurrences("m"));
   assert.match(markup, /跨演进线流动（2）/);
   assert.ok(markup.indexOf("LineB") < markup.indexOf("LineA"));
+});
+
+test("the method web shows every method with confirmed links and clickable suggested links on one screen", () => {
+  const h = createApp();
+  const idea = (id, summary) => ({ id, title: id, entityType: "method", kind: "concept", status: "inbox", summary, mechanism: "", thoughts: "" });
+  h.app.setState({ settings: { language: "zh" }, lines: [], sessions: [], stages: [], citations: [],
+    ideas: [idea("GRPO", "组内相对奖励"), idea("PPO", "裁剪策略"), idea("DPO", "偏好优化"), idea("Lonely", "")],
+    papers: [{ id: "p", title: "Paper" }],
+    edges: [{ id: "1", fromType: "paper", fromId: "p", toId: "GRPO", relation: "proposes" }, { id: "2", fromType: "paper", fromId: "p", toId: "PPO", relation: "uses" },
+      { id: "3", fromType: "idea", fromId: "GRPO", toId: "DPO", relation: "alternative" }] });
+  assert.equal(h.app.methodWebLayout().nodes.length, 3);
+  assert.equal(h.app.methodWebLayout().isolatedCount, 1);
+  h.app.ui.methodShowIsolated = true;
+  const layout = h.app.methodWebLayout();
+  assert.equal(layout.nodes.length, 4);
+  assert.equal(layout.relations.length, 1);
+  assert.ok(layout.isolatedLabelY > 0 && layout.positions.get("Lonely").y > layout.positions.get("GRPO").y);
+  assert.ok(layout.width <= 1300);
+  assert.deepEqual(Array.from(layout.suggestions, (item) => [item.fromId, item.toId].sort().join("|")), ["GRPO|PPO"]);
+  h.app.ui.selectedIdeaId = "GRPO";
+  const markup = h.app.methodWebMarkup();
+  assert.match(markup, /替代方案/);
+  assert.match(markup, /data-workspace-action="accept-pair"/);
+  assert.match(markup, /web-node method dim[^"]*" role="button" tabindex="0" data-action="paper-view-idea" data-id="Lonely"/);
+  h.app.ui.view = "graph"; h.app.renderMethodsWorkspace();
+  assert.match(h.node("#main-view").innerHTML, /class="method-web"/);
+  assert.match(h.node("#main-view").innerHTML, /id="method-results" class="idea-catalog method-catalog" hidden/);
+  h.app.ui.methodMode = "focus"; h.app.renderMethodsWorkspace();
+  assert.match(h.node("#main-view").innerHTML, /role="tablist"/);
+  assert.equal((h.node("#main-view").innerHTML.match(/class="method-tab-panel" role="tabpanel" >/g) || []).length, 1);
+});
+
+test("selecting a method pulls it and every linked or suggested method into the top cluster", () => {
+  const h = createApp();
+  const m = (id) => ({ id, title: id, entityType: "method", kind: "concept", status: "inbox", summary: "", mechanism: "", thoughts: "" });
+  const ideas = ["A", "B", "C", "D", "E", "F", "X"].map(m);
+  const link = (id, a, b) => ({ id, fromType: "idea", fromId: a, toId: b, relation: "improves" });
+  h.app.setState({ settings: { language: "zh" }, lines: [], sessions: [], stages: [], citations: [], papers: [], ideas,
+    edges: [link("1", "B", "C"), link("2", "C", "D"), link("3", "D", "E"), link("4", "E", "F"), link("5", "F", "A"), link("6", "X", "F")] });
+  h.app.ui.selectedIdeaId = "A";
+  const layout = h.app.methodWebLayout();
+  const y = (id) => layout.positions.get(id).y;
+  assert.equal(layout.focusCount, 3);
+  for (const id of ["B", "C", "D"]) for (const top of ["A", "F", "E", "X"]) assert.ok(y(top) < y(id), `${top} above ${id}`);
+  assert.ok(layout.relations.every((item) => layout.positions.has(item.fromId) && layout.positions.has(item.toId)));
 });

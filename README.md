@@ -4,7 +4,9 @@
 
 一个本地运行的论文学习工作台。以论文为证据维护**共享方法与概念**，用**模型家族演进线**组织独立阶段，并在阶段下记录论文与方法贡献；研究阅读线保留已有的知识与学习记录。
 
-## macOS 原生桌面版（0.3.14）
+## macOS 原生桌面版（0.3.15）
+
+0.3.15 把思想图改为“融会贯通全图”：像论文地图一样，一屏画出所有方法，实线为已确认关系，虚线为推荐联系，点虚线即可确认；选中方法时其余方法淡出。“聚焦当前方法”保留原关系图，下方的相关推荐、论文、阶段与流动、对比改为标签页，只展开一项，页面不再需要长距离滚动。方法目录在全图模式下收起，输入搜索时展开。有联系的方法按连通分组紧凑排布，尚无联系的方法默认收起，可点按钮展开；推荐计算结果会缓存，切换选中方法不再重算。
 
 0.3.14 在思想图中推荐“可能相关的方法”：依据同被论文使用、来源论文间引用、共同关联和描述相似度推断，并写明理由；可一键建立关系、加入对比或忽略（忽略记录仅保存在本机）。新增方法对比，可并排查看 2–4 个方法的理解、机制、思考、资料与演进线；选两个方法时可将异同保存为“对比”关系。思想关系新增“本质相同”“替代方案”“组合使用”；方法所在阶段按日期排序，出现在多条演进线时显示跨线流动顺序。使用新关系类型后，备份不能导入 Windows 0.3.13 等旧版本。无需数据迁移。
 
@@ -43,15 +45,15 @@ npm ci
 npm run desktop:package
 ```
 
-输出到 `dist/macos/0.3.14/`：`PaperLine_0.3.14_aarch64-apple-darwin.dmg` 和压缩的 `.app.zip`。不再保留可直接启动的版本目录 `.app`；构建目录的临时 bundle 在打包验证后清理。DMG 通过 `hdiutil` 无界面生成，包含应用与“应用程序”快捷方式。`npm run desktop:dev` 启动开发版。构建只打包 `static/` 与独立后端，不包含 `data/`、WebDAV 凭据或本地日志。首次构建会下载 Cargo 依赖与 PyInstaller。打包前会检查 Python 可执行文件与动态库的最低 macOS 版本；若高于 13.0 会终止构建。可以通过 `PAPERLINE_PYTHON=/path/to/python3.13 npm run desktop:package` 指定兼容的 Python；已有构建环境使用其他解释器时，须先重建 `.desktop-tools/venv`。当前默认使用本机 ad-hoc 签名并保留 Hardened Runtime；由于打包的 Python 动态库没有 Team ID，应用仅添加 `disable-library-validation` 例外（Tauri 对主程序与侧车共用同一 entitlement 文件）。打包脚本会再次运行已签名应用内的后端，检查启动、API 与退出；对外分发前需要 Developer ID 签名与 Apple 公证。
+输出到 `dist/macos/0.3.15/`：`PaperLine_0.3.15_aarch64-apple-darwin.dmg` 和压缩的 `.app.zip`。不再保留可直接启动的版本目录 `.app`；构建目录的临时 bundle 在打包验证后清理。DMG 通过 `hdiutil` 无界面生成，包含应用与“应用程序”快捷方式。`npm run desktop:dev` 启动开发版。构建只打包 `static/` 与独立后端，不包含 `data/`、WebDAV 凭据或本地日志。首次构建会下载 Cargo 依赖与 PyInstaller。打包前会检查 Python 可执行文件与动态库的最低 macOS 版本；若高于 13.0 会终止构建。可以通过 `PAPERLINE_PYTHON=/path/to/python3.13 npm run desktop:package` 指定兼容的 Python；已有构建环境使用其他解释器时，须先重建 `.desktop-tools/venv`。当前默认使用本机 ad-hoc 签名并保留 Hardened Runtime；由于打包的 Python 动态库没有 Team ID，应用仅添加 `disable-library-validation` 例外（Tauri 对主程序与侧车共用同一 entitlement 文件）。打包脚本会再次运行已签名应用内的后端，检查启动、API 与退出；对外分发前需要 Developer ID 签名与 Apple 公证。
 
 macOS 构建会把 Rust 二进制中的本机构建路径匿名化为通用 `/build` 前缀，并在打包前检查后端归档隐私。
 
 开发部署可执行 `python3 scripts/install-macos.py /Volumes/PaperLine/PaperLine.app`。脚本先检查 bundle ID 与签名，要求正常退出正在运行的 PaperLine，把旧正式应用压缩到 `.desktop-build/install-backups/`，再原子替换 `/Applications/PaperLine.app`；替换后签名验证失败会回滚。它不修改 AppSupport、Keychain、Obsidian 或旧浏览器启动器。恢复时先用 `ditto -x -k <备份.zip> <临时目录>` 解压旧 bundle，再用同一安装脚本替换正式应用。
 
-## Windows 桌面版（0.3.14）
+## Windows 桌面版（0.3.15）
 
-Mac 与 Windows 版本独立：Mac 为 0.3.14，Windows 为 0.3.14。Windows 同步使用时间线、模型阶段、全局方法与论文搜索的共享实现；其有效版本由 `src-tauri/tauri.windows.conf.json` 指定。
+Mac 与 Windows 版本独立：Mac 为 0.3.15，Windows 为 0.3.15。Windows 同步使用时间线、模型阶段、全局方法与论文搜索的共享实现；其有效版本由 `src-tauri/tauri.windows.conf.json` 指定。
 
 目标为 Windows 10/11 x64。安装器采用 NSIS，为当前用户安装，无需单独安装 Python 或 Node.js；可选择简体中文或英文。缺少 WebView2 时，安装器会下载微软官方 bootstrapper，因此首次安装可能需要联网。应用数据存放在 `%APPDATA%\io.github.applespriter.paperline\`，与安装目录分开。旧版 JSON 数据可以从“设置”导入。
 
@@ -62,11 +64,11 @@ npm ci
 npm run desktop:windows:package
 ```
 
-需要指定解释器时，先设置 `$env:PAPERLINE_PYTHON = "C:\path\to\python.exe"`。打包脚本使用独立的 `.desktop-tools/venv-windows`，生成 `paperline-backend-x86_64-pc-windows-msvc.exe` 并通过标准输入输出测试；不会打包真实 `data/`、账户信息或日志。输出为 `dist/windows/0.3.14/PaperLine_0.3.14_x64-setup.exe` 与 `SHA256SUMS.txt`。`npm run desktop:windows:dev` 启动开发版。Windows 后端必须在 Windows 编译，不能用 macOS 的 PyInstaller 产物替代。
+需要指定解释器时，先设置 `$env:PAPERLINE_PYTHON = "C:\path\to\python.exe"`。打包脚本使用独立的 `.desktop-tools/venv-windows`，生成 `paperline-backend-x86_64-pc-windows-msvc.exe` 并通过标准输入输出测试；不会打包真实 `data/`、账户信息或日志。输出为 `dist/windows/0.3.15/PaperLine_0.3.15_x64-setup.exe` 与 `SHA256SUMS.txt`。`npm run desktop:windows:dev` 启动开发版。Windows 后端必须在 Windows 编译，不能用 macOS 的 PyInstaller 产物替代。
 
-`.github/workflows/windows-desktop.yml` 运行 Node、Python、Rust 测试，构建前后审计 Python archive 与原生可执行文件中的私有构建路径，再打包 NSIS。在专属 CI runner 中，安装验收先将已发布的 0.2.1 安装到含中文和空格的路径，在默认 `%APPDATA%` 目录创建合成 v1 笔记，再升级到 0.3.14。检查覆盖只读 v1 迁移、手工方法与阶段贡献、阅读记录、重装和卸载后数据字节一致、真实窗口、正常退出及所属子进程清理。合成默认数据目录在开始时必须不存在，并在结束后清理；不使用真实 Zotero/WebDAV 凭据。通过后上传安装器及校验和作为 GitHub Actions artifact，不发布 Release。
+`.github/workflows/windows-desktop.yml` 运行 Node、Python、Rust 测试，构建前后审计 Python archive 与原生可执行文件中的私有构建路径，再打包 NSIS。在专属 CI runner 中，安装验收先将已发布的 0.2.1 安装到含中文和空格的路径，在默认 `%APPDATA%` 目录创建合成 v1 笔记，再升级到 0.3.15。检查覆盖只读 v1 迁移、手工方法与阶段贡献、阅读记录、重装和卸载后数据字节一致、真实窗口、正常退出及所属子进程清理。合成默认数据目录在开始时必须不存在，并在结束后清理；不使用真实 Zotero/WebDAV 凭据。通过后上传安装器及校验和作为 GitHub Actions artifact，不发布 Release。
 
-Windows 0.3.14 的安装器须通过本轮 workflow 后才算完成验证。[历史 0.2.1 CI](https://github.com/AppleSpriter/PaperLine/actions/runs/38501863099) 不代表 0.3.14 已通过。草稿序列化与恢复由 JavaScript 测试覆盖；原生 WebView 草稿跨升级保留、Zotero、目录选择、备份保存及完整界面仍需 Windows 实机验收。现阶段没有 Windows 代码签名证书，未签名安装器可能触发 SmartScreen。设计依据：[Tauri 官方 Windows installer 文档](https://v2.tauri.app/distribute/windows-installer/)。
+Windows 0.3.15 的安装器须通过本轮 workflow 后才算完成验证。[历史 0.2.1 CI](https://github.com/AppleSpriter/PaperLine/actions/runs/38501863099) 不代表 0.3.15 已通过。草稿序列化与恢复由 JavaScript 测试覆盖；原生 WebView 草稿跨升级保留、Zotero、目录选择、备份保存及完整界面仍需 Windows 实机验收。现阶段没有 Windows 代码签名证书，未签名安装器可能触发 SmartScreen。设计依据：[Tauri 官方 Windows installer 文档](https://v2.tauri.app/distribute/windows-installer/)。
 
 ## 浏览器版运行
 

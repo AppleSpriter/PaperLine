@@ -623,3 +623,26 @@ kbd { display: inline-block; min-width: 21px; padding: 2px 6px; border: 1px soli
 .compare-table tr:first-child th { font-size: 14px; }
 .compare-table tr th:first-child { width: 96px; color: var(--muted, #6b6457); font-weight: 500; }
 .compare-note { margin-top: 12px; display: grid; gap: 8px; }
+.method-web-scroll { height: min(620px, calc(66dvh / var(--page-scale, 1))); }
+.method-web { display: block; margin: 0 auto; shape-rendering: geometricPrecision; text-rendering: optimizeSpeed; }
+.web-link { fill: none; stroke: #5d8f6d; stroke-width: 2; }
+.web-label { fill: #47755b; font-size: 12px; font-weight: 600; }
+.web-suggestion { cursor: pointer; }
+.web-suggestion path { fill: none; stroke: #c48a2c; stroke-width: 2; stroke-dasharray: 6 5; }
+.web-suggestion text { fill: #9a6a1c; font-size: 12px; }
+.web-section { fill: var(--muted); font-size: 12px; font-weight: 600; }
+.web-suggestion:hover path, .web-suggestion:focus-visible path { stroke-width: 3.5; }
+.web-node { cursor: pointer; }
+.web-node rect { fill: var(--paper); stroke: #9ebca4; stroke-width: 1.5; }
+.web-node.concept rect { fill: #f5f7f2; stroke-dasharray: 3 3; }
+.web-node text { fill: var(--green-dark); font-size: 13px; font-weight: 600; }
+.web-node:hover rect, .web-node:focus-visible rect { stroke: var(--green); stroke-width: 2.5; }
+.web-node.selected rect { fill: var(--green); stroke: var(--green); }
+.web-node.selected text { fill: white; }
+.web-node.dim rect { fill: #f3f5f1; stroke: #dfe6dc; }
+.web-node.dim text { fill: #a9b5ad; }
+.web-link.dim, .web-suggestion.dim path { stroke: #dfe6dc; }
+.web-label.dim, .web-suggestion.dim text { fill: #c3ccc5; }
+.method-web-scroll svg * { transition: none; }
+.method-tabs { margin-top: 18px; }
+.method-tabs b { margin-left: 4px; font-weight: 700; }
